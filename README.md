@@ -6,4 +6,5 @@
 2. Installation einer eScriptorium-Instanz auf dem Server des Lab.
 
 # Zum 1
-- wie kann man am besten files so organisieren, da man segmentweise trainieren soll.
+- wie kann man am besten files organisieren
+  (da man segmentweise trainieren soll)
