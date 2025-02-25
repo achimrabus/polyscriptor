@@ -8,7 +8,7 @@
 # Current problem
 transformers error
 `ViModel.forward() got an unexpected keyword argument 'num_items_in_batch'`
-Following the forum for the next steps:
+Following the forum for further steps:
 https://github.com/huggingface/transformers/issues/36074
 
 # In Process
