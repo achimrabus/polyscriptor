@@ -1,0 +1,57 @@
+(PartyEnv) dhlabadmin@PLDH1007:~/Schreibtisch/partyModel/6847772$ python -c "import torch; print(torch.cuda.is_available())"
+True
+(PartyEnv) dhlabadmin@PLDH1007:~/Schreibtisch/partyModel/6847772$ party train --load-from-repo 10.5281/zenodo.14616981 --workers 20 -t train.lst -e val.lst
+GPU available: True (cuda), used: False
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+`Trainer(val_check_interval=1.0)` was configured so validation will run at the end of the training epoch..
+Loading from huggingface hub 10.5281/zenodo.14616981.
+W0312 13:46:31.186358 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.186471 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.216253 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.216341 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.221040 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.221105 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.288127 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.288203 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.385856 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.438792 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.490962 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:31.505267 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.218858 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.218949 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.248540 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.248618 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.253310 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.253377 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.320203 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.320277 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.416735 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.469592 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.521725 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:32.536086 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.216675 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.216773 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.247065 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.247150 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.251946 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.252014 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.318378 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.318454 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.414150 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.669426 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] q0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.722209 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:33.736560 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] z0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:39.206292 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:39.206426 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:40.145933 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:40.161903 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:42.025964 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:42.026072 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:42.942555 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:42.958275 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:44.606077 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x1 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:44.606186 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:45.521162 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+W0312 13:46:45.536466 140534831689856 torch/fx/experimental/symbolic_shapes.py:4449] [0/0] x0 is not in var_ranges, defaulting to unknown range.
+Validation ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4/1846 0:07:38 • -:--:-- 0.00it/s
