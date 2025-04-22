@@ -17,5 +17,7 @@ https://github.com/huggingface/transformers/issues/36074
 
 # In Process
 1. Pre-Processing of the russian handwritten dataset;
+- Splitted the dataset in two halfs, batch size = 2.
 2. Updating the augmentation;
+- More complicated: transforms.RandomRotation and transforms.RandomAffine.
 3. Update of the fine tuned cyrillic_seq2seq_trocr21 model (using a russian dataset 1365312).
