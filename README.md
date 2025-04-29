@@ -21,3 +21,6 @@ https://github.com/huggingface/transformers/issues/36074
 2. Updating the augmentation;
 - More complicated: transforms.RandomRotation and transforms.RandomAffine.
 3. Update of the fine tuned cyrillic_seq2seq_trocr21 model (using a russian dataset 1365312).
+
+Test auf einem kurzen Dataset 6722 train und 1506 test data, mit neuer Augmentation, damit das Bild nicht allzu klein wird und nicht wegen Rotation geschneidet wird.
+Falls das klappt: mini dataset (train+test) als Inferenz benutzen, dabei diese Bilder aus half2 löschen.
