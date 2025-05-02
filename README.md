@@ -6,13 +6,13 @@
 2. Installation einer eScriptorium-Instanz auf dem Server des Lab.
 
 # Problems appeared
-AttributeError: module 'torch' has no attribute 'get_default_device'
-Solution: update torch and torchvision
-pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu118
+- AttributeError: module 'torch' has no attribute 'get_default_device'
+- Solution: update torch and torchvision
+- `pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu118`
 
-Transformers error
-`ViModel.forward() got an unexpected keyword argument 'num_items_in_batch'`
-Solution: Following the forum for further steps:
+- Transformers error
+- `ViModel.forward() got an unexpected keyword argument 'num_items_in_batch'`
+- Solution: Following the forum for further steps:
 https://github.com/huggingface/transformers/issues/36074
 
 # In Process
