@@ -23,5 +23,4 @@ https://github.com/huggingface/transformers/issues/36074
 3. Update of the fine tuned cyrillic_seq2seq_trocr21 model (using a russian dataset 1365312).
 
 
-- Test auf einem kurzen Dataset 6722 train und 1506 test data (mit cyrillic_seq2seq_trocr_22 mit der ersten Hälfte vom Russian Handwritten und dem ganzen Ukrainischen), mit neuer Augmentation, damit das Bild nicht allzu klein wird und nicht wegen Rotation geschneidet wird.
-- Falls das klappt: mini dataset (train+test) als Inferenz benutzen, dabei diese Bilder aus half2 löschen.
+- Training mit epochs=10 und batch size=2 auf den Datasets 1365312 und 6470048 ergeben Eval loss:  0.5753200054168701.
