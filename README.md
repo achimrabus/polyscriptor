@@ -15,12 +15,10 @@
 - Solution: Following the forum for further steps:
 https://github.com/huggingface/transformers/issues/36074
 
-# In Process
-1. Pre-Processing of the russian handwritten dataset;
-- Splitted the dataset in two halfs, batch size = 2.
-2. Updating the augmentation;
-- More complicated: transforms.RandomRotation and transforms.RandomAffine.
-3. Update of the fine tuned cyrillic_seq2seq_trocr21 model (using a russian dataset 1365312).
+# TODOs
+1. Pre-Processed the russian handwritten dataset (Splitted the dataset in two halfs);
+2. Updated the augmentation (More complicated: transforms.RandomRotation and transforms.RandomAffine);
+3. Updated the model cyrillic_seq2seq_trocr21 using 2 halfs of the russian dataset 1365312;
+4. NOW: Training of the "kazars24/trocr-base-handwritten-ru" using the same dataset and check if the eval_loss is better.
 
-
-- Training mit epochs=10 und batch size=2 auf den Datasets 1365312 und 6470048 ergeben Eval loss:  0.5753200054168701.
+- Training von "microsoft/trocr-base-handwritten" mit epochs=10 und batch size=2 auf den Datasets 1365312 und 6470048 ergeben Eval loss:  0.5753200054168701.
