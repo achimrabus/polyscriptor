@@ -15,10 +15,12 @@
 - Solution: Following the forum for further steps:
 https://github.com/huggingface/transformers/issues/36074
 
-# TODOs
+# Done
 1. Pre-Processed the russian handwritten dataset (Splitted the dataset in two halfs);
 2. Updated the augmentation (More complicated: transforms.RandomRotation and transforms.RandomAffine);
 3. Updated the model cyrillic_seq2seq_trocr21 using 2 halfs of the russian dataset 1365312;
-4. NOW: Training of the "kazars24/trocr-base-handwritten-ru" using the same dataset and check if the eval_loss is better.
+# TODOs
+1. NOW: Training of the "kazars24/trocr-base-handwritten-ru" using the combined dataset and check if the eval_loss is better.
+2. Test finetuning using QWEN https://huggingface.co/learn/cookbook/fine_tuning_vlm_trl .
 
 - Training von "microsoft/trocr-base-handwritten" mit epochs=10 und batch size=2 auf den Datasets 1365312 und 6470048 ergeben Eval loss:  0.5753200054168701.
