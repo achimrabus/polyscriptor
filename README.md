@@ -25,7 +25,7 @@ https://github.com/huggingface/transformers/issues/36074
 2. Test finetuning using QWEN https://huggingface.co/learn/cookbook/fine_tuning_vlm_trl .
 
 # Resultate
-Training of the "kazars24/trocr-base-handwritten-ru" using all 3 datasets.
-CER = 0.253278 "\n"
-Shows well results on all three datasets: Inference is in the Fine_Tune_TrOCR_transfVersion.ipynb
+Training of the "kazars24/trocr-base-handwritten-ru" using all 3 datasets. <br />
+CER = 0.253278 <br />
+Shows well results on all three datasets: Inference is in the Fine_Tune_TrOCR_transfVersion.ipynb <br />
 The latest Model: https://www.dropbox.com/scl/fi/umth7s1l619ok693l9xcy/seq2seq_mixed.zip?rlkey=yibenn1kewdyxunuyxzfr7ua0&st=a3ubnjca&dl=0
