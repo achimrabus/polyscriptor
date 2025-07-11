@@ -19,8 +19,13 @@ https://github.com/huggingface/transformers/issues/36074
 1. Pre-Processed the russian handwritten dataset (Splitted the dataset in two halfs);
 2. Updated the augmentation (More complicated: transforms.RandomRotation and transforms.RandomAffine);
 3. Updated the model cyrillic_seq2seq_trocr21 using 2 halfs of the russian dataset 1365312;
-# TODOs
-1. NOW: Training of the "kazars24/trocr-base-handwritten-ru" using the combined dataset and check if the eval_loss is better.
+
+# TODO
+1. Test another script.
 2. Test finetuning using QWEN https://huggingface.co/learn/cookbook/fine_tuning_vlm_trl .
 
-- Training von "microsoft/trocr-base-handwritten" mit epochs=10 und batch size=2 auf den Datasets 1365312 und 6470048 ergeben Eval loss:  0.5753200054168701.
+# Resultate
+Training of the "kazars24/trocr-base-handwritten-ru" using all 3 datasets.
+CER = 0.253278
+Shows well results on all three datasets: Inference is in the Fine_Tune_TrOCR_transfVersion.ipynb
+The latest Model: https://www.dropbox.com/scl/fi/umth7s1l619ok693l9xcy/seq2seq_mixed.zip?rlkey=yibenn1kewdyxunuyxzfr7ua0&st=a3ubnjca&dl=0
