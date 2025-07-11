@@ -21,7 +21,7 @@ https://github.com/huggingface/transformers/issues/36074
 3. Updated the model cyrillic_seq2seq_trocr21 using 2 halfs of the russian dataset 1365312;
 
 # TODO
-1. Test another script.
+1. Test another script: https://github.com/wjbmattingly/trocr-train .
 2. Test finetuning using QWEN https://huggingface.co/learn/cookbook/fine_tuning_vlm_trl .
 
 # Resultate
