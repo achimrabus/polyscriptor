@@ -29,3 +29,11 @@ Training of the "kazars24/trocr-base-handwritten-ru" using all 3 datasets. <br /
 CER = 0.253278 <br />
 Shows well results on all three datasets: Inference is in the Fine_Tune_TrOCR_transfVersion.ipynb <br />
 The latest Model: https://www.dropbox.com/scl/fi/umth7s1l619ok693l9xcy/seq2seq_mixed.zip?rlkey=yibenn1kewdyxunuyxzfr7ua0&st=a3ubnjca&dl=0
+
+## Latin Training
+Overwritten main, load_data, train_model to use the local dataset to train on the CATMos script. <br />
+Used an old commit: git checkout b9ded917fc51e0f0790ba15d408e4c7cd66c10d2 <br />
+Works with a small dataset. <br />
+Results are beeing saved. <br />
+# TODO:
+Split the dataset into test, train and val folders, start a big training.
