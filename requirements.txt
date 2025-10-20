@@ -1,0 +1,28 @@
+# Core ML/Deep Learning (CUDA 12.1)
+# Install with: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+transformers==4.45.2
+accelerate==1.5.1
+
+# Data processing
+numpy==1.26.4
+pandas==2.2.3
+pillow==11.1.0
+opencv-python==4.11.0.86
+scikit-learn==1.6.1
+pyarrow==19.0.0
+
+# Training utilities
+evaluate==0.4.3
+jiwer==4.0.0
+tensorboard==2.8.0
+tqdm==4.67.1
+
+# Configuration
+pyyaml==6.0.2
+
+# Notebook support (optional)
+jupyter>=1.0.0
+ipykernel>=6.29.0
+matplotlib==3.10.1

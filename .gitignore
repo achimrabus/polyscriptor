@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model checkpoints and outputs
+models/
+output/
+seq2seq_model_handwritten/
+seq2seq_*/
+cyrillic_seq2seq_*/
+kazars_trocr_*/
+checkpoint-*/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Data
+data/
+datasets/
+full-datasets/
+unpacked-datasets/
+*.arrow
+*.csv
+*.txt
+!requirements.txt
+!README.txt
+
+# Images and media
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+*.bmp
+!example*.png
+!sample*.png
+
+# Logs and temporary files
+logs/
+*.log
+runs/
+tensorboard/
+wandb/
+
+# Compressed files
+*.zip
+*.tar.gz
+*.rar
+
+# Large files
+*.h5
+*.hdf5
+
+# Transkribus exports
+page/
+*.xml
+!example*.xml
+
+# ignore local claude settings
+.claude/
+

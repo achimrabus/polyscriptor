@@ -1,0 +1,50 @@
+# Example configuration for optimized TrOCR training
+# Copy this to config.yaml and modify as needed
+
+# Model configuration
+model_name: "kazars24/trocr-base-handwritten-ru"
+max_length: 64
+
+# Data paths (MODIFY THESE!)
+data_root: "./processed_transkribus_data"  # Output from transkribus_parser.py
+train_csv: "train.csv"
+val_csv: "val.csv"
+
+# Performance optimization
+cache_images: true  # Cache images in RAM (requires ~2-4GB per 10k images)
+num_workers: 4      # Parallel data loading workers
+dataloader_num_workers: 4
+
+# Training hyperparameters
+output_dir: "./models/trocr_cyrillic_optimized"
+batch_size: 16                      # Increased from 4 (4x faster)
+gradient_accumulation_steps: 4      # Effective batch size: 64
+epochs: 10
+learning_rate: 3e-5
+weight_decay: 0.01
+warmup_ratio: 0.1
+
+# Speed optimizations
+fp16: true                          # Mixed precision training
+gradient_checkpointing: false       # Disabled for speed (use if OOM)
+
+# Evaluation strategy
+eval_strategy: "steps"
+eval_steps: 500
+save_steps: 500
+save_total_limit: 3
+logging_steps: 50
+
+# Generation settings (for evaluation)
+predict_with_generate: true
+generation_max_length: 64
+generation_num_beams: 1  # Greedy decoding for faster eval (set to 4 for better quality)
+
+# Data augmentation
+use_augmentation: true
+aug_rotation_degrees: 2
+aug_brightness: 0.3
+aug_contrast: 0.3
+
+# Reproducibility
+seed: 42
