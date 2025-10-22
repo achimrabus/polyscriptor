@@ -1,0 +1,529 @@
+"""
+Whole-page OCR inference for Ukrainian handwritten text using TrOCR.
+
+This script performs line segmentation and transcription on unsegmented page images.
+
+Usage:
+    # Basic usage with checkpoint
+    python inference_page.py --image path/to/page.jpg --checkpoint models/ukrainian_model/checkpoint-3000
+
+    # With custom settings
+    python inference_page.py --image page.jpg --checkpoint checkpoint-3000 --num_beams 4 --output output.txt
+
+    # With Transkribus PAGE XML (uses existing segmentation)
+    python inference_page.py --image page.jpg --xml page.xml --checkpoint checkpoint-3000
+
+Future: Can be extended with a GUI using tkinter or PyQt.
+"""
+
+import argparse
+import torch
+from pathlib import Path
+from PIL import Image, ImageDraw
+import numpy as np
+from typing import List, Tuple, Optional
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+import cv2
+
+from transformers import VisionEncoderDecoderModel, TrOCRProcessor
+
+
+@dataclass
+class LineSegment:
+    """Represents a segmented text line."""
+    image: Image.Image
+    bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
+    coords: Optional[List[Tuple[int, int]]] = None  # polygon coordinates if available
+    text: Optional[str] = None  # transcription result
+
+
+def normalize_background(image: Image.Image) -> Image.Image:
+    """
+    Normalize background to light gray (similar to Efendiev dataset).
+
+    CRITICAL for Ukrainian dataset: Models trained on data with background
+    normalization MUST have normalization applied at inference time as well.
+
+    Args:
+        image: PIL Image with potentially aged/colored background
+
+    Returns:
+        PIL Image with normalized background
+    """
+    # Convert PIL to OpenCV format
+    img_array = np.array(image)
+
+    # Convert to LAB color space for better lighting normalization
+    lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+
+    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
+    # This normalizes lighting variations across the image
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_normalized = clahe.apply(l)
+
+    # Merge back and convert to RGB
+    lab_normalized = cv2.merge([l_normalized, a, b])
+    rgb_normalized = cv2.cvtColor(lab_normalized, cv2.COLOR_LAB2RGB)
+
+    # Convert to grayscale to remove color variations (aged paper tones)
+    gray = cv2.cvtColor(rgb_normalized, cv2.COLOR_RGB2GRAY)
+
+    # Convert back to RGB with uniform background
+    # This creates a light gray background similar to Efendiev dataset
+    normalized_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+
+    return Image.fromarray(normalized_rgb)
+
+
+class LineSegmenter:
+    """Simple line segmentation using horizontal projection."""
+
+    def __init__(self, min_line_height: int = 20, min_gap: int = 10):
+        self.min_line_height = min_line_height
+        self.min_gap = min_gap
+
+    def segment_lines(self, image: Image.Image, debug: bool = False) -> List[LineSegment]:
+        """
+        Segment page image into text lines using horizontal projection.
+
+        Args:
+            image: Input page image (PIL Image)
+            debug: If True, visualize segmentation
+
+        Returns:
+            List of LineSegment objects
+        """
+        # Convert to grayscale and binarize
+        gray = np.array(image.convert('L'))
+
+        # Adaptive thresholding for better handling of varying backgrounds
+        from scipy.ndimage import gaussian_filter
+        blurred = gaussian_filter(gray, sigma=1.0)
+
+        # Otsu's method for automatic threshold
+        threshold = self._otsu_threshold(blurred)
+        binary = blurred < threshold
+
+        # Horizontal projection (sum of black pixels per row)
+        h_projection = binary.sum(axis=1)
+
+        # Find gaps between lines
+        is_text = h_projection > (h_projection.max() * 0.05)  # 5% threshold
+
+        # Find continuous text regions
+        lines = []
+        in_line = False
+        start_y = 0
+
+        for y in range(len(is_text)):
+            if is_text[y] and not in_line:
+                # Start of new line
+                start_y = y
+                in_line = True
+            elif not is_text[y] and in_line:
+                # End of line
+                end_y = y
+                if end_y - start_y >= self.min_line_height:
+                    lines.append((start_y, end_y))
+                in_line = False
+
+        # Don't forget last line if image ends with text
+        if in_line and len(is_text) - start_y >= self.min_line_height:
+            lines.append((start_y, len(is_text)))
+
+        # Create LineSegment objects
+        segments = []
+        width = image.width
+
+        for y1, y2 in lines:
+            # Add padding
+            padding = 5
+            y1_pad = max(0, y1 - padding)
+            y2_pad = min(image.height, y2 + padding)
+
+            # Crop line (full width for now, could be refined with vertical projection)
+            bbox = (0, y1_pad, width, y2_pad)
+            line_img = image.crop(bbox)
+
+            segments.append(LineSegment(
+                image=line_img,
+                bbox=bbox
+            ))
+
+        if debug:
+            self._visualize_segmentation(image, segments)
+
+        return segments
+
+    @staticmethod
+    def _otsu_threshold(gray_array: np.ndarray) -> float:
+        """Compute Otsu's threshold."""
+        hist, bin_edges = np.histogram(gray_array, bins=256, range=(0, 256))
+        hist = hist.astype(float)
+
+        # Normalize
+        hist /= hist.sum()
+
+        # Cumulative sums
+        weight1 = np.cumsum(hist)
+        weight2 = np.cumsum(hist[::-1])[::-1]
+
+        # Cumulative means
+        mean1 = np.cumsum(hist * np.arange(256))
+        mean2 = (np.cumsum((hist * np.arange(256))[::-1])[::-1])
+
+        # Avoid division by zero
+        weight1 = np.clip(weight1, 1e-10, 1)
+        weight2 = np.clip(weight2, 1e-10, 1)
+
+        # Between-class variance
+        variance = weight1 * weight2 * ((mean1 / weight1) - (mean2 / weight2)) ** 2
+
+        return np.argmax(variance)
+
+    @staticmethod
+    def _visualize_segmentation(image: Image.Image, segments: List[LineSegment]):
+        """Visualize line segmentation for debugging."""
+        vis = image.copy()
+        draw = ImageDraw.Draw(vis)
+
+        for i, seg in enumerate(segments):
+            x1, y1, x2, y2 = seg.bbox
+            # Alternate colors for visibility
+            color = 'red' if i % 2 == 0 else 'blue'
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+            draw.text((x1 + 5, y1 + 5), f"Line {i+1}", fill=color)
+
+        vis.show()
+
+
+class PageXMLSegmenter:
+    """Segment using existing Transkribus PAGE XML annotations."""
+
+    NS = {'page': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15'}
+
+    def __init__(self, xml_path: str):
+        self.xml_path = Path(xml_path)
+
+    def segment_lines(self, image: Image.Image) -> List[LineSegment]:
+        """Extract lines using PAGE XML coordinates."""
+        tree = ET.parse(self.xml_path)
+        root = tree.getroot()
+
+        segments = []
+
+        for region in root.findall('.//page:TextRegion', self.NS):
+            for text_line in region.findall('.//page:TextLine', self.NS):
+                # Get coordinates
+                coords_elem = text_line.find('page:Coords', self.NS)
+                if coords_elem is None:
+                    continue
+
+                coords_str = coords_elem.get('points')
+                if not coords_str:
+                    continue
+
+                # Parse coordinates
+                coords = self._parse_coords(coords_str)
+                x1, y1, x2, y2 = self._get_bounding_box(coords)
+
+                # Crop line with padding
+                padding = 5
+                x1_pad = max(0, x1 - padding)
+                y1_pad = max(0, y1 - padding)
+                x2_pad = min(image.width, x2 + padding)
+                y2_pad = min(image.height, y2 + padding)
+
+                bbox = (x1_pad, y1_pad, x2_pad, y2_pad)
+                line_img = image.crop(bbox)
+
+                segments.append(LineSegment(
+                    image=line_img,
+                    bbox=bbox,
+                    coords=coords
+                ))
+
+        return segments
+
+    @staticmethod
+    def _parse_coords(coords_str: str) -> List[Tuple[int, int]]:
+        """Parse coordinate string from PAGE XML."""
+        points = coords_str.split()
+        return [(int(p.split(',')[0]), int(p.split(',')[1])) for p in points]
+
+    @staticmethod
+    def _get_bounding_box(coords: List[Tuple[int, int]]) -> Tuple[int, int, int, int]:
+        """Get bounding box from polygon coordinates."""
+        xs = [p[0] for p in coords]
+        ys = [p[1] for p in coords]
+        return min(xs), min(ys), max(xs), max(ys)
+
+
+class TrOCRInference:
+    """TrOCR model inference."""
+
+    def __init__(self, model_path: str, device: Optional[str] = None,
+                 base_model: str = "kazars24/trocr-base-handwritten-ru",
+                 normalize_bg: bool = False,
+                 is_huggingface: bool = False):
+        """
+        Initialize TrOCR inference.
+
+        Args:
+            model_path: Path to local checkpoint or HuggingFace model ID
+            device: 'cuda', 'cpu', or None for auto-detect
+            base_model: Base model for processor (used with local checkpoints)
+            normalize_bg: Apply background normalization
+            is_huggingface: If True, load from HuggingFace Hub instead of local path
+        """
+        self.model_path = model_path
+        self.base_model = base_model
+        self.normalize_bg = normalize_bg
+        self.is_huggingface = is_huggingface
+
+        if device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
+
+        print(f"Loading model from {'HuggingFace Hub' if is_huggingface else 'local checkpoint'}: {model_path}...")
+        print(f"Using device: {self.device}")
+        print(f"Background normalization: {'Enabled' if self.normalize_bg else 'Disabled'}")
+
+        if is_huggingface:
+            # Load both processor and model from HuggingFace Hub
+            print(f"Downloading from HuggingFace Hub (if not cached): {model_path}")
+            self.processor = TrOCRProcessor.from_pretrained(model_path)
+            self.model = VisionEncoderDecoderModel.from_pretrained(model_path)
+            # For backwards compatibility
+            self.checkpoint_path = model_path
+        else:
+            # Load processor from base model, model from local checkpoint
+            self.checkpoint_path = Path(model_path)
+            print(f"Loading processor from base model: {self.base_model}")
+            self.processor = TrOCRProcessor.from_pretrained(self.base_model)
+            self.model = VisionEncoderDecoderModel.from_pretrained(self.checkpoint_path)
+
+        self.model.to(self.device)
+        self.model.eval()
+
+        print("Model loaded successfully!")
+
+    def transcribe_line(self, line_image: Image.Image, num_beams: int = 4,
+                       max_length: int = 128) -> str:
+        """
+        Transcribe a single line image.
+
+        Args:
+            line_image: PIL Image of text line
+            num_beams: Number of beams for beam search (higher = better quality, slower)
+            max_length: Maximum sequence length
+
+        Returns:
+            Transcribed text
+        """
+        # Apply background normalization if enabled
+        if self.normalize_bg:
+            line_image = normalize_background(line_image)
+
+        # Prepare image
+        pixel_values = self.processor(
+            images=line_image,
+            return_tensors="pt"
+        ).pixel_values.to(self.device)
+
+        # Generate text
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                pixel_values,
+                num_beams=num_beams,
+                max_length=max_length,
+                early_stopping=True
+            )
+
+        # Decode
+        text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        return text
+
+    def transcribe_segments(self, segments: List[LineSegment],
+                          num_beams: int = 4, max_length: int = 128,
+                          show_progress: bool = True) -> List[LineSegment]:
+        """
+        Transcribe multiple line segments.
+
+        Args:
+            segments: List of LineSegment objects
+            num_beams: Beam search parameter
+            max_length: Max sequence length
+            show_progress: Show progress bar
+
+        Returns:
+            Updated segments with text field filled
+        """
+        if show_progress:
+            from tqdm import tqdm
+            iterator = tqdm(segments, desc="Transcribing lines")
+        else:
+            iterator = segments
+
+        for segment in iterator:
+            segment.text = self.transcribe_line(
+                segment.image,
+                num_beams=num_beams,
+                max_length=max_length
+            )
+
+        return segments
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Whole-page OCR inference for Ukrainian handwritten text"
+    )
+    parser.add_argument(
+        '--image',
+        type=str,
+        required=True,
+        help='Path to input page image'
+    )
+    parser.add_argument(
+        '--checkpoint',
+        type=str,
+        required=True,
+        help='Path to TrOCR checkpoint directory'
+    )
+    parser.add_argument(
+        '--xml',
+        type=str,
+        default=None,
+        help='Optional: PAGE XML file for line segmentation (if not provided, automatic segmentation is used)'
+    )
+    parser.add_argument(
+        '--output',
+        type=str,
+        default=None,
+        help='Output text file (default: <image_name>_transcription.txt)'
+    )
+    parser.add_argument(
+        '--num_beams',
+        type=int,
+        default=4,
+        help='Number of beams for beam search (default: 4, higher=better quality but slower)'
+    )
+    parser.add_argument(
+        '--max_length',
+        type=int,
+        default=128,
+        help='Maximum sequence length (default: 128)'
+    )
+    parser.add_argument(
+        '--min_line_height',
+        type=int,
+        default=20,
+        help='Minimum line height for automatic segmentation (default: 20)'
+    )
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Visualize line segmentation'
+    )
+    parser.add_argument(
+        '--device',
+        type=str,
+        default=None,
+        choices=['cuda', 'cpu'],
+        help='Device to use for inference (default: auto-detect)'
+    )
+    parser.add_argument(
+        '--base_model',
+        type=str,
+        default='kazars24/trocr-base-handwritten-ru',
+        help='Base model for processor (default: kazars24/trocr-base-handwritten-ru)'
+    )
+    parser.add_argument(
+        '--normalize-background',
+        action='store_true',
+        help='Apply background normalization (REQUIRED if model was trained with --normalize-background)'
+    )
+
+    args = parser.parse_args()
+
+    print("=" * 80)
+    print("TrOCR Whole-Page Inference")
+    print("=" * 80)
+    print(f"Input image:  {args.image}")
+    print(f"Checkpoint:   {args.checkpoint}")
+    print(f"Segmentation: {'PAGE XML' if args.xml else 'Automatic'}")
+    print(f"Beam search:  {args.num_beams}")
+    print("=" * 80)
+
+    # Load image
+    print("\nLoading image...")
+    Image.MAX_IMAGE_PIXELS = None  # Allow large images
+    image = Image.open(args.image).convert('RGB')
+    print(f"Image size: {image.width}x{image.height}")
+
+    # Segment lines
+    print("\nSegmenting lines...")
+    if args.xml:
+        segmenter = PageXMLSegmenter(args.xml)
+        segments = segmenter.segment_lines(image)
+        print(f"Found {len(segments)} lines in PAGE XML")
+    else:
+        segmenter = LineSegmenter(
+            min_line_height=args.min_line_height
+        )
+        segments = segmenter.segment_lines(image, debug=args.debug)
+        print(f"Detected {len(segments)} lines")
+
+    if not segments:
+        print("ERROR: No lines detected!")
+        return
+
+    # Initialize TrOCR
+    print("\nInitializing TrOCR model...")
+    ocr = TrOCRInference(
+        args.checkpoint,
+        device=args.device,
+        base_model=args.base_model,
+        normalize_bg=args.normalize_background  # NEW: pass normalization flag
+    )
+
+    # Transcribe
+    print(f"\nTranscribing {len(segments)} lines...")
+    segments = ocr.transcribe_segments(
+        segments,
+        num_beams=args.num_beams,
+        max_length=args.max_length
+    )
+
+    # Prepare output
+    transcription = "\n".join(seg.text for seg in segments if seg.text)
+
+    # Determine output path
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        image_path = Path(args.image)
+        output_path = image_path.parent / f"{image_path.stem}_transcription.txt"
+
+    # Save
+    print(f"\nSaving transcription to {output_path}...")
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(transcription)
+
+    # Print results
+    print("\n" + "=" * 80)
+    print("TRANSCRIPTION RESULT")
+    print("=" * 80)
+    print(transcription)
+    print("=" * 80)
+    print(f"\nTranscription saved to: {output_path}")
+    print(f"Total lines: {len(segments)}")
+    print(f"Average confidence: N/A (not implemented yet)")
+
+
+if __name__ == '__main__':
+    main()

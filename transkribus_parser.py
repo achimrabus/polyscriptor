@@ -19,9 +19,13 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 import argparse
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw
+import numpy as np
 from tqdm import tqdm
 import json
+import csv
+import cv2
+from multiprocessing import Pool, cpu_count
 
 
 class TranskribusParser:
@@ -30,10 +34,15 @@ class TranskribusParser:
     # PAGE XML namespace
     NS = {'page': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15'}
 
-    def __init__(self, input_dir: str, output_dir: str, min_line_width: int = 20):
+    def __init__(self, input_dir: str, output_dir: str, min_line_width: int = 20,
+                 use_polygon_mask: bool = False, normalize_background: bool = False,
+                 num_workers: int = None):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.min_line_width = min_line_width
+        self.use_polygon_mask = use_polygon_mask  # CHANGED: default False (rectangles)
+        self.normalize_background = normalize_background  # NEW: background normalization flag
+        self.num_workers = num_workers if num_workers is not None else cpu_count()  # Use all cores by default
 
         # Create output directories
         self.images_dir = self.output_dir / "line_images"
@@ -51,6 +60,81 @@ class TranskribusParser:
         xs = [p[0] for p in coords]
         ys = [p[1] for p in coords]
         return min(xs), min(ys), max(xs), max(ys)
+
+    def normalize_background_image(self, image: Image.Image) -> Image.Image:
+        """
+        Normalize background to light gray (similar to Efendiev dataset).
+
+        This addresses aged paper, color variation, and lighting inconsistencies
+        by normalizing the background to a uniform light tone while preserving
+        text contrast.
+
+        Args:
+            image: PIL Image with potentially aged/colored background
+
+        Returns:
+            PIL Image with normalized background
+        """
+        # Convert PIL to OpenCV format
+        img_array = np.array(image)
+
+        # Convert to LAB color space for better lighting normalization
+        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+
+        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
+        # This normalizes lighting variations across the image
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_normalized = clahe.apply(l)
+
+        # Merge back and convert to RGB
+        lab_normalized = cv2.merge([l_normalized, a, b])
+        rgb_normalized = cv2.cvtColor(lab_normalized, cv2.COLOR_LAB2RGB)
+
+        # Convert to grayscale to remove color variations (aged paper tones)
+        gray = cv2.cvtColor(rgb_normalized, cv2.COLOR_RGB2GRAY)
+
+        # Convert back to RGB with uniform background
+        # This creates a light gray background similar to Efendiev dataset
+        normalized_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+
+        return Image.fromarray(normalized_rgb)
+
+    def crop_polygon(self, image: Image.Image, coords: List[Tuple[int, int]]) -> Image.Image:
+        """Crop image to polygon shape with masking."""
+        # Get bounding box
+        x1, y1, x2, y2 = self.get_bounding_box(coords)
+
+        # Add padding
+        padding = 5
+        x1_pad = max(0, x1 - padding)
+        y1_pad = max(0, y1 - padding)
+        x2_pad = min(image.width, x2 + padding)
+        y2_pad = min(image.height, y2 + padding)
+
+        # Crop to bounding box first
+        cropped = image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
+
+        # Apply background normalization if enabled (before polygon masking)
+        if self.normalize_background:
+            cropped = self.normalize_background_image(cropped)
+
+        if not self.use_polygon_mask:
+            return cropped
+        
+        # Create mask for polygon
+        mask = Image.new('L', (x2_pad - x1_pad, y2_pad - y1_pad), 0)
+        draw = ImageDraw.Draw(mask)
+        
+        # Adjust coordinates relative to cropped image
+        adjusted_coords = [(x - x1_pad, y - y1_pad) for x, y in coords]
+        draw.polygon(adjusted_coords, fill=255)
+        
+        # Apply mask (sets outside polygon to white)
+        result = Image.new('RGB', cropped.size, (255, 255, 255))
+        result.paste(cropped, mask=mask)
+        
+        return result
 
     def extract_lines_from_page(self, xml_path: Path, image_path: Path) -> List[dict]:
         """Extract all text lines from a PAGE XML file."""
@@ -100,15 +184,9 @@ class TranskribusParser:
                 if (x2 - x1) < self.min_line_width:
                     continue
 
-                # Crop line image with padding
-                padding = 5
-                x1_pad = max(0, x1 - padding)
-                y1_pad = max(0, y1 - padding)
-                x2_pad = min(page_image.width, x2 + padding)
-                y2_pad = min(page_image.height, y2 + padding)
-
                 try:
-                    line_image = page_image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
+                    # CHANGED: Use polygon cropping instead of simple bbox crop
+                    line_image = self.crop_polygon(page_image, coords)
 
                     # Save line image
                     page_name = image_path.stem
@@ -127,13 +205,49 @@ class TranskribusParser:
                     })
 
                 except Exception as e:
-                    print(f"Error cropping line {line_id} from {image_path}: {e}")
+                    # Fix Unicode encoding issue on Windows console
+                    try:
+                        print(f"Error cropping line {line_id} from {image_path.name}: {e}")
+                    except:
+                        print(f"Error cropping line (Unicode error in path)")
                     continue
 
         return lines_data
 
+    def _process_single_page(self, xml_path: Path) -> List[dict]:
+        """
+        Process a single page (used for parallel processing).
+
+        Returns list of line metadata dicts.
+        """
+        # Find corresponding image
+        image_extensions = ['.jpg', '.jpeg', '.png', '.tif', '.tiff']
+        image_path = None
+
+        # First try in same directory as XML
+        for ext in image_extensions:
+            potential_path = xml_path.with_suffix(ext)
+            if potential_path.exists():
+                image_path = potential_path
+                break
+
+        # If not found and XML is in page/ subdirectory, look in parent directory
+        if image_path is None and xml_path.parent.name == "page":
+            for ext in image_extensions:
+                potential_path = xml_path.parent.parent / (xml_path.stem + ext)
+                if potential_path.exists():
+                    image_path = potential_path
+                    break
+
+        if image_path is None:
+            print(f"Warning: No image found for {xml_path.name}")
+            return []
+
+        # Extract lines
+        return self.extract_lines_from_page(xml_path, image_path)
+
     def process_all(self) -> pd.DataFrame:
-        """Process all PAGE XML files in the input directory."""
+        """Process all PAGE XML files in the input directory using parallel processing."""
         # First check page/ subdirectory (common Transkribus export structure)
         page_dir = self.input_dir / "page"
         xml_files = []
@@ -154,47 +268,62 @@ class TranskribusParser:
             return pd.DataFrame()
 
         print(f"Found {len(xml_files)} XML files")
+        print(f"Using {self.num_workers} CPU cores for parallel processing")
 
-        all_lines = []
+        # Process pages in parallel
+        temp_csv_path = self.output_dir / "temp_lines.csv"
+        csv_file = open(temp_csv_path, 'w', encoding='utf-8', newline='')
+        csv_writer = csv.writer(csv_file)
 
-        for xml_path in tqdm(xml_files, desc="Processing pages"):
-            # Find corresponding image
-            image_extensions = ['.jpg', '.jpeg', '.png', '.tif', '.tiff']
-            image_path = None
+        # Track statistics without storing all data
+        total_lines = 0
+        total_width = 0
+        total_height = 0
+        unique_pages = set()
 
-            # First try in same directory as XML
-            for ext in image_extensions:
-                potential_path = xml_path.with_suffix(ext)
-                if potential_path.exists():
-                    image_path = potential_path
-                    break
+        # Use multiprocessing Pool for parallel processing
+        if self.num_workers > 1:
+            with Pool(processes=self.num_workers) as pool:
+                # Process pages in parallel with progress bar
+                for lines in tqdm(
+                    pool.imap(self._process_single_page, xml_files),
+                    total=len(xml_files),
+                    desc="Processing pages"
+                ):
+                    # Write lines to CSV immediately and update statistics
+                    for line in lines:
+                        csv_writer.writerow([line['image_path'], line['text'], line['page'], line['width'], line['height']])
+                        total_lines += 1
+                        total_width += line['width']
+                        total_height += line['height']
+                        unique_pages.add(line['page'])
+        else:
+            # Single-threaded processing (fallback)
+            for xml_path in tqdm(xml_files, desc="Processing pages"):
+                lines = self._process_single_page(xml_path)
 
-            # If not found and XML is in page/ subdirectory, look in parent directory
-            if image_path is None and xml_path.parent.name == "page":
-                for ext in image_extensions:
-                    potential_path = xml_path.parent.parent / (xml_path.stem + ext)
-                    if potential_path.exists():
-                        image_path = potential_path
-                        break
+                # Write lines to CSV immediately and update statistics
+                for line in lines:
+                    csv_writer.writerow([line['image_path'], line['text'], line['page'], line['width'], line['height']])
+                    total_lines += 1
+                    total_width += line['width']
+                    total_height += line['height']
+                    unique_pages.add(line['page'])
 
-            if image_path is None:
-                print(f"Warning: No image found for {xml_path.name}")
-                continue
+        csv_file.close()
 
-            # Extract lines
-            lines = self.extract_lines_from_page(xml_path, image_path)
-            all_lines.extend(lines)
-
-        # Create DataFrame
-        df = pd.DataFrame(all_lines)
-
-        if df.empty:
+        if total_lines == 0:
             print("No lines extracted!")
-            return df
+            temp_csv_path.unlink(missing_ok=True)
+            return pd.DataFrame()
 
-        print(f"\nExtracted {len(df)} text lines")
-        print(f"Average line width: {df['width'].mean():.1f}px")
-        print(f"Average line height: {df['height'].mean():.1f}px")
+        # Read the temporary CSV back into a DataFrame
+        df = pd.read_csv(temp_csv_path, names=['image_path', 'text', 'page', 'width', 'height'], encoding='utf-8')
+        temp_csv_path.unlink()  # Delete temp file
+
+        print(f"\nExtracted {total_lines} text lines from {len(unique_pages)} pages")
+        print(f"Average line width: {total_width/total_lines:.1f}px")
+        print(f"Average line height: {total_height/total_lines:.1f}px")
 
         return df
 
@@ -230,7 +359,8 @@ class TranskribusParser:
             'total_lines': len(df),
             'avg_line_width': float(df['width'].mean()),
             'avg_line_height': float(df['height'].mean()),
-            'pages_processed': df['page'].nunique()
+            'pages_processed': df['page'].nunique(),
+            'background_normalized': self.normalize_background  # NEW: record preprocessing
         }
 
         metadata_path = self.output_dir / "dataset_info.json"
@@ -271,26 +401,47 @@ def main():
         default=0.8,
         help='Ratio of training data (default: 0.8)'
     )
+    parser.add_argument(
+        '--use-polygon-mask',  # CHANGED: inverted flag logic
+        action='store_true',
+        help='Enable polygon masking (default: use simple bounding box)'
+    )
+    parser.add_argument(
+        '--normalize-background',
+        action='store_true',
+        help='Normalize image backgrounds to light gray (recommended for aged/colored paper)'
+    )
+    parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=None,
+        help=f'Number of CPU cores for parallel processing (default: all {cpu_count()} cores)'
+    )
 
     args = parser.parse_args()
 
     print("=" * 60)
     print("Transkribus PAGE XML Parser for TrOCR")
     print("=" * 60)
-    print(f"Input directory:  {args.input_dir}")
-    print(f"Output directory: {args.output_dir}")
+    print(f"Input directory:       {args.input_dir}")
+    print(f"Output directory:      {args.output_dir}")
+    print(f"Polygon masking:       {'Enabled' if args.use_polygon_mask else 'Disabled (using rectangles)'}")  # CHANGED
+    print(f"Background normalize:  {'Enabled' if args.normalize_background else 'Disabled'}")  # NEW
     print("=" * 60)
 
-    parser = TranskribusParser(
+    parser_obj = TranskribusParser(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
-        min_line_width=args.min_line_width
+        min_line_width=args.min_line_width,
+        use_polygon_mask=args.use_polygon_mask,  # CHANGED: direct pass
+        normalize_background=args.normalize_background,  # NEW: pass flag
+        num_workers=args.num_workers  # NEW: parallel processing
     )
 
-    df = parser.process_all()
+    df = parser_obj.process_all()
 
     if not df.empty:
-        parser.save_dataset(df, train_ratio=args.train_ratio)
+        parser_obj.save_dataset(df, train_ratio=args.train_ratio)
         print("\n[SUCCESS] Dataset creation complete!")
     else:
         print("\n[FAILED] Failed to create dataset")
