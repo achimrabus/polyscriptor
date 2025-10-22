@@ -25,7 +25,7 @@ import torch
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QPushButton, QLabel, QTextEdit, QComboBox, QSpinBox, QCheckBox,
+    QPushButton, QLabel, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QFileDialog, QProgressBar, QStatusBar, QToolBar, QFontDialog,
     QMessageBox, QListWidget, QListWidgetItem, QGroupBox, QGridLayout,
     QScrollArea, QTabWidget, QButtonGroup, QRadioButton
@@ -130,6 +130,7 @@ class OCRWorker(QThread):
     progress = pyqtSignal(int, str)  # progress, status message
     finished = pyqtSignal(list)  # list of transcribed segments
     error = pyqtSignal(str)  # error message
+    aborted = pyqtSignal()  # emitted when aborted
 
     def __init__(self, segments: List[LineSegment], ocr: TrOCRInference,
                  num_beams: int, max_length: int):
@@ -138,12 +139,22 @@ class OCRWorker(QThread):
         self.ocr = ocr
         self.num_beams = num_beams
         self.max_length = max_length
+        self._is_aborted = False
+
+    def abort(self):
+        """Request abortion of OCR processing."""
+        self._is_aborted = True
 
     def run(self):
         """Process all line segments."""
         try:
             total = len(self.segments)
             for idx, segment in enumerate(self.segments):
+                # Check if aborted
+                if self._is_aborted:
+                    self.aborted.emit()
+                    return
+
                 self.progress.emit(int((idx / total) * 100),
                                  f"Processing line {idx+1}/{total}...")
 
@@ -159,7 +170,8 @@ class OCRWorker(QThread):
             self.finished.emit(self.segments)
 
         except Exception as e:
-            self.error.emit(f"OCR Error: {str(e)}")
+            if not self._is_aborted:
+                self.error.emit(f"OCR Error: {str(e)}")
 
 
 class TranscriptionGUI(QMainWindow):
@@ -182,7 +194,8 @@ class TranscriptionGUI(QMainWindow):
         self.current_image_index: int = -1
 
         # Settings
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Default to CPU (more stable for batch processing and large images)
+        self.device = "cpu"
         self.normalize_bg = False
         self.num_beams = 4
         self.max_length = 128
@@ -275,17 +288,54 @@ class TranscriptionGUI(QMainWindow):
 
         # Segmentation controls
         seg_group = QGroupBox("Line Segmentation")
-        seg_layout = QHBoxLayout()
+        seg_layout = QVBoxLayout()
 
+        # First row: Detect button and line count
+        seg_row1 = QHBoxLayout()
         self.btn_segment = QPushButton("Detect Lines")
         self.btn_segment.clicked.connect(self._segment_lines)
         self.btn_segment.setEnabled(False)
-        seg_layout.addWidget(self.btn_segment)
+        seg_row1.addWidget(self.btn_segment)
 
         self.lbl_lines_count = QLabel("Lines: 0")
-        seg_layout.addWidget(self.lbl_lines_count)
+        seg_row1.addWidget(self.lbl_lines_count)
+        seg_row1.addStretch()
+        seg_layout.addLayout(seg_row1)
 
-        seg_layout.addStretch()
+        # Second row: Segmentation parameters
+        seg_row2 = QHBoxLayout()
+
+        # Threshold slider (using double spinbox for decimal precision)
+        seg_row2.addWidget(QLabel("Threshold:"))
+        self.spin_sensitivity = QDoubleSpinBox()
+        self.spin_sensitivity.setRange(0.5, 15.0)
+        self.spin_sensitivity.setValue(5.0)  # 5% default (matches original working algorithm)
+        self.spin_sensitivity.setSingleStep(0.5)
+        self.spin_sensitivity.setDecimals(1)
+        self.spin_sensitivity.setSuffix("%")
+        self.spin_sensitivity.setToolTip("Detection threshold: Higher values = more selective (0.5-15%). Default: 5%")
+        seg_row2.addWidget(self.spin_sensitivity)
+        seg_row2.addSpacing(10)
+
+        # Min line height
+        seg_row2.addWidget(QLabel("Min Height:"))
+        self.spin_min_height = QSpinBox()
+        self.spin_min_height.setRange(5, 50)
+        self.spin_min_height.setValue(10)  # Lowered from 15 to 10 for tighter spacing
+        self.spin_min_height.setSuffix(" px")
+        self.spin_min_height.setToolTip("Minimum line height in pixels. Default: 10px")
+        seg_row2.addWidget(self.spin_min_height)
+        seg_row2.addSpacing(10)
+
+        # Morphological operations checkbox
+        self.chk_morph = QCheckBox("Morph. Ops")
+        self.chk_morph.setChecked(True)
+        self.chk_morph.setToolTip("Apply morphological operations to connect broken characters")
+        seg_row2.addWidget(self.chk_morph)
+
+        seg_row2.addStretch()
+        seg_layout.addLayout(seg_row2)
+
         seg_group.setLayout(seg_layout)
         layout.addWidget(seg_group)
 
@@ -353,14 +403,14 @@ class TranscriptionGUI(QMainWindow):
         self.radio_gpu = QRadioButton("GPU")
         self.radio_cpu = QRadioButton("CPU")
 
-        # Auto-detect and set default
-        if torch.cuda.is_available():
-            self.radio_gpu.setChecked(True)
-            self.radio_cpu.setEnabled(True)
-        else:
-            self.radio_cpu.setChecked(True)
+        # Default to CPU (more stable for batch processing)
+        self.radio_cpu.setChecked(True)
+
+        if not torch.cuda.is_available():
             self.radio_gpu.setEnabled(False)
             self.radio_gpu.setToolTip("No CUDA-capable GPU detected")
+        else:
+            self.radio_gpu.setToolTip("Faster but may have CUDA memory issues with large images")
 
         self.radio_gpu.toggled.connect(self._on_device_changed)
         self.radio_cpu.toggled.connect(self._on_device_changed)
@@ -411,6 +461,12 @@ class TranscriptionGUI(QMainWindow):
         self.btn_process.clicked.connect(self._process_all_lines)
         self.btn_process.setEnabled(False)
         process_layout.addWidget(self.btn_process)
+
+        self.btn_abort = QPushButton("Abort")
+        self.btn_abort.clicked.connect(self._abort_processing)
+        self.btn_abort.setEnabled(False)
+        self.btn_abort.setStyleSheet("QPushButton { background-color: #d32f2f; color: white; }")
+        process_layout.addWidget(self.btn_abort)
 
         process_layout.addStretch()
         layout.addLayout(process_layout)
@@ -648,25 +704,70 @@ class TranscriptionGUI(QMainWindow):
             # Load image
             image = Image.open(self.current_image_path).convert('RGB')
 
-            # Segment
-            segmenter = LineSegmenter()
-            self.segments = segmenter.segment_lines(image)
+            # Get parameters from GUI
+            sensitivity = self.spin_sensitivity.value() / 100.0  # Convert % to decimal
+            min_height = self.spin_min_height.value()
+            use_morph = self.chk_morph.isChecked()
+
+            # Segment with configured parameters
+            segmenter = LineSegmenter(
+                min_line_height=min_height,
+                min_gap=5,
+                sensitivity=sensitivity,
+                use_morph=use_morph
+            )
+            self.segments = segmenter.segment_lines(image, debug=False)
 
             # Draw boxes
             self.graphics_view.draw_line_boxes(self.segments)
 
             # Update UI
-            self.lbl_lines_count.setText(f"Lines: {len(self.segments)}")
-            self.btn_process.setEnabled(len(self.segments) > 0)
+            num_lines = len(self.segments)
+            self.lbl_lines_count.setText(f"Lines: {num_lines}")
+            self.btn_process.setEnabled(num_lines > 0)
 
-            self.status_bar.showMessage(f"Detected {len(self.segments)} lines")
+            # Provide feedback based on results
+            if num_lines == 0:
+                self.status_bar.showMessage("No lines detected! Try adjusting sensitivity.")
+                QMessageBox.warning(
+                    self,
+                    "No Lines Detected",
+                    "Line segmentation did not detect any text lines.\n\n"
+                    "Try adjusting the segmentation parameters:\n"
+                    "- DECREASE Threshold (try 1-2%) to detect fainter lines\n"
+                    "- Lower Min Height if text is small\n"
+                    "- Enable Morph. Ops to connect broken characters"
+                )
+            elif num_lines == 1:
+                self.status_bar.showMessage(f"Detected 1 line - Check if this is correct")
+                # Show warning but don't block - might be legitimate single line
+                QMessageBox.information(
+                    self,
+                    "Single Line Detected",
+                    "Only 1 text line was detected.\n\n"
+                    "If the page contains multiple lines:\n"
+                    "- Try INCREASING Threshold (e.g., 8-10%) to be more selective\n"
+                    "- Reduce Min Height if lines are close together\n"
+                    "- Enable Morph. Ops checkbox\n\n"
+                    "You can still process this line or re-detect with different settings."
+                )
+            else:
+                self.status_bar.showMessage(f"Detected {num_lines} lines")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Line segmentation failed:\n{str(e)}")
+            self.lbl_lines_count.setText("Lines: 0")
+            self.btn_process.setEnabled(False)
 
     def _process_all_lines(self):
         """Process all detected lines with OCR."""
         if not self.segments:
+            QMessageBox.warning(
+                self,
+                "No Lines Available",
+                "No text lines have been detected yet.\n\n"
+                "Please click 'Detect Lines' first to segment the image into text lines."
+            )
             return
 
         # Determine which model source to use (Local or HuggingFace)
@@ -708,8 +809,10 @@ class TranscriptionGUI(QMainWindow):
             self.ocr_worker.progress.connect(self._on_ocr_progress)
             self.ocr_worker.finished.connect(self._on_ocr_finished)
             self.ocr_worker.error.connect(self._on_ocr_error)
+            self.ocr_worker.aborted.connect(self._on_ocr_aborted)
 
             self.btn_process.setEnabled(False)
+            self.btn_abort.setEnabled(True)
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
 
@@ -732,6 +835,7 @@ class TranscriptionGUI(QMainWindow):
         self.text_editor.setPlainText(transcription)
 
         self.btn_process.setEnabled(True)
+        self.btn_abort.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.status_bar.showMessage("Transcription complete!")
 
@@ -739,7 +843,22 @@ class TranscriptionGUI(QMainWindow):
         """Handle OCR errors."""
         QMessageBox.critical(self, "OCR Error", error_msg)
         self.btn_process.setEnabled(True)
+        self.btn_abort.setEnabled(False)
         self.progress_bar.setVisible(False)
+
+    def _on_ocr_aborted(self):
+        """Handle OCR abortion."""
+        self.btn_process.setEnabled(True)
+        self.btn_abort.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.status_bar.showMessage("Processing aborted by user")
+        QMessageBox.information(self, "Aborted", "OCR processing was aborted.\n\nPartial results may be available.")
+
+    def _abort_processing(self):
+        """Abort ongoing OCR processing."""
+        if self.ocr_worker and self.ocr_worker.isRunning():
+            self.ocr_worker.abort()
+            self.status_bar.showMessage("Aborting...")
 
     def _save_transcription(self):
         """Save transcription to file."""

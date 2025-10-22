@@ -1,0 +1,40 @@
+# TrOCR Training Configuration
+# Ukrainian HTR with Aspect Ratio Preservation (NO background normalization)
+#
+# KEY DIFFERENCE: Images preprocessed with aspect ratio preservation
+# - Target height: 128px (instead of brutal resize to 384x384)
+# - Character width: ~29px (vs ~7px with brutal resize)
+# - Expected: 3-4x better character resolution -> lower CER
+#
+# Dataset: Ukrainian handwritten letters/diaries
+# Preprocessing: Aspect ratio preserved, NO background normalization
+# Expected CER improvement: 23% -> 12-15% (conservative estimate)
+
+# Model configuration
+model_name: "kazars24/trocr-base-handwritten-ru"
+max_length: 128
+batch_size: 6
+gradient_accumulation_steps: 4  # Effective batch size: 24
+epochs: 20
+learning_rate: 0.00004
+optim: "adafactor"
+predict_with_generate: true
+generation_num_beams: 4
+
+# Data augmentation
+use_augmentation: true
+
+# Dataset paths - UPDATED for aspect-ratio-preserved data
+train_csv: "train.csv"
+val_csv: "val.csv"
+data_root: "data/ukrainian_train_aspect_ratio"
+
+# Output
+output_dir: "models/ukrainian_aspect_ratio"
+
+# Experiment notes (for documentation):
+# Aspect Ratio Preservation (no background normalization)
+# Hypothesis: 10.6x width downsampling is PRIMARY cause of 23% CER
+# Fix: Resize to 128px height preserving aspect ratio
+# Expected: Characters ~29px (vs ~7px) = 4x improvement
+# Target CER: 12-15% (vs 23% current)

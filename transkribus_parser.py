@@ -36,12 +36,15 @@ class TranskribusParser:
 
     def __init__(self, input_dir: str, output_dir: str, min_line_width: int = 20,
                  use_polygon_mask: bool = False, normalize_background: bool = False,
+                 preserve_aspect_ratio: bool = False, target_height: int = 128,
                  num_workers: int = None):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.min_line_width = min_line_width
         self.use_polygon_mask = use_polygon_mask  # CHANGED: default False (rectangles)
         self.normalize_background = normalize_background  # NEW: background normalization flag
+        self.preserve_aspect_ratio = preserve_aspect_ratio  # NEW: aspect ratio preservation
+        self.target_height = target_height  # NEW: target height for resizing (default 128px as per best practices)
         self.num_workers = num_workers if num_workers is not None else cpu_count()  # Use all cores by default
 
         # Create output directories
@@ -100,6 +103,47 @@ class TranskribusParser:
 
         return Image.fromarray(normalized_rgb)
 
+    def resize_with_aspect_ratio(self, image: Image.Image) -> Image.Image:
+        """
+        Resize image to target height while preserving aspect ratio, then pad to square.
+
+        This addresses the critical issue where TrOCR's ViTImageProcessor brutally resizes
+        images to 384x384, causing 10.6x width downsampling for Ukrainian lines (4077x357).
+
+        Following best practices from TROCR_CER_REDUCTION_STEPS.md:
+        "Height target 96-128 px for line HTR with ViT; keep aspect => pad to square at
+        the very end for the encoder (e.g., 384×384) rather than brutal resize."
+
+        Process:
+        1. Resize to target height (default 128px) keeping aspect ratio
+        2. Pad width with white background to make square (if needed)
+
+        Example: 4077×357 → 128px height → 1467×128 → pad to square
+        Characters go from ~80px to ~28px width instead of ~7px (4x improvement)
+
+        Args:
+            image: PIL Image (cropped line)
+
+        Returns:
+            PIL Image resized with preserved aspect ratio
+        """
+        width, height = image.size
+
+        # Calculate new width to maintain aspect ratio
+        aspect_ratio = width / height
+        new_height = self.target_height
+        new_width = int(new_height * aspect_ratio)
+
+        # Resize maintaining aspect ratio
+        resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        # For very wide images, we may need to limit the width
+        # TrOCR's ViT will eventually resize to 384x384, but we want to preserve
+        # as much resolution as possible in the saved images
+        # Training script will handle final padding/resizing
+
+        return resized
+
     def crop_polygon(self, image: Image.Image, coords: List[Tuple[int, int]]) -> Image.Image:
         """Crop image to polygon shape with masking."""
         # Get bounding box
@@ -120,6 +164,9 @@ class TranskribusParser:
             cropped = self.normalize_background_image(cropped)
 
         if not self.use_polygon_mask:
+            # Apply aspect ratio preservation if enabled (after cropping, before returning)
+            if self.preserve_aspect_ratio:
+                cropped = self.resize_with_aspect_ratio(cropped)
             return cropped
         
         # Create mask for polygon
@@ -133,7 +180,11 @@ class TranskribusParser:
         # Apply mask (sets outside polygon to white)
         result = Image.new('RGB', cropped.size, (255, 255, 255))
         result.paste(cropped, mask=mask)
-        
+
+        # Apply aspect ratio preservation if enabled (after all processing)
+        if self.preserve_aspect_ratio:
+            result = self.resize_with_aspect_ratio(result)
+
         return result
 
     def extract_lines_from_page(self, xml_path: Path, image_path: Path) -> List[dict]:
@@ -360,7 +411,9 @@ class TranskribusParser:
             'avg_line_width': float(df['width'].mean()),
             'avg_line_height': float(df['height'].mean()),
             'pages_processed': df['page'].nunique(),
-            'background_normalized': self.normalize_background  # NEW: record preprocessing
+            'background_normalized': self.normalize_background,  # Record preprocessing
+            'preserve_aspect_ratio': self.preserve_aspect_ratio,  # NEW: record aspect ratio setting
+            'target_height': self.target_height if self.preserve_aspect_ratio else None  # NEW: record target height
         }
 
         metadata_path = self.output_dir / "dataset_info.json"
@@ -412,6 +465,17 @@ def main():
         help='Normalize image backgrounds to light gray (recommended for aged/colored paper)'
     )
     parser.add_argument(
+        '--preserve-aspect-ratio',
+        action='store_true',
+        help='Resize to target height while preserving aspect ratio (RECOMMENDED for TrOCR - prevents brutal downsampling)'
+    )
+    parser.add_argument(
+        '--target-height',
+        type=int,
+        default=128,
+        help='Target height in pixels for aspect-ratio-preserving resize (default: 128px, recommended range: 96-150)'
+    )
+    parser.add_argument(
         '--num-workers',
         type=int,
         default=None,
@@ -423,19 +487,24 @@ def main():
     print("=" * 60)
     print("Transkribus PAGE XML Parser for TrOCR")
     print("=" * 60)
-    print(f"Input directory:       {args.input_dir}")
-    print(f"Output directory:      {args.output_dir}")
-    print(f"Polygon masking:       {'Enabled' if args.use_polygon_mask else 'Disabled (using rectangles)'}")  # CHANGED
-    print(f"Background normalize:  {'Enabled' if args.normalize_background else 'Disabled'}")  # NEW
+    print(f"Input directory:         {args.input_dir}")
+    print(f"Output directory:        {args.output_dir}")
+    print(f"Polygon masking:         {'Enabled' if args.use_polygon_mask else 'Disabled (using rectangles)'}")
+    print(f"Background normalize:    {'Enabled' if args.normalize_background else 'Disabled'}")
+    print(f"Preserve aspect ratio:   {'Enabled' if args.preserve_aspect_ratio else 'Disabled'}")
+    if args.preserve_aspect_ratio:
+        print(f"  Target height:         {args.target_height}px")
     print("=" * 60)
 
     parser_obj = TranskribusParser(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
         min_line_width=args.min_line_width,
-        use_polygon_mask=args.use_polygon_mask,  # CHANGED: direct pass
-        normalize_background=args.normalize_background,  # NEW: pass flag
-        num_workers=args.num_workers  # NEW: parallel processing
+        use_polygon_mask=args.use_polygon_mask,
+        normalize_background=args.normalize_background,
+        preserve_aspect_ratio=args.preserve_aspect_ratio,
+        target_height=args.target_height,
+        num_workers=args.num_workers
     )
 
     df = parser_obj.process_all()
