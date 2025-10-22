@@ -94,7 +94,9 @@ resume_extraction.py
 run_ddp_manual.py
 run_ddp_test.py
 train_minimal_example.py
+test_segmenter_comparison.py
 config_test_ddp.yaml
+config_ukrainian.yaml
 
 # Platform-specific build scripts
 run_training_ddp.bat

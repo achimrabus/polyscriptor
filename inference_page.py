@@ -78,15 +78,33 @@ def normalize_background(image: Image.Image) -> Image.Image:
 
 
 class LineSegmenter:
-    """Simple line segmentation using horizontal projection."""
+    """Improved line segmentation using horizontal projection with multiple strategies."""
 
-    def __init__(self, min_line_height: int = 20, min_gap: int = 10):
+    def __init__(self, min_line_height: int = 15, min_gap: int = 5,
+                 sensitivity: float = 0.02, use_morph: bool = True):
+        """
+        Initialize LineSegmenter.
+
+        Args:
+            min_line_height: Minimum height of a line in pixels (default: 15, lowered for tighter spacing)
+            min_gap: Minimum gap between lines in pixels (default: 5, lowered for tight spacing)
+            sensitivity: Threshold for detecting text (0.01-0.1, lower = more sensitive, default: 0.02)
+            use_morph: Apply morphological operations to clean up detection (default: True)
+        """
         self.min_line_height = min_line_height
         self.min_gap = min_gap
+        self.sensitivity = sensitivity
+        self.use_morph = use_morph
 
     def segment_lines(self, image: Image.Image, debug: bool = False) -> List[LineSegment]:
         """
         Segment page image into text lines using horizontal projection.
+
+        Improved algorithm:
+        1. Multiple binarization strategies (Otsu + Sauvola for different scripts)
+        2. Morphological operations to connect broken text
+        3. Lower sensitivity threshold for tight line spacing
+        4. Smart gap detection based on local context
 
         Args:
             image: Input page image (PIL Image)
@@ -95,51 +113,89 @@ class LineSegmenter:
         Returns:
             List of LineSegment objects
         """
-        # Convert to grayscale and binarize
+        # Convert to grayscale
         gray = np.array(image.convert('L'))
 
-        # Adaptive thresholding for better handling of varying backgrounds
+        # Try multiple binarization strategies and combine
         from scipy.ndimage import gaussian_filter
         blurred = gaussian_filter(gray, sigma=1.0)
 
-        # Otsu's method for automatic threshold
-        threshold = self._otsu_threshold(blurred)
-        binary = blurred < threshold
+        # Strategy 1: Otsu's method (global threshold)
+        threshold_otsu = self._otsu_threshold(blurred)
+        binary_otsu = blurred < threshold_otsu
+
+        # Strategy 2: Adaptive threshold (local threshold, better for varying contrast)
+        binary_adaptive = self._adaptive_threshold(gray)
+
+        # Combine both strategies (logical OR to catch text in both)
+        binary = np.logical_or(binary_otsu, binary_adaptive)
+
+        # Apply morphological closing to connect broken characters
+        if self.use_morph:
+            from scipy.ndimage import binary_closing
+            # Horizontal structuring element to connect characters on same line
+            struct = np.ones((3, 5))  # 3 pixels tall, 5 pixels wide
+            binary = binary_closing(binary, structure=struct, iterations=2)
 
         # Horizontal projection (sum of black pixels per row)
         h_projection = binary.sum(axis=1)
 
-        # Find gaps between lines
-        is_text = h_projection > (h_projection.max() * 0.05)  # 5% threshold
+        # Adaptive threshold based on image statistics
+        # Use lower threshold for better sensitivity
+        if h_projection.max() > 0:
+            threshold = h_projection.max() * self.sensitivity
+        else:
+            # Fallback if no text detected
+            threshold = 1
 
-        # Find continuous text regions
+        is_text = h_projection > threshold
+
+        # Apply median filter to smooth out noise in projection
+        from scipy.ndimage import median_filter
+        is_text_smoothed = median_filter(is_text.astype(float), size=3) > 0.5
+
+        # Find continuous text regions with improved gap detection
         lines = []
         in_line = False
         start_y = 0
+        gap_count = 0
 
-        for y in range(len(is_text)):
-            if is_text[y] and not in_line:
-                # Start of new line
-                start_y = y
-                in_line = True
-            elif not is_text[y] and in_line:
-                # End of line
-                end_y = y
-                if end_y - start_y >= self.min_line_height:
-                    lines.append((start_y, end_y))
-                in_line = False
+        for y in range(len(is_text_smoothed)):
+            if is_text_smoothed[y]:
+                if not in_line:
+                    # Start of new line
+                    start_y = y
+                    in_line = True
+                    gap_count = 0
+                else:
+                    # Continue line, reset gap counter
+                    gap_count = 0
+            else:
+                if in_line:
+                    # Potential gap - count consecutive gap pixels
+                    gap_count += 1
+                    if gap_count >= self.min_gap:
+                        # End of line (gap is large enough)
+                        end_y = y - gap_count
+                        if end_y - start_y >= self.min_line_height:
+                            lines.append((start_y, end_y))
+                        in_line = False
+                        gap_count = 0
 
         # Don't forget last line if image ends with text
-        if in_line and len(is_text) - start_y >= self.min_line_height:
-            lines.append((start_y, len(is_text)))
+        if in_line and len(is_text_smoothed) - start_y >= self.min_line_height:
+            lines.append((start_y, len(is_text_smoothed)))
+
+        # Post-process: Merge lines that are too close (likely one line split incorrectly)
+        merged_lines = self._merge_close_lines(lines, max_gap=self.min_gap * 2)
 
         # Create LineSegment objects
         segments = []
         width = image.width
 
-        for y1, y2 in lines:
-            # Add padding
-            padding = 5
+        for y1, y2 in merged_lines:
+            # Add padding (larger padding for better context)
+            padding = 8
             y1_pad = max(0, y1 - padding)
             y2_pad = min(image.height, y2 + padding)
 
@@ -153,9 +209,55 @@ class LineSegmenter:
             ))
 
         if debug:
-            self._visualize_segmentation(image, segments)
+            self._visualize_segmentation(image, segments, h_projection)
+
+        print(f"[LineSegmenter] Detected {len(segments)} lines (sensitivity={self.sensitivity}, min_height={self.min_line_height})")
 
         return segments
+
+    @staticmethod
+    def _adaptive_threshold(gray: np.ndarray, block_size: int = 35) -> np.ndarray:
+        """
+        Apply adaptive thresholding using a local window.
+        Better for images with varying illumination or contrast.
+        """
+        # Use cv2 if available, otherwise fallback to simple method
+        try:
+            import cv2
+            # Adaptive Gaussian thresholding
+            binary = cv2.adaptiveThreshold(
+                gray.astype(np.uint8),
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                block_size,
+                10
+            )
+            return binary > 0
+        except:
+            # Fallback: simple global threshold
+            threshold = np.mean(gray) - np.std(gray) * 0.5
+            return gray < threshold
+
+    @staticmethod
+    def _merge_close_lines(lines: List[Tuple[int, int]], max_gap: int = 10) -> List[Tuple[int, int]]:
+        """Merge lines that are very close together (likely one line split incorrectly)."""
+        if not lines:
+            return lines
+
+        merged = [lines[0]]
+        for y1, y2 in lines[1:]:
+            prev_y1, prev_y2 = merged[-1]
+            gap = y1 - prev_y2
+
+            if gap <= max_gap:
+                # Merge with previous line
+                merged[-1] = (prev_y1, y2)
+            else:
+                # Add as new line
+                merged.append((y1, y2))
+
+        return merged
 
     @staticmethod
     def _otsu_threshold(gray_array: np.ndarray) -> float:
@@ -184,7 +286,8 @@ class LineSegmenter:
         return np.argmax(variance)
 
     @staticmethod
-    def _visualize_segmentation(image: Image.Image, segments: List[LineSegment]):
+    def _visualize_segmentation(image: Image.Image, segments: List[LineSegment],
+                                h_projection: Optional[np.ndarray] = None):
         """Visualize line segmentation for debugging."""
         vis = image.copy()
         draw = ImageDraw.Draw(vis)
@@ -197,6 +300,17 @@ class LineSegmenter:
             draw.text((x1 + 5, y1 + 5), f"Line {i+1}", fill=color)
 
         vis.show()
+
+        # Optionally show projection profile
+        if h_projection is not None:
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(12, 4))
+            plt.plot(h_projection)
+            plt.title("Horizontal Projection Profile")
+            plt.xlabel("Y Position")
+            plt.ylabel("Text Density")
+            plt.grid(True)
+            plt.show()
 
 
 class PageXMLSegmenter:
@@ -295,7 +409,16 @@ class TrOCRInference:
         if is_huggingface:
             # Load both processor and model from HuggingFace Hub
             print(f"Downloading from HuggingFace Hub (if not cached): {model_path}")
-            self.processor = TrOCRProcessor.from_pretrained(model_path)
+
+            # Try to load processor from model first, fallback to base_model if it fails
+            try:
+                print(f"Attempting to load processor from {model_path}...")
+                self.processor = TrOCRProcessor.from_pretrained(model_path)
+            except Exception as e:
+                print(f"Failed to load processor from model: {e}")
+                print(f"Falling back to base model processor: {self.base_model}")
+                self.processor = TrOCRProcessor.from_pretrained(self.base_model)
+
             self.model = VisionEncoderDecoderModel.from_pretrained(model_path)
             # For backwards compatibility
             self.checkpoint_path = model_path
