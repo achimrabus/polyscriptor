@@ -1,0 +1,51 @@
+# Configuration for Ukrainian Handwritten Text Recognition Training
+# Dataset: 18,691 training lines + 935 validation lines from Ukrainian historical documents
+
+# Model
+model_name: "kazars24/trocr-base-handwritten-ru"  # Pre-trained Russian model as base
+max_length: 128  # Increased for longer Ukrainian lines (avg width: 2262px)
+
+# Data paths
+data_root: "./data"
+train_csv: "ukrainian_train/train.csv"
+val_csv: "ukrainian_val/train.csv"
+
+# Performance settings
+cache_images: false  # Images are large (2262px avg width), don't cache
+num_workers: 4
+dataloader_num_workers: 4
+
+# Training hyperparameters
+output_dir: "./models/ukrainian_model"
+batch_size: 6  # Reduced to 6 to prevent OOM
+gradient_accumulation_steps: 4  # Effective batch size: 6*4=24
+epochs: 20  # More epochs for large dataset
+learning_rate: 0.00004
+weight_decay: 0.01
+warmup_ratio: 0.1
+optim: "adafactor"  # Better optimizer for transformers (as in Bullinger)
+
+# Optimization
+fp16: true  # Mixed precision for speed
+gradient_checkpointing: false
+
+# Evaluation and checkpointing
+eval_strategy: "steps"
+eval_steps: 500  # Evaluate every 500 steps
+save_steps: 500  # Save checkpoint every 500 steps
+save_total_limit: 3  # Keep best 3 checkpoints
+logging_steps: 50  # Log every 50 steps
+
+# Generation settings
+predict_with_generate: true
+generation_max_length: 128
+generation_num_beams: 4  # Beam search for better quality (as in Bullinger)
+
+# Data augmentation
+use_augmentation: true
+aug_rotation_degrees: 2
+aug_brightness: 0.3
+aug_contrast: 0.3
+
+# Reproducibility
+seed: 42

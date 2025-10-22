@@ -88,3 +88,18 @@ page/
 # ignore local claude settings
 .claude/
 
+# Test/debug scripts
+investigate_page440.py
+resume_extraction.py
+run_ddp_manual.py
+run_ddp_test.py
+train_minimal_example.py
+config_test_ddp.yaml
+
+# Platform-specific build scripts
+run_training_ddp.bat
+run_training_ddp.ps1
+
+# Windows artifacts
+nul
+
