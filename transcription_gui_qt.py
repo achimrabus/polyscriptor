@@ -42,6 +42,14 @@ from inference_page import (
     LineSegment, normalize_background
 )
 
+# Import Kraken segmenter (optional - will handle import error gracefully)
+try:
+    from kraken_segmenter import KrakenLineSegmenter
+    KRAKEN_AVAILABLE = True
+except ImportError:
+    KRAKEN_AVAILABLE = False
+    KrakenLineSegmenter = None
+
 
 class ZoomableGraphicsView(QGraphicsView):
     """Graphics view with smooth zoom and pan capabilities."""
@@ -149,6 +157,8 @@ class OCRWorker(QThread):
         """Process all line segments."""
         try:
             total = len(self.segments)
+            results = []
+
             for idx, segment in enumerate(self.segments):
                 # Check if aborted
                 if self._is_aborted:
@@ -164,10 +174,17 @@ class OCRWorker(QThread):
                     num_beams=self.num_beams,
                     max_length=self.max_length
                 )
-                segment.text = text
+
+                # Create new LineSegment with text (can't mutate NamedTuple)
+                result = LineSegment(
+                    image=segment.image,
+                    bbox=segment.bbox,
+                    text=text
+                )
+                results.append(result)
 
             self.progress.emit(100, "Processing complete!")
-            self.finished.emit(self.segments)
+            self.finished.emit(results)
 
         except Exception as e:
             if not self._is_aborted:
@@ -199,6 +216,10 @@ class TranscriptionGUI(QMainWindow):
         self.normalize_bg = False
         self.num_beams = 4
         self.max_length = 128
+
+        # Segmentation settings
+        self.segmentation_method = "HPP"  # "HPP" or "Kraken"
+        self.kraken_model_path = None  # Path to custom Kraken model
 
         self._setup_ui()
         self._create_menu_bar()
@@ -289,6 +310,38 @@ class TranscriptionGUI(QMainWindow):
         # Segmentation controls
         seg_group = QGroupBox("Line Segmentation")
         seg_layout = QVBoxLayout()
+
+        # Row 0: Method selection
+        seg_row0 = QHBoxLayout()
+        seg_row0.addWidget(QLabel("Method:"))
+
+        self.combo_seg_method = QComboBox()
+        self.combo_seg_method.addItem("HPP (Fast)", "HPP")
+        if KRAKEN_AVAILABLE:
+            self.combo_seg_method.addItem("Kraken (Robust)", "Kraken")
+        else:
+            self.combo_seg_method.addItem("Kraken (Not installed)", None)
+            self.combo_seg_method.model().item(1).setEnabled(False)
+        self.combo_seg_method.currentIndexChanged.connect(self._on_seg_method_changed)
+        seg_row0.addWidget(self.combo_seg_method)
+
+        # Kraken model selection (initially hidden)
+        self.lbl_kraken_model = QLabel("Model:")
+        self.lbl_kraken_model.setVisible(False)
+        seg_row0.addWidget(self.lbl_kraken_model)
+
+        self.combo_kraken_model = QComboBox()
+        self.combo_kraken_model.addItem("Default (built-in)", None)
+        self.combo_kraken_model.setVisible(False)
+        seg_row0.addWidget(self.combo_kraken_model)
+
+        self.btn_browse_kraken = QPushButton("Browse...")
+        self.btn_browse_kraken.setVisible(False)
+        self.btn_browse_kraken.clicked.connect(self._browse_kraken_model)
+        seg_row0.addWidget(self.btn_browse_kraken)
+
+        seg_row0.addStretch()
+        seg_layout.addLayout(seg_row0)
 
         # First row: Detect button and line count
         seg_row1 = QHBoxLayout()
@@ -699,24 +752,45 @@ class TranscriptionGUI(QMainWindow):
             return
 
         try:
-            self.status_bar.showMessage("Detecting lines...")
-
             # Load image
             image = Image.open(self.current_image_path).convert('RGB')
 
-            # Get parameters from GUI
-            sensitivity = self.spin_sensitivity.value() / 100.0  # Convert % to decimal
-            min_height = self.spin_min_height.value()
-            use_morph = self.chk_morph.isChecked()
+            # Segment based on selected method
+            if self.segmentation_method == "Kraken":
+                self.status_bar.showMessage("Detecting lines with Kraken (this may take 3-8 seconds)...")
 
-            # Segment with configured parameters
-            segmenter = LineSegmenter(
-                min_line_height=min_height,
-                min_gap=5,
-                sensitivity=sensitivity,
-                use_morph=use_morph
-            )
-            self.segments = segmenter.segment_lines(image, debug=False)
+                # Get Kraken model path
+                kraken_model_data = self.combo_kraken_model.currentData()
+
+                # Create Kraken segmenter
+                segmenter = KrakenLineSegmenter(
+                    model_path=kraken_model_data,
+                    device=self.device
+                )
+
+                # Segment lines
+                self.segments = segmenter.segment_lines(
+                    image,
+                    text_direction='horizontal-lr',
+                    use_binarization=True
+                )
+
+            else:  # HPP method
+                self.status_bar.showMessage("Detecting lines with HPP...")
+
+                # Get parameters from GUI
+                sensitivity = self.spin_sensitivity.value() / 100.0  # Convert % to decimal
+                min_height = self.spin_min_height.value()
+                use_morph = self.chk_morph.isChecked()
+
+                # Segment with configured parameters
+                segmenter = LineSegmenter(
+                    min_line_height=min_height,
+                    min_gap=5,
+                    sensitivity=sensitivity,
+                    use_morph=use_morph
+                )
+                self.segments = segmenter.segment_lines(image, debug=False)
 
             # Draw boxes
             self.graphics_view.draw_line_boxes(self.segments)
@@ -728,34 +802,51 @@ class TranscriptionGUI(QMainWindow):
 
             # Provide feedback based on results
             if num_lines == 0:
-                self.status_bar.showMessage("No lines detected! Try adjusting sensitivity.")
-                QMessageBox.warning(
-                    self,
-                    "No Lines Detected",
-                    "Line segmentation did not detect any text lines.\n\n"
-                    "Try adjusting the segmentation parameters:\n"
-                    "- DECREASE Threshold (try 1-2%) to detect fainter lines\n"
-                    "- Lower Min Height if text is small\n"
-                    "- Enable Morph. Ops to connect broken characters"
-                )
+                if self.segmentation_method == "Kraken":
+                    self.status_bar.showMessage("No lines detected by Kraken!")
+                    QMessageBox.warning(
+                        self,
+                        "No Lines Detected",
+                        "Kraken did not detect any text lines.\n\n"
+                        "Possible solutions:\n"
+                        "- Try switching to HPP method\n"
+                        "- Check if the document contains text\n"
+                        "- Try a different Kraken model"
+                    )
+                else:
+                    self.status_bar.showMessage("No lines detected! Try adjusting sensitivity.")
+                    QMessageBox.warning(
+                        self,
+                        "No Lines Detected",
+                        "Line segmentation did not detect any text lines.\n\n"
+                        "Try adjusting the segmentation parameters:\n"
+                        "- DECREASE Threshold (try 1-2%) to detect fainter lines\n"
+                        "- Lower Min Height if text is small\n"
+                        "- Enable Morph. Ops to connect broken characters\n"
+                        "- Or try switching to Kraken method"
+                    )
             elif num_lines == 1:
                 self.status_bar.showMessage(f"Detected 1 line - Check if this is correct")
                 # Show warning but don't block - might be legitimate single line
                 QMessageBox.information(
                     self,
                     "Single Line Detected",
-                    "Only 1 text line was detected.\n\n"
-                    "If the page contains multiple lines:\n"
-                    "- Try INCREASING Threshold (e.g., 8-10%) to be more selective\n"
-                    "- Reduce Min Height if lines are close together\n"
-                    "- Enable Morph. Ops checkbox\n\n"
-                    "You can still process this line or re-detect with different settings."
+                    f"Only 1 text line was detected using {self.segmentation_method}.\n\n"
+                    "If the page contains multiple lines, try:\n"
+                    + ("- Switching to HPP method with adjusted parameters\n"
+                       if self.segmentation_method == "Kraken"
+                       else "- INCREASING Threshold (e.g., 8-10%) to be more selective\n"
+                            "- Reduce Min Height if lines are close together\n"
+                            "- Enable Morph. Ops checkbox\n"
+                            "- Or try switching to Kraken method\n")
+                    + "\nYou can still process this line or re-detect with different settings."
                 )
             else:
-                self.status_bar.showMessage(f"Detected {num_lines} lines")
+                self.status_bar.showMessage(f"Detected {num_lines} lines using {self.segmentation_method}")
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Line segmentation failed:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Line segmentation failed:\n{str(e)}\n\n"
+                               f"Method: {self.segmentation_method}")
             self.lbl_lines_count.setText("Lines: 0")
             self.btn_process.setEnabled(False)
 
@@ -920,6 +1011,61 @@ class TranscriptionGUI(QMainWindow):
         # Reset OCR instance to reload on new device
         self.ocr = None
         self.status_bar.showMessage(f"Device set to: {self.device.upper()}")
+
+    def _on_seg_method_changed(self, index):
+        """Handle segmentation method selection change."""
+        method = self.combo_seg_method.currentData()
+
+        if method == "Kraken":
+            # Show Kraken model selection controls
+            self.lbl_kraken_model.setVisible(True)
+            self.combo_kraken_model.setVisible(True)
+            self.btn_browse_kraken.setVisible(True)
+            # Hide HPP-specific parameters
+            self.spin_sensitivity.setVisible(False)
+            self.spin_min_height.setVisible(False)
+            self.chk_morph.setVisible(False)
+            # Hide labels for HPP parameters
+            for i in range(self.spin_sensitivity.parent().layout().count()):
+                widget = self.spin_sensitivity.parent().layout().itemAt(i).widget()
+                if isinstance(widget, QLabel) and widget.text() in ["Threshold:", "Min Height:"]:
+                    widget.setVisible(False)
+
+            self.segmentation_method = "Kraken"
+            self.status_bar.showMessage("Switched to Kraken segmentation (slower but more robust)")
+        else:
+            # Show HPP parameters
+            self.lbl_kraken_model.setVisible(False)
+            self.combo_kraken_model.setVisible(False)
+            self.btn_browse_kraken.setVisible(False)
+            self.spin_sensitivity.setVisible(True)
+            self.spin_min_height.setVisible(True)
+            self.chk_morph.setVisible(True)
+            # Show labels for HPP parameters
+            for i in range(self.spin_sensitivity.parent().layout().count()):
+                widget = self.spin_sensitivity.parent().layout().itemAt(i).widget()
+                if isinstance(widget, QLabel) and widget.text() in ["Threshold:", "Min Height:"]:
+                    widget.setVisible(True)
+
+            self.segmentation_method = "HPP"
+            self.status_bar.showMessage("Switched to HPP segmentation (fast)")
+
+    def _browse_kraken_model(self):
+        """Browse for Kraken model file (.mlmodel)."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Kraken Model File",
+            "",
+            "Kraken Models (*.mlmodel);;All Files (*)"
+        )
+
+        if file_path:
+            # Add to combo box
+            model_name = Path(file_path).stem
+            self.combo_kraken_model.addItem(f"Custom: {model_name}", file_path)
+            self.combo_kraken_model.setCurrentIndex(self.combo_kraken_model.count() - 1)
+            self.kraken_model_path = file_path
+            self.status_bar.showMessage(f"Selected Kraken model: {model_name}")
 
     def _open_multiple_images(self):
         """Open multiple images for batch processing."""
