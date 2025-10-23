@@ -24,7 +24,7 @@ import numpy as np
 from tqdm import tqdm
 import json
 import csv
-import cv2
+import cv2  # type: ignore
 from multiprocessing import Pool, cpu_count
 
 
@@ -265,12 +265,48 @@ class TranskribusParser:
 
         return lines_data
 
-    def _process_single_page(self, xml_path: Path) -> List[dict]:
+    def _process_single_page_wrapper(self, xml_path: Path) -> List[dict]:
         """
-        Process a single page (used for parallel processing).
+        Wrapper for multiprocessing - extracts config and calls static method.
+
+        This is needed because multiprocessing can't pickle instance methods properly.
+        """
+        return TranskribusParser._process_single_page_static(
+            xml_path=xml_path,
+            output_dir=self.output_dir,
+            images_dir=self.images_dir,
+            min_line_width=self.min_line_width,
+            use_polygon_mask=self.use_polygon_mask,
+            normalize_background=self.normalize_background,
+            preserve_aspect_ratio=self.preserve_aspect_ratio,
+            target_height=self.target_height
+        )
+
+    @staticmethod
+    def _process_single_page_static(xml_path: Path, output_dir: Path, images_dir: Path,
+                                     min_line_width: int, use_polygon_mask: bool,
+                                     normalize_background: bool, preserve_aspect_ratio: bool,
+                                     target_height: int) -> List[dict]:
+        """
+        Process a single page (static method for parallel processing).
 
         Returns list of line metadata dicts.
         """
+        # Create a temporary parser instance for this worker
+        temp_parser = TranskribusParser(
+            input_dir=xml_path.parent if xml_path.parent.name != "page" else xml_path.parent.parent,
+            output_dir=output_dir,
+            min_line_width=min_line_width,
+            use_polygon_mask=use_polygon_mask,
+            normalize_background=normalize_background,
+            preserve_aspect_ratio=preserve_aspect_ratio,
+            target_height=target_height,
+            num_workers=1  # Each worker processes sequentially
+        )
+
+        # Override images_dir to use the shared one
+        temp_parser.images_dir = images_dir
+
         # Find corresponding image
         image_extensions = ['.jpg', '.jpeg', '.png', '.tif', '.tiff']
         image_path = None
@@ -295,7 +331,7 @@ class TranskribusParser:
             return []
 
         # Extract lines
-        return self.extract_lines_from_page(xml_path, image_path)
+        return temp_parser.extract_lines_from_page(xml_path, image_path)
 
     def process_all(self) -> pd.DataFrame:
         """Process all PAGE XML files in the input directory using parallel processing."""
@@ -337,7 +373,7 @@ class TranskribusParser:
             with Pool(processes=self.num_workers) as pool:
                 # Process pages in parallel with progress bar
                 for lines in tqdm(
-                    pool.imap(self._process_single_page, xml_files),
+                    pool.imap(self._process_single_page_wrapper, xml_files),
                     total=len(xml_files),
                     desc="Processing pages"
                 ):
@@ -351,7 +387,7 @@ class TranskribusParser:
         else:
             # Single-threaded processing (fallback)
             for xml_path in tqdm(xml_files, desc="Processing pages"):
-                lines = self._process_single_page(xml_path)
+                lines = self._process_single_page_wrapper(xml_path)
 
                 # Write lines to CSV immediately and update statistics
                 for line in lines:

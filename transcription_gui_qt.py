@@ -16,6 +16,8 @@ Usage:
 """
 
 import sys
+import json
+import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 import numpy as np
@@ -33,7 +35,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QPointF
 from PyQt6.QtGui import (
     QPixmap, QImage, QPainter, QWheelEvent, QMouseEvent, QPen,
-    QColor, QFont, QAction, QKeySequence
+    QColor, QFont, QAction, QKeySequence, QTextCharFormat, QTextCursor
 )
 
 # Import inference components
@@ -168,18 +170,21 @@ class OCRWorker(QThread):
                 self.progress.emit(int((idx / total) * 100),
                                  f"Processing line {idx+1}/{total}...")
 
-                # Transcribe line
-                text = self.ocr.transcribe_line(
+                # Transcribe line with confidence scores
+                text, confidence, char_confidences = self.ocr.transcribe_line(
                     segment.image,
                     num_beams=self.num_beams,
-                    max_length=self.max_length
+                    max_length=self.max_length,
+                    return_confidence=True
                 )
 
-                # Create new LineSegment with text (can't mutate NamedTuple)
+                # Create new LineSegment with text and confidence
                 result = LineSegment(
                     image=segment.image,
                     bbox=segment.bbox,
-                    text=text
+                    text=text,
+                    confidence=confidence,
+                    char_confidences=char_confidences
                 )
                 results.append(result)
 
@@ -218,8 +223,18 @@ class TranscriptionGUI(QMainWindow):
         self.max_length = 128
 
         # Segmentation settings
-        self.segmentation_method = "HPP"  # "HPP" or "Kraken"
+        self.segmentation_method = "Kraken" if KRAKEN_AVAILABLE else "HPP"  # Default to Kraken if available
         self.kraken_model_path = None  # Path to custom Kraken model
+
+        # Display settings
+        self.show_confidence = True  # Show confidence scores by default
+
+        # Model history
+        self.hf_model_history_file = Path(".hf_model_history.json")
+        self.hf_model_history = self._load_hf_model_history()
+
+        # Processing statistics
+        self.processing_start_time = None
 
         self._setup_ui()
         self._create_menu_bar()
@@ -319,24 +334,26 @@ class TranscriptionGUI(QMainWindow):
         self.combo_seg_method.addItem("HPP (Fast)", "HPP")
         if KRAKEN_AVAILABLE:
             self.combo_seg_method.addItem("Kraken (Robust)", "Kraken")
+            # Set Kraken as default (index 1)
+            self.combo_seg_method.setCurrentIndex(1)
         else:
             self.combo_seg_method.addItem("Kraken (Not installed)", None)
             self.combo_seg_method.model().item(1).setEnabled(False)
         self.combo_seg_method.currentIndexChanged.connect(self._on_seg_method_changed)
         seg_row0.addWidget(self.combo_seg_method)
 
-        # Kraken model selection (initially hidden)
+        # Kraken model selection (visible if Kraken is available and default)
         self.lbl_kraken_model = QLabel("Model:")
-        self.lbl_kraken_model.setVisible(False)
+        self.lbl_kraken_model.setVisible(KRAKEN_AVAILABLE)
         seg_row0.addWidget(self.lbl_kraken_model)
 
         self.combo_kraken_model = QComboBox()
         self.combo_kraken_model.addItem("Default (built-in)", None)
-        self.combo_kraken_model.setVisible(False)
+        self.combo_kraken_model.setVisible(KRAKEN_AVAILABLE)
         seg_row0.addWidget(self.combo_kraken_model)
 
         self.btn_browse_kraken = QPushButton("Browse...")
-        self.btn_browse_kraken.setVisible(False)
+        self.btn_browse_kraken.setVisible(KRAKEN_AVAILABLE)
         self.btn_browse_kraken.clicked.connect(self._browse_kraken_model)
         seg_row0.addWidget(self.btn_browse_kraken)
 
@@ -355,11 +372,13 @@ class TranscriptionGUI(QMainWindow):
         seg_row1.addStretch()
         seg_layout.addLayout(seg_row1)
 
-        # Second row: Segmentation parameters
+        # Second row: Segmentation parameters (HPP-specific, hidden if Kraken is default)
         seg_row2 = QHBoxLayout()
 
         # Threshold slider (using double spinbox for decimal precision)
-        seg_row2.addWidget(QLabel("Threshold:"))
+        self.lbl_threshold = QLabel("Threshold:")
+        self.lbl_threshold.setVisible(not KRAKEN_AVAILABLE)  # Hide if Kraken is default
+        seg_row2.addWidget(self.lbl_threshold)
         self.spin_sensitivity = QDoubleSpinBox()
         self.spin_sensitivity.setRange(0.5, 15.0)
         self.spin_sensitivity.setValue(5.0)  # 5% default (matches original working algorithm)
@@ -367,16 +386,20 @@ class TranscriptionGUI(QMainWindow):
         self.spin_sensitivity.setDecimals(1)
         self.spin_sensitivity.setSuffix("%")
         self.spin_sensitivity.setToolTip("Detection threshold: Higher values = more selective (0.5-15%). Default: 5%")
+        self.spin_sensitivity.setVisible(not KRAKEN_AVAILABLE)  # Hide if Kraken is default
         seg_row2.addWidget(self.spin_sensitivity)
         seg_row2.addSpacing(10)
 
         # Min line height
-        seg_row2.addWidget(QLabel("Min Height:"))
+        self.lbl_min_height = QLabel("Min Height:")
+        self.lbl_min_height.setVisible(not KRAKEN_AVAILABLE)  # Hide if Kraken is default
+        seg_row2.addWidget(self.lbl_min_height)
         self.spin_min_height = QSpinBox()
         self.spin_min_height.setRange(5, 50)
         self.spin_min_height.setValue(10)  # Lowered from 15 to 10 for tighter spacing
         self.spin_min_height.setSuffix(" px")
         self.spin_min_height.setToolTip("Minimum line height in pixels. Default: 10px")
+        self.spin_min_height.setVisible(not KRAKEN_AVAILABLE)  # Hide if Kraken is default
         seg_row2.addWidget(self.spin_min_height)
         seg_row2.addSpacing(10)
 
@@ -384,6 +407,7 @@ class TranscriptionGUI(QMainWindow):
         self.chk_morph = QCheckBox("Morph. Ops")
         self.chk_morph.setChecked(True)
         self.chk_morph.setToolTip("Apply morphological operations to connect broken characters")
+        self.chk_morph.setVisible(not KRAKEN_AVAILABLE)  # Hide if Kraken is default
         seg_row2.addWidget(self.chk_morph)
 
         seg_row2.addStretch()
@@ -426,10 +450,13 @@ class TranscriptionGUI(QMainWindow):
         hf_layout = QGridLayout(hf_tab)
 
         hf_layout.addWidget(QLabel("Model ID:"), 0, 0)
-        self.txt_hf_model = QTextEdit()
-        self.txt_hf_model.setPlaceholderText("e.g., kazars24/trocr-base-handwritten-ru")
-        self.txt_hf_model.setMaximumHeight(60)
-        hf_layout.addWidget(self.txt_hf_model, 0, 1, 1, 2)
+
+        # Editable combo box with history
+        self.combo_hf_model = QComboBox()
+        self.combo_hf_model.setEditable(True)
+        self.combo_hf_model.setPlaceholderText("e.g., kazars24/trocr-base-handwritten-ru")
+        self._populate_hf_model_history()
+        hf_layout.addWidget(self.combo_hf_model, 0, 1, 1, 2)
 
         btn_validate_hf = QPushButton("Validate")
         btn_validate_hf.clicked.connect(self._validate_hf_model)
@@ -524,13 +551,30 @@ class TranscriptionGUI(QMainWindow):
         process_layout.addStretch()
         layout.addLayout(process_layout)
 
-        # Font selection
+        # Font and display options
         font_layout = QHBoxLayout()
         font_layout.addWidget(QLabel("Font:"))
 
         btn_font = QPushButton("Select Font...")
         btn_font.clicked.connect(self._select_font)
         font_layout.addWidget(btn_font)
+
+        font_layout.addSpacing(20)
+
+        # Confidence display toggle
+        self.chk_show_confidence = QCheckBox("Show Confidence:")
+        self.chk_show_confidence.setChecked(True)
+        self.chk_show_confidence.stateChanged.connect(self._on_confidence_display_changed)
+        self.chk_show_confidence.setToolTip("Display confidence scores with color-coded highlighting")
+        font_layout.addWidget(self.chk_show_confidence)
+
+        # Confidence granularity dropdown
+        self.combo_confidence_granularity = QComboBox()
+        self.combo_confidence_granularity.addItem("Line Average", "line")
+        self.combo_confidence_granularity.addItem("Per Token", "token")
+        self.combo_confidence_granularity.setToolTip("Choose how confidence is displayed:\n- Line Average: Single score for the whole line\n- Per Token: Individual color for each token/character")
+        self.combo_confidence_granularity.currentIndexChanged.connect(self._on_confidence_display_changed)
+        font_layout.addWidget(self.combo_confidence_granularity)
 
         font_layout.addStretch()
         layout.addLayout(font_layout)
@@ -544,6 +588,29 @@ class TranscriptionGUI(QMainWindow):
         self.lbl_char_count = QLabel("Characters: 0 | Words: 0")
         self.text_editor.textChanged.connect(self._update_char_count)
         layout.addWidget(self.lbl_char_count)
+
+        # Statistics panel
+        stats_group = QGroupBox("Statistics")
+        stats_layout = QGridLayout()
+
+        stats_layout.addWidget(QLabel("Lines Processed:"), 0, 0)
+        self.lbl_lines_processed = QLabel("0")
+        stats_layout.addWidget(self.lbl_lines_processed, 0, 1)
+
+        stats_layout.addWidget(QLabel("Avg Confidence:"), 0, 2)
+        self.lbl_avg_confidence = QLabel("N/A")
+        stats_layout.addWidget(self.lbl_avg_confidence, 0, 3)
+
+        stats_layout.addWidget(QLabel("Processing Time:"), 1, 0)
+        self.lbl_processing_time = QLabel("N/A")
+        stats_layout.addWidget(self.lbl_processing_time, 1, 1)
+
+        stats_layout.addWidget(QLabel("Segmentation:"), 1, 2)
+        self.lbl_seg_method = QLabel("N/A")
+        stats_layout.addWidget(self.lbl_seg_method, 1, 3)
+
+        stats_group.setLayout(stats_layout)
+        layout.addWidget(stats_group)
 
         return panel
 
@@ -632,6 +699,54 @@ class TranscriptionGUI(QMainWindow):
         # Enable drag and drop
         self.setAcceptDrops(True)
 
+    def _load_hf_model_history(self) -> List[str]:
+        """Load HuggingFace model history from JSON file."""
+        try:
+            if self.hf_model_history_file.exists():
+                with open(self.hf_model_history_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                    return history if isinstance(history, list) else []
+        except Exception as e:
+            print(f"Failed to load HF model history: {e}")
+        return []
+
+    def _save_hf_model_history(self):
+        """Save HuggingFace model history to JSON file."""
+        try:
+            with open(self.hf_model_history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.hf_model_history, f, indent=2)
+        except Exception as e:
+            print(f"Failed to save HF model history: {e}")
+
+    def _add_to_hf_model_history(self, model_id: str):
+        """Add a model ID to history (most recent first, max 10 items)."""
+        if model_id and model_id.strip():
+            model_id = model_id.strip()
+            # Remove if already exists
+            if model_id in self.hf_model_history:
+                self.hf_model_history.remove(model_id)
+            # Add to beginning
+            self.hf_model_history.insert(0, model_id)
+            # Keep only last 10
+            self.hf_model_history = self.hf_model_history[:10]
+            # Save to file
+            self._save_hf_model_history()
+            # Refresh UI
+            self._populate_hf_model_history()
+
+    def _populate_hf_model_history(self):
+        """Populate HF model combo box with history."""
+        current_text = self.combo_hf_model.currentText()
+        self.combo_hf_model.clear()
+
+        # Add history items
+        for model_id in self.hf_model_history:
+            self.combo_hf_model.addItem(model_id)
+
+        # Restore current text if it was entered
+        if current_text and current_text not in self.hf_model_history:
+            self.combo_hf_model.setCurrentText(current_text)
+
     def _populate_models(self):
         """Populate model dropdown with available checkpoints."""
         self.combo_model.clear()
@@ -657,7 +772,7 @@ class TranscriptionGUI(QMainWindow):
 
     def _validate_hf_model(self):
         """Validate HuggingFace model ID."""
-        model_id = self.txt_hf_model.toPlainText().strip()
+        model_id = self.combo_hf_model.currentText().strip()
 
         if not model_id:
             QMessageBox.warning(self, "Warning", "Please enter a HuggingFace model ID!")
@@ -686,6 +801,9 @@ class TranscriptionGUI(QMainWindow):
 
             self.txt_model_info.setPlainText(model_card)
             self.status_bar.showMessage(f"Model '{model_id}' validated successfully!", 5000)
+
+            # Add to history
+            self._add_to_hf_model_history(model_id)
 
             QMessageBox.information(
                 self,
@@ -800,6 +918,9 @@ class TranscriptionGUI(QMainWindow):
             self.lbl_lines_count.setText(f"Lines: {num_lines}")
             self.btn_process.setEnabled(num_lines > 0)
 
+            # Update statistics panel
+            self.lbl_seg_method.setText(self.segmentation_method)
+
             # Provide feedback based on results
             if num_lines == 0:
                 if self.segmentation_method == "Kraken":
@@ -866,12 +987,14 @@ class TranscriptionGUI(QMainWindow):
 
         if is_hf_tab:
             # HuggingFace model
-            model_id = self.txt_hf_model.toPlainText().strip()
+            model_id = self.combo_hf_model.currentText().strip()
             if not model_id:
                 QMessageBox.warning(self, "Warning", "Please enter a HuggingFace model ID!")
                 return
             model_path = model_id
             is_huggingface = True
+            # Add to history when processing
+            self._add_to_hf_model_history(model_id)
         else:
             # Local model
             model_data = self.combo_model.currentData()
@@ -907,6 +1030,9 @@ class TranscriptionGUI(QMainWindow):
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
 
+            # Record start time
+            self.processing_start_time = time.time()
+
             self.ocr_worker.start()
 
         except Exception as e:
@@ -921,14 +1047,43 @@ class TranscriptionGUI(QMainWindow):
         """Handle OCR completion."""
         self.segments = segments
 
-        # Update text editor
-        transcription = "\n".join(seg.text for seg in segments if seg.text)
-        self.text_editor.setPlainText(transcription)
+        # Update text editor with confidence scores
+        self._display_transcription_with_confidence()
 
         self.btn_process.setEnabled(True)
         self.btn_abort.setEnabled(False)
         self.progress_bar.setVisible(False)
-        self.status_bar.showMessage("Transcription complete!")
+
+        # Calculate processing time
+        processing_time = 0
+        if self.processing_start_time:
+            processing_time = time.time() - self.processing_start_time
+
+        # Calculate and display average confidence
+        confidences = [seg.confidence for seg in segments if seg.confidence is not None]
+        avg_confidence = 0
+        if confidences:
+            avg_confidence = sum(confidences) / len(confidences)
+            self.status_bar.showMessage(f"Transcription complete! Avg confidence: {avg_confidence*100:.1f}%")
+        else:
+            self.status_bar.showMessage("Transcription complete!")
+
+        # Update statistics panel
+        self.lbl_lines_processed.setText(str(len(segments)))
+        if confidences:
+            self.lbl_avg_confidence.setText(f"{avg_confidence*100:.1f}%")
+        else:
+            self.lbl_avg_confidence.setText("N/A")
+
+        if processing_time > 0:
+            if processing_time < 60:
+                self.lbl_processing_time.setText(f"{processing_time:.1f}s")
+            else:
+                minutes = int(processing_time // 60)
+                seconds = int(processing_time % 60)
+                self.lbl_processing_time.setText(f"{minutes}m {seconds}s")
+        else:
+            self.lbl_processing_time.setText("N/A")
 
     def _on_ocr_error(self, error_msg: str):
         """Handle OCR errors."""
@@ -951,6 +1106,102 @@ class TranscriptionGUI(QMainWindow):
             self.ocr_worker.abort()
             self.status_bar.showMessage("Aborting...")
 
+    def _get_confidence_color(self, confidence: float, is_dark_mode: bool) -> QColor:
+        """Get background color based on confidence level."""
+        if confidence >= 0.95:
+            return None  # No highlighting
+        elif confidence >= 0.85:
+            return QColor(0, 80, 0) if is_dark_mode else QColor(200, 255, 200)  # Green
+        elif confidence >= 0.75:
+            return QColor(100, 80, 0) if is_dark_mode else QColor(255, 255, 200)  # Yellow
+        else:
+            return QColor(100, 0, 0) if is_dark_mode else QColor(255, 200, 200)  # Red
+
+    def _display_transcription_with_confidence(self):
+        """Display transcription in text editor with confidence-based color coding."""
+        if not self.segments:
+            return
+
+        # Clear text editor
+        self.text_editor.clear()
+        cursor = self.text_editor.textCursor()
+
+        # Detect dark mode
+        bg_color = self.text_editor.palette().color(self.text_editor.palette().ColorRole.Base)
+        is_dark_mode = bg_color.lightness() < 128
+
+        # Get granularity setting
+        granularity = self.combo_confidence_granularity.currentData()
+
+        for idx, segment in enumerate(self.segments):
+            if not segment.text:
+                continue
+
+            # Check if we should show confidence
+            if self.show_confidence and segment.confidence is not None:
+                if granularity == "token" and segment.char_confidences:
+                    # Per-token coloring
+                    # Note: char_confidences are per BPE token, not per character
+                    # We'll approximate by distributing tokens across the text
+                    text = segment.text
+                    num_tokens = len(segment.char_confidences)
+
+                    if num_tokens > 0:
+                        chars_per_token = max(1, len(text) // num_tokens)
+
+                        for token_idx, token_conf in enumerate(segment.char_confidences):
+                            # Calculate character range for this token
+                            start_char = token_idx * chars_per_token
+                            end_char = min(start_char + chars_per_token, len(text))
+
+                            # Get the text chunk for this token
+                            token_text = text[start_char:end_char]
+
+                            # Create format
+                            text_format = QTextCharFormat()
+                            color = self._get_confidence_color(token_conf, is_dark_mode)
+                            if color:
+                                text_format.setBackground(color)
+
+                            cursor.insertText(token_text, text_format)
+
+                    # Add average confidence at end
+                    avg_conf = segment.confidence
+                    confidence_format = QTextCharFormat()
+                    confidence_format.setForeground(QColor(150, 150, 150) if is_dark_mode else QColor(128, 128, 128))
+                    cursor.insertText(f" ({avg_conf*100:.1f}%)", confidence_format)
+                else:
+                    # Line-level coloring (original behavior)
+                    text_format = QTextCharFormat()
+                    color = self._get_confidence_color(segment.confidence, is_dark_mode)
+                    if color:
+                        text_format.setBackground(color)
+
+                    cursor.insertText(segment.text, text_format)
+
+                    # Add confidence percentage
+                    confidence_format = QTextCharFormat()
+                    confidence_format.setForeground(QColor(150, 150, 150) if is_dark_mode else QColor(128, 128, 128))
+                    cursor.insertText(f" ({segment.confidence*100:.1f}%)", confidence_format)
+            else:
+                # Plain text without confidence
+                cursor.insertText(segment.text)
+
+            # Add newline between lines
+            if idx < len(self.segments) - 1:
+                cursor.insertText("\n")
+
+        # Move cursor to beginning
+        cursor.setPosition(0)
+        self.text_editor.setTextCursor(cursor)
+
+    def _on_confidence_display_changed(self, state):
+        """Handle confidence display checkbox toggle."""
+        self.show_confidence = (state == Qt.CheckState.Checked.value)
+        # Re-display transcription with updated settings
+        if self.segments:
+            self._display_transcription_with_confidence()
+
     def _save_transcription(self):
         """Save transcription to file."""
         if not self.text_editor.toPlainText():
@@ -972,8 +1223,109 @@ class TranscriptionGUI(QMainWindow):
 
     def _export(self):
         """Export transcription in various formats."""
-        # TODO: Implement CSV, JSON export
-        self._save_transcription()
+        if not self.segments:
+            QMessageBox.warning(self, "Warning", "No transcription to export!")
+            return
+
+        # Ask user for export format
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Export Options")
+        layout = QVBoxLayout(dialog)
+
+        layout.addWidget(QLabel("Select export format:"))
+
+        format_group = QGroupBox("Format")
+        format_layout = QVBoxLayout()
+
+        radio_txt = QRadioButton("Plain Text (.txt)")
+        radio_txt.setChecked(True)
+        radio_csv = QRadioButton("CSV with confidence (.csv)")
+        radio_tsv = QRadioButton("TSV with confidence (.tsv)")
+
+        format_layout.addWidget(radio_txt)
+        format_layout.addWidget(radio_csv)
+        format_layout.addWidget(radio_tsv)
+        format_group.setLayout(format_layout)
+        layout.addWidget(format_group)
+
+        # Options
+        chk_include_confidence = QCheckBox("Include confidence scores")
+        chk_include_confidence.setChecked(True)
+        chk_include_confidence.setEnabled(False)  # Will be enabled for CSV/TSV
+        layout.addWidget(chk_include_confidence)
+
+        # Update checkbox state based on format selection
+        def on_format_changed():
+            is_structured = radio_csv.isChecked() or radio_tsv.isChecked()
+            chk_include_confidence.setEnabled(is_structured)
+
+        radio_txt.toggled.connect(on_format_changed)
+        radio_csv.toggled.connect(on_format_changed)
+        radio_tsv.toggled.connect(on_format_changed)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogResult.Accepted:
+            return
+
+        # Determine export format
+        if radio_csv.isChecked():
+            file_filter = "CSV Files (*.csv)"
+            default_ext = ".csv"
+            delimiter = ","
+        elif radio_tsv.isChecked():
+            file_filter = "TSV Files (*.tsv)"
+            default_ext = ".tsv"
+            delimiter = "\t"
+        else:
+            file_filter = "Text Files (*.txt)"
+            default_ext = ".txt"
+            delimiter = None
+
+        # Get save location
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Transcription", "",
+            f"{file_filter};;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        # Ensure correct extension
+        if not file_path.endswith(default_ext):
+            file_path += default_ext
+
+        try:
+            with open(file_path, 'w', encoding='utf-8', newline='') as f:
+                if delimiter:  # CSV or TSV format
+                    import csv
+                    writer = csv.writer(f, delimiter=delimiter)
+
+                    # Write header
+                    if chk_include_confidence.isChecked():
+                        writer.writerow(['Line', 'Text', 'Confidence'])
+                        for idx, seg in enumerate(self.segments, 1):
+                            conf_str = f"{seg.confidence*100:.2f}%" if seg.confidence is not None else "N/A"
+                            writer.writerow([idx, seg.text or "", conf_str])
+                    else:
+                        writer.writerow(['Line', 'Text'])
+                        for idx, seg in enumerate(self.segments, 1):
+                            writer.writerow([idx, seg.text or ""])
+                else:  # Plain text format
+                    for seg in self.segments:
+                        if seg.text:
+                            f.write(seg.text + "\n")
+
+            self.status_bar.showMessage(f"Exported: {file_path}")
+            QMessageBox.information(self, "Export Complete", f"Transcription exported to:\n{file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export:\n{str(e)}")
 
     def _select_font(self):
         """Open font selection dialog."""

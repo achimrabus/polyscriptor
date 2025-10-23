@@ -36,6 +36,8 @@ class LineSegment:
     bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
     coords: Optional[List[Tuple[int, int]]] = None  # polygon coordinates if available
     text: Optional[str] = None  # transcription result
+    confidence: Optional[float] = None  # average confidence score (0-1)
+    char_confidences: Optional[List[float]] = None  # per-character confidence scores
 
 
 def normalize_background(image: Image.Image) -> Image.Image:
@@ -435,7 +437,7 @@ class TrOCRInference:
         print("Model loaded successfully!")
 
     def transcribe_line(self, line_image: Image.Image, num_beams: int = 4,
-                       max_length: int = 128) -> str:
+                       max_length: int = 128, return_confidence: bool = False):
         """
         Transcribe a single line image.
 
@@ -443,9 +445,11 @@ class TrOCRInference:
             line_image: PIL Image of text line
             num_beams: Number of beams for beam search (higher = better quality, slower)
             max_length: Maximum sequence length
+            return_confidence: If True, return (text, confidence) tuple
 
         Returns:
-            Transcribed text
+            If return_confidence=False: Transcribed text string
+            If return_confidence=True: Tuple of (text, confidence_score, char_confidences)
         """
         # Apply background normalization if enabled
         if self.normalize_bg:
@@ -457,18 +461,71 @@ class TrOCRInference:
             return_tensors="pt"
         ).pixel_values.to(self.device)
 
-        # Generate text
+        # Generate text with scores
         with torch.no_grad():
-            generated_ids = self.model.generate(
-                pixel_values,
-                num_beams=num_beams,
-                max_length=max_length,
-                early_stopping=True
-            )
+            if return_confidence:
+                # Generate with output scores for confidence
+                outputs = self.model.generate(
+                    pixel_values,
+                    num_beams=num_beams,
+                    max_length=max_length,
+                    early_stopping=True,
+                    output_scores=True,
+                    return_dict_in_generate=True
+                )
+                generated_ids = outputs.sequences
+
+                # Calculate confidence from scores
+                # scores is a tuple of tensors, one per generation step
+                # generated_ids shape: (batch_size, sequence_length)
+                if hasattr(outputs, 'scores') and outputs.scores and len(outputs.scores) > 0:
+                    import torch.nn.functional as F
+
+                    # Get the actual generated tokens (excluding special tokens like BOS)
+                    # generated_ids[0] is the first (and only) sequence in the batch
+                    generated_tokens = generated_ids[0].cpu().numpy()
+
+                    # scores is a tuple with one tensor per generation step
+                    # Each tensor has shape (batch_size * num_beams, vocab_size)
+                    token_confidences = []
+
+                    for step_idx, score_tensor in enumerate(outputs.scores):
+                        # Get probabilities for this generation step
+                        # score_tensor shape: (num_beams, vocab_size) for batch_size=1
+                        probs = F.softmax(score_tensor, dim=-1)
+
+                        # The actual generated token at this step
+                        # Skip BOS token (index 0), so generated token index is step_idx + 1
+                        if step_idx + 1 < len(generated_tokens):
+                            actual_token_id = generated_tokens[step_idx + 1]
+
+                            # Get probability of the actual selected token (from best beam, index 0)
+                            token_prob = probs[0, actual_token_id].item()
+                            token_confidences.append(token_prob)
+
+                    # Calculate average confidence
+                    avg_confidence = sum(token_confidences) / len(token_confidences) if token_confidences else 0.0
+                    char_confidences = token_confidences
+                else:
+                    avg_confidence = 0.0
+                    char_confidences = []
+            else:
+                generated_ids = self.model.generate(
+                    pixel_values,
+                    num_beams=num_beams,
+                    max_length=max_length,
+                    early_stopping=True
+                )
+                avg_confidence = None
+                char_confidences = None
 
         # Decode
         text = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        return text
+
+        if return_confidence:
+            return text, avg_confidence, char_confidences
+        else:
+            return text
 
     def transcribe_segments(self, segments: List[LineSegment],
                           num_beams: int = 4, max_length: int = 128,
