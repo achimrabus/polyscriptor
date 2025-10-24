@@ -27,7 +27,7 @@ import torch
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QPushButton, QLabel, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
+    QPushButton, QLabel, QTextEdit, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QFileDialog, QProgressBar, QStatusBar, QToolBar, QFontDialog,
     QMessageBox, QListWidget, QListWidgetItem, QGroupBox, QGridLayout,
     QScrollArea, QTabWidget, QButtonGroup, QRadioButton
@@ -51,6 +51,15 @@ try:
 except ImportError:
     KRAKEN_AVAILABLE = False
     KrakenLineSegmenter = None
+
+# Import Qwen3 VLM (optional - will handle import error gracefully)
+try:
+    from inference_qwen3 import Qwen3VLMInference, QWEN3_MODELS
+    QWEN3_AVAILABLE = True
+except ImportError:
+    QWEN3_AVAILABLE = False
+    QWEN3_MODELS = {}
+    print("WARNING: Qwen3 not available. Install with: pip install transformers>=4.37.0 accelerate peft")
 
 
 class ZoomableGraphicsView(QGraphicsView):
@@ -216,8 +225,8 @@ class TranscriptionGUI(QMainWindow):
         self.current_image_index: int = -1
 
         # Settings
-        # Default to CPU (more stable for batch processing and large images)
-        self.device = "cpu"
+        # Default to GPU if available (much faster - 5-20x speedup)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.normalize_bg = False
         self.num_beams = 4
         self.max_length = 128
@@ -235,6 +244,10 @@ class TranscriptionGUI(QMainWindow):
 
         # Processing statistics
         self.processing_start_time = None
+
+        # Initialize Qwen3 as None
+        self.qwen3 = None
+        self._current_qwen3_model = None  # Track current model to avoid reinitialization
 
         self._setup_ui()
         self._create_menu_bar()
@@ -322,8 +335,8 @@ class TranscriptionGUI(QMainWindow):
         self.graphics_view = ZoomableGraphicsView()
         layout.addWidget(self.graphics_view)
 
-        # Segmentation controls
-        seg_group = QGroupBox("Line Segmentation")
+        # Segmentation controls (store as instance variable for visibility control)
+        self.seg_group = QGroupBox("Line Segmentation")
         seg_layout = QVBoxLayout()
 
         # Row 0: Method selection
@@ -413,8 +426,8 @@ class TranscriptionGUI(QMainWindow):
         seg_row2.addStretch()
         seg_layout.addLayout(seg_row2)
 
-        seg_group.setLayout(seg_layout)
-        layout.addWidget(seg_group)
+        self.seg_group.setLayout(seg_layout)
+        layout.addWidget(self.seg_group)
 
         return panel
 
@@ -472,7 +485,85 @@ class TranscriptionGUI(QMainWindow):
 
         self.model_tabs.addTab(hf_tab, "HuggingFace")
 
+        # Qwen3 VLM tab
+        if QWEN3_AVAILABLE:
+            qwen3_tab = QWidget()
+            qwen3_layout = QGridLayout(qwen3_tab)
+
+            # Model selection mode
+            qwen3_layout.addWidget(QLabel("Model Source:"), 0, 0)
+            self.combo_qwen3_source = QComboBox()
+            self.combo_qwen3_source.addItem("Preset Models", "preset")
+            self.combo_qwen3_source.addItem("Custom HuggingFace", "custom")
+            self.combo_qwen3_source.currentIndexChanged.connect(self._on_qwen3_source_changed)
+            qwen3_layout.addWidget(self.combo_qwen3_source, 0, 1)
+
+            # Preset model dropdown
+            self.lbl_qwen3_preset = QLabel("Preset:")
+            qwen3_layout.addWidget(self.lbl_qwen3_preset, 1, 0)
+            self.combo_qwen3_model = QComboBox()
+
+            # Populate with available models
+            for model_id, info in QWEN3_MODELS.items():
+                display_name = f"{model_id} ({info['vram']})"
+                self.combo_qwen3_model.addItem(display_name, model_id)
+
+            self.combo_qwen3_model.setToolTip("Select preset Qwen3 VLM model")
+            qwen3_layout.addWidget(self.combo_qwen3_model, 1, 1, 1, 2)
+
+            # Custom HuggingFace model (hidden by default)
+            self.lbl_qwen3_base = QLabel("Base Model:")
+            self.lbl_qwen3_base.setVisible(False)
+            qwen3_layout.addWidget(self.lbl_qwen3_base, 2, 0)
+            self.txt_qwen3_base = QLineEdit()
+            self.txt_qwen3_base.setPlaceholderText("e.g., Qwen/Qwen3-VL-8B-Instruct")
+            self.txt_qwen3_base.setVisible(False)
+            qwen3_layout.addWidget(self.txt_qwen3_base, 2, 1, 1, 2)
+
+            # Custom adapter path (optional)
+            qwen3_layout.addWidget(QLabel("Adapter:"), 3, 0)
+            self.txt_qwen3_adapter = QLineEdit()
+            self.txt_qwen3_adapter.setPlaceholderText("Optional: your-username/qwen3-ukrainian-adapter")
+            qwen3_layout.addWidget(self.txt_qwen3_adapter, 3, 1, 1, 2)
+
+            # Prompt customization
+            qwen3_layout.addWidget(QLabel("Prompt:"), 4, 0, Qt.AlignmentFlag.AlignTop)
+            self.txt_qwen3_prompt = QTextEdit()
+            self.txt_qwen3_prompt.setPlainText("Transcribe the text shown in this image.")
+            self.txt_qwen3_prompt.setMaximumHeight(80)
+            qwen3_layout.addWidget(self.txt_qwen3_prompt, 4, 1, 1, 2)
+
+            # Advanced settings
+            advanced_group = QGroupBox("Advanced Settings")
+            advanced_layout = QGridLayout()
+
+            advanced_layout.addWidget(QLabel("Max Tokens:"), 0, 0)
+            self.spin_qwen3_max_tokens = QSpinBox()
+            self.spin_qwen3_max_tokens.setRange(512, 8192)
+            self.spin_qwen3_max_tokens.setValue(2048)
+            advanced_layout.addWidget(self.spin_qwen3_max_tokens, 0, 1)
+
+            advanced_layout.addWidget(QLabel("Image Size:"), 0, 2)
+            self.spin_qwen3_img_size = QSpinBox()
+            self.spin_qwen3_img_size.setRange(512, 2048)
+            self.spin_qwen3_img_size.setValue(1536)
+            advanced_layout.addWidget(self.spin_qwen3_img_size, 0, 3)
+
+            # Confidence estimation checkbox
+            self.chk_qwen3_confidence = QCheckBox("Estimate Confidence (slower)")
+            self.chk_qwen3_confidence.setChecked(False)
+            self.chk_qwen3_confidence.setToolTip("Extract token probabilities for confidence estimation")
+            advanced_layout.addWidget(self.chk_qwen3_confidence, 1, 0, 1, 2)
+
+            advanced_group.setLayout(advanced_layout)
+            qwen3_layout.addWidget(advanced_group, 5, 0, 1, 3)
+
+            self.model_tabs.addTab(qwen3_tab, "Qwen3 VLM")
+
         settings_layout.addWidget(self.model_tabs)
+
+        # Connect tab change handler
+        self.model_tabs.currentChanged.connect(self._on_model_tab_changed)
 
         # Device and settings row
         device_settings_layout = QHBoxLayout()
@@ -582,6 +673,12 @@ class TranscriptionGUI(QMainWindow):
         # Text editor
         self.text_editor = QTextEdit()
         self.text_editor.setPlaceholderText("Transcription will appear here...")
+
+        # Set default font to 12pt for better readability
+        default_font = QFont()
+        default_font.setPointSize(12)
+        self.text_editor.setFont(default_font)
+
         layout.addWidget(self.text_editor)
 
         # Character count
@@ -856,8 +953,15 @@ class TranscriptionGUI(QMainWindow):
             # Display
             self.graphics_view.set_image(self.current_pixmap)
 
-            # Enable controls
-            self.btn_segment.setEnabled(True)
+            # Enable controls based on current mode
+            is_qwen3 = QWEN3_AVAILABLE and (self.model_tabs.currentIndex() == self.model_tabs.count() - 1)
+
+            if is_qwen3:
+                # Qwen3 mode: Enable process button directly (no segmentation needed)
+                self.btn_process.setEnabled(True)
+            else:
+                # TrOCR mode: Enable segment button
+                self.btn_segment.setEnabled(True)
 
             self.status_bar.showMessage(f"Loaded: {image_path.name}")
 
@@ -971,8 +1075,179 @@ class TranscriptionGUI(QMainWindow):
             self.lbl_lines_count.setText("Lines: 0")
             self.btn_process.setEnabled(False)
 
+    def _on_qwen3_source_changed(self, index):
+        """Handle Qwen3 source selection change."""
+        if not QWEN3_AVAILABLE:
+            return
+
+        is_custom = (self.combo_qwen3_source.currentData() == "custom")
+
+        # Show/hide appropriate fields based on source
+        self.lbl_qwen3_preset.setVisible(not is_custom)
+        self.combo_qwen3_model.setVisible(not is_custom)
+
+        self.lbl_qwen3_base.setVisible(is_custom)
+        self.txt_qwen3_base.setVisible(is_custom)
+
+    def _on_model_tab_changed(self, index):
+        """Handle model tab changes - show/hide segmentation controls for Qwen3."""
+        # Check if Qwen3 tab (it's the last tab if available)
+        is_qwen3 = QWEN3_AVAILABLE and (index == self.model_tabs.count() - 1)
+
+        # Hide/show entire segmentation group in Qwen3 mode (no segmentation needed)
+        if hasattr(self, 'seg_group'):
+            self.seg_group.setVisible(not is_qwen3)
+
+        # Update button text based on mode
+        if is_qwen3:
+            self.btn_process.setText("Transcribe Page")
+            # If an image is already loaded, enable process button
+            if self.current_image_path is not None:
+                self.btn_process.setEnabled(True)
+        else:
+            self.btn_process.setText("Process All Lines")
+            # In TrOCR mode, only enable if lines are segmented
+            if hasattr(self, 'segments') and len(self.segments) > 0:
+                self.btn_process.setEnabled(True)
+            else:
+                self.btn_process.setEnabled(False)
+
+    def _process_with_qwen3(self):
+        """Process entire page with Qwen3 VLM (no segmentation needed)."""
+        if not self.current_image_path:
+            QMessageBox.warning(self, "Warning", "Please load an image first!")
+            return
+
+        # Get Qwen3 settings
+        prompt = self.txt_qwen3_prompt.toPlainText().strip()
+        max_tokens = self.spin_qwen3_max_tokens.value()
+        max_img_size = self.spin_qwen3_img_size.value()
+        estimate_confidence = self.chk_qwen3_confidence.isChecked()
+
+        # Determine if using preset or custom model
+        is_custom = self.combo_qwen3_source.currentData() == "custom"
+
+        if is_custom:
+            # Custom HuggingFace model
+            base_model = self.txt_qwen3_base.text().strip()
+            adapter = self.txt_qwen3_adapter.text().strip() if self.txt_qwen3_adapter.text().strip() else None
+
+            if not base_model:
+                QMessageBox.warning(self, "Warning", "Please enter a base model ID (e.g., Qwen/Qwen3-VL-8B-Instruct)!")
+                return
+
+            model_display_name = base_model
+            if adapter:
+                model_display_name += f" + {adapter}"
+        else:
+            # Preset model
+            model_id = self.combo_qwen3_model.currentData()
+            if not model_id:
+                QMessageBox.warning(self, "Warning", "Please select a Qwen3 model!")
+                return
+
+            model_config = QWEN3_MODELS[model_id]
+            base_model = model_config["base"]
+
+            # Allow custom adapter to override preset adapter
+            custom_adapter = self.txt_qwen3_adapter.text().strip()
+            adapter = custom_adapter if custom_adapter else model_config["adapter"]
+
+            model_display_name = model_id
+
+        try:
+            self.status_bar.showMessage(f"Loading Qwen3 VLM: {model_display_name}...")
+            self.btn_process.setEnabled(False)
+            self.btn_segment.setEnabled(False)
+
+            # Save model to history
+            if is_custom and base_model:
+                self._add_to_hf_model_history(base_model)
+                if adapter:
+                    self._add_to_hf_model_history(adapter)
+            elif not is_custom:
+                # Save preset model's base and adapter
+                self._add_to_hf_model_history(base_model)
+                if adapter:
+                    self._add_to_hf_model_history(adapter)
+
+            # Check if we need to reinitialize (model changed)
+            need_reinit = False
+            if not hasattr(self, 'qwen3') or self.qwen3 is None:
+                need_reinit = True
+            elif not hasattr(self, '_current_qwen3_model'):
+                need_reinit = True
+            elif self._current_qwen3_model != (base_model, adapter):
+                need_reinit = True
+                print(f"Model changed, reinitializing: {base_model} + {adapter}")
+
+            # Initialize or reuse Qwen3
+            if need_reinit:
+                self.qwen3 = Qwen3VLMInference(
+                    base_model=base_model,
+                    adapter_model=adapter,
+                    device="auto" if self.device == "cuda" else "cpu",
+                    max_image_size=max_img_size
+                )
+                self._current_qwen3_model = (base_model, adapter)
+
+            # Load full page image
+            from PIL import Image
+            page_image = Image.open(self.current_image_path)
+
+            self.status_bar.showMessage("Transcribing full page with Qwen3 VLM...")
+            QApplication.processEvents()  # Update UI
+
+            # Transcribe entire page
+            result = self.qwen3.transcribe_page(
+                page_image,
+                prompt=prompt,
+                max_new_tokens=max_tokens,
+                return_confidence=estimate_confidence
+            )
+
+            # Display result
+            self.text_editor.setPlainText(result.text)
+
+            # Update status with timing and confidence
+            status_msg = f"Qwen3 transcription complete! Time: {result.processing_time:.2f}s"
+            if result.confidence is not None:
+                status_msg += f", Confidence: {result.confidence*100:.1f}%"
+            self.status_bar.showMessage(status_msg)
+
+            # Show memory usage
+            if QWEN3_AVAILABLE:
+                memory_usage = self.qwen3.get_memory_usage()
+                if memory_usage:
+                    memory_str = ", ".join([f"{gpu}: {stats['utilization']}"
+                                          for gpu, stats in memory_usage.items()])
+                    print(f"GPU Usage: {memory_str}")
+
+            self.btn_process.setEnabled(True)
+            self.btn_segment.setEnabled(False)  # No segmentation for Qwen3
+
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(
+                self, "Qwen3 Error",
+                f"Qwen3 processing failed:\n{str(e)}\n\nDetails:\n{error_details}"
+            )
+            self.btn_process.setEnabled(True)
+            self.btn_segment.setEnabled(False)
+
     def _process_all_lines(self):
-        """Process all detected lines with OCR."""
+        """Process all detected lines with OCR (or entire page with Qwen3)."""
+
+        # Check if using Qwen3
+        is_qwen3 = QWEN3_AVAILABLE and (self.model_tabs.currentIndex() == self.model_tabs.count() - 1)
+
+        if is_qwen3:
+            # Use Qwen3 VLM (no line segmentation)
+            self._process_with_qwen3()
+            return
+
+        # Standard line-based processing (TrOCR)
         if not self.segments:
             QMessageBox.warning(
                 self,

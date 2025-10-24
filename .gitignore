@@ -105,3 +105,4 @@ run_training_ddp.ps1
 # Windows artifacts
 nul
 
+.hf_model_history.json
