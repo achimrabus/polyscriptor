@@ -106,3 +106,6 @@ run_training_ddp.ps1
 nul
 
 .hf_model_history.json
+
+# API keys storage (from GUI)
+.trocr_gui/

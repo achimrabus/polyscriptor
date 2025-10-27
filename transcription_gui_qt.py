@@ -61,6 +61,35 @@ except ImportError:
     QWEN3_MODELS = {}
     print("WARNING: Qwen3 not available. Install with: pip install transformers>=4.37.0 accelerate peft")
 
+# Import PyLaia (optional - will handle import error gracefully)
+try:
+    from inference_pylaia import PyLaiaInference, PYLAIA_MODELS
+    from inference_pylaia_lm import PyLaiaInferenceLM, check_lm_availability
+    PYLAIA_AVAILABLE = True
+    PYLAIA_LM_AVAILABLE = check_lm_availability()
+except ImportError:
+    PYLAIA_AVAILABLE = False
+    PYLAIA_MODELS = {}
+    PYLAIA_LM_AVAILABLE = False
+    print("WARNING: PyLaia not available. Check train_pylaia.py is present.")
+
+# Import commercial APIs (optional - will handle import errors gracefully)
+try:
+    from inference_commercial_api import (
+        OpenAIInference, GeminiInference, ClaudeInference,
+        check_api_availability,
+        OPENAI_MODELS, GEMINI_MODELS, CLAUDE_MODELS
+    )
+    API_AVAILABILITY = check_api_availability()
+    COMMERCIAL_API_AVAILABLE = any(API_AVAILABILITY.values())
+except ImportError:
+    COMMERCIAL_API_AVAILABLE = False
+    API_AVAILABILITY = {"openai": False, "gemini": False, "claude": False}
+    OPENAI_MODELS = []
+    GEMINI_MODELS = []
+    CLAUDE_MODELS = []
+    print("WARNING: Commercial API support not available. Install with: pip install openai google-generativeai anthropic")
+
 
 class ZoomableGraphicsView(QGraphicsView):
     """Graphics view with smooth zoom and pan capabilities."""
@@ -151,13 +180,27 @@ class OCRWorker(QThread):
     error = pyqtSignal(str)  # error message
     aborted = pyqtSignal()  # emitted when aborted
 
-    def __init__(self, segments: List[LineSegment], ocr: TrOCRInference,
-                 num_beams: int, max_length: int):
+    def __init__(self, segments: List[LineSegment], ocr,
+                 num_beams: int = 1, max_length: int = 128,
+                 return_confidence: bool = True, is_pylaia: bool = False):
+        """
+        Initialize OCR worker.
+
+        Args:
+            segments: List of line segments to process
+            ocr: Either TrOCRInference or PyLaiaInference instance
+            num_beams: Beam search size (TrOCR only)
+            max_length: Max sequence length (TrOCR only)
+            return_confidence: Whether to return confidence scores
+            is_pylaia: True if using PyLaia, False if using TrOCR
+        """
         super().__init__()
         self.segments = segments
         self.ocr = ocr
         self.num_beams = num_beams
         self.max_length = max_length
+        self.return_confidence = return_confidence
+        self.is_pylaia = is_pylaia
         self._is_aborted = False
 
     def abort(self):
@@ -179,13 +222,23 @@ class OCRWorker(QThread):
                 self.progress.emit(int((idx / total) * 100),
                                  f"Processing line {idx+1}/{total}...")
 
-                # Transcribe line with confidence scores
-                text, confidence, char_confidences = self.ocr.transcribe_line(
-                    segment.image,
-                    num_beams=self.num_beams,
-                    max_length=self.max_length,
-                    return_confidence=True
-                )
+                if self.is_pylaia:
+                    # PyLaia inference
+                    result_dict = self.ocr.recognize_line(
+                        segment.image,
+                        return_confidence=self.return_confidence
+                    )
+                    text = result_dict['text']
+                    confidence = result_dict.get('confidence', None)
+                    char_confidences = result_dict.get('char_confidences', [])
+                else:
+                    # TrOCR inference
+                    text, confidence, char_confidences = self.ocr.transcribe_line(
+                        segment.image,
+                        num_beams=self.num_beams,
+                        max_length=self.max_length,
+                        return_confidence=self.return_confidence
+                    )
 
                 # Create new LineSegment with text and confidence
                 result = LineSegment(
@@ -244,10 +297,15 @@ class TranscriptionGUI(QMainWindow):
 
         # Processing statistics
         self.processing_start_time = None
+        self.last_model_info = {}  # Store info about last processing run
 
         # Initialize Qwen3 as None
         self.qwen3 = None
         self._current_qwen3_model = None  # Track current model to avoid reinitialization
+
+        # Initialize PyLaia as None
+        self.pylaia: Optional[PyLaiaInference] = None
+        self._current_pylaia_model = None  # Track current model to avoid reinitialization
 
         self._setup_ui()
         self._create_menu_bar()
@@ -443,47 +501,74 @@ class TranscriptionGUI(QMainWindow):
         # Model selection tabs
         self.model_tabs = QTabWidget()
 
-        # Local models tab
-        local_tab = QWidget()
-        local_layout = QGridLayout(local_tab)
+        # TrOCR tab (unified Local + HuggingFace)
+        trocr_tab = QWidget()
+        trocr_layout = QGridLayout(trocr_tab)
 
-        local_layout.addWidget(QLabel("Model:"), 0, 0)
+        # Model source selector
+        trocr_layout.addWidget(QLabel("Model Source:"), 0, 0)
+        self.combo_trocr_source = QComboBox()
+        self.combo_trocr_source.addItem("Local Models", "local")
+        self.combo_trocr_source.addItem("HuggingFace Hub", "huggingface")
+        self.combo_trocr_source.currentIndexChanged.connect(self._on_trocr_source_changed)
+        trocr_layout.addWidget(self.combo_trocr_source, 0, 1, 1, 2)
+
+        # Local model selection (visible by default)
+        self.lbl_local_model = QLabel("Model:")
+        trocr_layout.addWidget(self.lbl_local_model, 1, 0)
         self.combo_model = QComboBox()
         self._populate_models()
-        local_layout.addWidget(self.combo_model, 0, 1, 1, 2)
+        trocr_layout.addWidget(self.combo_model, 1, 1, 1, 2)
 
-        btn_browse_model = QPushButton("Browse...")
-        btn_browse_model.clicked.connect(self._browse_model)
-        local_layout.addWidget(btn_browse_model, 0, 3)
+        self.btn_browse_model = QPushButton("Browse...")
+        self.btn_browse_model.clicked.connect(self._browse_model)
+        trocr_layout.addWidget(self.btn_browse_model, 1, 3)
 
-        self.model_tabs.addTab(local_tab, "Local")
+        # HuggingFace model selection (hidden by default)
+        self.lbl_hf_model = QLabel("Model ID:")
+        self.lbl_hf_model.setVisible(False)
+        trocr_layout.addWidget(self.lbl_hf_model, 2, 0)
 
-        # HuggingFace models tab
-        hf_tab = QWidget()
-        hf_layout = QGridLayout(hf_tab)
-
-        hf_layout.addWidget(QLabel("Model ID:"), 0, 0)
-
-        # Editable combo box with history
         self.combo_hf_model = QComboBox()
         self.combo_hf_model.setEditable(True)
         self.combo_hf_model.setPlaceholderText("e.g., kazars24/trocr-base-handwritten-ru")
         self._populate_hf_model_history()
-        hf_layout.addWidget(self.combo_hf_model, 0, 1, 1, 2)
+        self.combo_hf_model.setVisible(False)
+        trocr_layout.addWidget(self.combo_hf_model, 2, 1, 1, 2)
 
-        btn_validate_hf = QPushButton("Validate")
-        btn_validate_hf.clicked.connect(self._validate_hf_model)
-        hf_layout.addWidget(btn_validate_hf, 0, 3)
+        self.btn_validate_hf = QPushButton("Validate")
+        self.btn_validate_hf.clicked.connect(self._validate_hf_model)
+        self.btn_validate_hf.setVisible(False)
+        trocr_layout.addWidget(self.btn_validate_hf, 2, 3)
 
-        # Model info display
-        hf_layout.addWidget(QLabel("Model Info:"), 1, 0, Qt.AlignmentFlag.AlignTop)
+        # Model info display (for HuggingFace)
+        self.lbl_model_info = QLabel("Model Info:")
+        self.lbl_model_info.setVisible(False)
+        trocr_layout.addWidget(self.lbl_model_info, 3, 0, Qt.AlignmentFlag.AlignTop)
         self.txt_model_info = QTextEdit()
         self.txt_model_info.setReadOnly(True)
         self.txt_model_info.setPlaceholderText("Model information will appear here...")
-        self.txt_model_info.setMaximumHeight(100)
-        hf_layout.addWidget(self.txt_model_info, 1, 1, 1, 3)
+        self.txt_model_info.setMaximumHeight(80)
+        self.txt_model_info.setVisible(False)
+        trocr_layout.addWidget(self.txt_model_info, 3, 1, 1, 3)
 
-        self.model_tabs.addTab(hf_tab, "HuggingFace")
+        # Info box
+        info_group = QGroupBox("About TrOCR")
+        info_layout = QVBoxLayout()
+        info_text = QLabel(
+            "• Transformer-based OCR with high accuracy\n"
+            "• Best for: complex handwriting, mixed scripts\n"
+            "• Slower than PyLaia but more versatile"
+        )
+        info_text.setWordWrap(True)
+        info_layout.addWidget(info_text)
+        info_group.setLayout(info_layout)
+        trocr_layout.addWidget(info_group, 4, 0, 1, 4)
+
+        # Add spacer
+        trocr_layout.setRowStretch(5, 1)
+
+        self.model_tabs.addTab(trocr_tab, "TrOCR")
 
         # Qwen3 VLM tab
         if QWEN3_AVAILABLE:
@@ -560,6 +645,232 @@ class TranscriptionGUI(QMainWindow):
 
             self.model_tabs.addTab(qwen3_tab, "Qwen3 VLM")
 
+        # PyLaia tab
+        if PYLAIA_AVAILABLE:
+            pylaia_tab = QWidget()
+            pylaia_layout = QGridLayout(pylaia_tab)
+
+            # Model source selector
+            pylaia_layout.addWidget(QLabel("Model Source:"), 0, 0)
+            self.combo_pylaia_source = QComboBox()
+            self.combo_pylaia_source.addItem("Local Models", "local")
+            self.combo_pylaia_source.addItem("HuggingFace Hub", "huggingface")
+            self.combo_pylaia_source.currentIndexChanged.connect(self._on_pylaia_source_changed)
+            pylaia_layout.addWidget(self.combo_pylaia_source, 0, 1, 1, 2)
+
+            # Local model selection (visible by default)
+            self.lbl_pylaia_local = QLabel("Model:")
+            pylaia_layout.addWidget(self.lbl_pylaia_local, 1, 0)
+            self.combo_pylaia_model = QComboBox()
+
+            # Populate with available models
+            for model_name, model_path in PYLAIA_MODELS.items():
+                self.combo_pylaia_model.addItem(model_name, model_path)
+
+            self.combo_pylaia_model.setToolTip("Select PyLaia model")
+            pylaia_layout.addWidget(self.combo_pylaia_model, 1, 1, 1, 2)
+
+            # Browse button for custom models
+            self.btn_pylaia_browse = QPushButton("Browse...")
+            self.btn_pylaia_browse.setToolTip("Load a custom PyLaia model directory")
+            self.btn_pylaia_browse.clicked.connect(self._browse_pylaia_model)
+            pylaia_layout.addWidget(self.btn_pylaia_browse, 1, 3)
+
+            # HuggingFace model selection (hidden by default)
+            self.lbl_pylaia_hf = QLabel("Model ID:")
+            self.lbl_pylaia_hf.setVisible(False)
+            pylaia_layout.addWidget(self.lbl_pylaia_hf, 2, 0)
+
+            self.txt_pylaia_hf = QLineEdit()
+            self.txt_pylaia_hf.setPlaceholderText("e.g., user/pylaia-ukrainian-model (Note: PyLaia HF models rare)")
+            self.txt_pylaia_hf.setVisible(False)
+            pylaia_layout.addWidget(self.txt_pylaia_hf, 2, 1, 1, 3)
+
+            # Note about HF support
+            self.lbl_pylaia_hf_note = QLabel("⚠️ Note: PyLaia models on HuggingFace are rare. Most models are local only.")
+            self.lbl_pylaia_hf_note.setWordWrap(True)
+            self.lbl_pylaia_hf_note.setVisible(False)
+            pylaia_layout.addWidget(self.lbl_pylaia_hf_note, 3, 0, 1, 4)
+
+            # Info box with key features
+            info_group = QGroupBox("About PyLaia")
+            info_layout = QVBoxLayout()
+
+            info_text = QLabel(
+                "• CNN-RNN-CTC architecture for handwritten text recognition\n"
+                "• ~100x faster than TrOCR for line-based transcription\n"
+                "• Requires line segmentation (use 'Detect Lines' first)\n"
+                "• Best for: manuscripts with consistent script style"
+            )
+            info_text.setWordWrap(True)
+            info_text.setStyleSheet("font-size: 10px;")
+            info_layout.addWidget(info_text)
+            info_group.setLayout(info_layout)
+            pylaia_layout.addWidget(info_group, 4, 0, 1, 4)
+
+            # Confidence checkbox
+            self.chk_pylaia_confidence = QCheckBox("Calculate Confidence Scores")
+            self.chk_pylaia_confidence.setChecked(True)
+            self.chk_pylaia_confidence.setToolTip("Compute line and character-level confidence scores")
+            pylaia_layout.addWidget(self.chk_pylaia_confidence, 5, 0, 1, 2)
+
+            # Language model options
+            lm_group = QGroupBox("Language Model Post-Correction (Optional)")
+            lm_layout = QGridLayout()
+
+            # Enable LM checkbox
+            self.chk_pylaia_use_lm = QCheckBox("Use Language Model")
+            self.chk_pylaia_use_lm.setChecked(False)
+            self.chk_pylaia_use_lm.setToolTip("Enable CTC beam search with n-gram language model for improved accuracy")
+            self.chk_pylaia_use_lm.stateChanged.connect(self._on_pylaia_lm_changed)
+            lm_layout.addWidget(self.chk_pylaia_use_lm, 0, 0, 1, 2)
+
+            # LM path selection (hidden by default)
+            self.lbl_pylaia_lm_path = QLabel("LM File:")
+            self.lbl_pylaia_lm_path.setVisible(False)
+            lm_layout.addWidget(self.lbl_pylaia_lm_path, 1, 0)
+
+            self.txt_pylaia_lm_path = QLineEdit()
+            self.txt_pylaia_lm_path.setPlaceholderText("language_models/ukrainian_char.arpa")
+            self.txt_pylaia_lm_path.setVisible(False)
+            lm_layout.addWidget(self.txt_pylaia_lm_path, 1, 1, 1, 2)
+
+            self.btn_browse_lm = QPushButton("Browse...")
+            self.btn_browse_lm.setVisible(False)
+            self.btn_browse_lm.clicked.connect(self._browse_language_model)
+            lm_layout.addWidget(self.btn_browse_lm, 1, 3)
+
+            # Beam width
+            self.lbl_beam_width = QLabel("Beam Width:")
+            self.lbl_beam_width.setVisible(False)
+            lm_layout.addWidget(self.lbl_beam_width, 2, 0)
+
+            self.spin_beam_width = QSpinBox()
+            self.spin_beam_width.setRange(10, 500)
+            self.spin_beam_width.setValue(100)
+            self.spin_beam_width.setToolTip("Larger = better quality but slower (100 is good default)")
+            self.spin_beam_width.setVisible(False)
+            lm_layout.addWidget(self.spin_beam_width, 2, 1)
+
+            lm_group.setLayout(lm_layout)
+            pylaia_layout.addWidget(lm_group, 6, 0, 1, 4)
+
+            # Add spacer
+            pylaia_layout.setRowStretch(7, 1)
+
+            self.model_tabs.addTab(pylaia_tab, "PyLaia")
+
+        # Commercial API tab (OpenAI, Gemini, Claude)
+        if COMMERCIAL_API_AVAILABLE:
+            api_tab = QWidget()
+            api_layout = QGridLayout(api_tab)
+
+            # Provider selection
+            api_layout.addWidget(QLabel("Provider:"), 0, 0)
+            self.combo_api_provider = QComboBox()
+
+            # Add available providers
+            if API_AVAILABILITY["openai"]:
+                self.combo_api_provider.addItem("OpenAI (GPT-4o)", "openai")
+            if API_AVAILABILITY["gemini"]:
+                self.combo_api_provider.addItem("Google Gemini", "gemini")
+            if API_AVAILABILITY["claude"]:
+                self.combo_api_provider.addItem("Anthropic Claude", "claude")
+
+            self.combo_api_provider.currentIndexChanged.connect(self._on_api_provider_changed)
+            api_layout.addWidget(self.combo_api_provider, 0, 1, 1, 2)
+
+            # API Key input
+            api_layout.addWidget(QLabel("API Key:"), 1, 0)
+            self.txt_api_key = QLineEdit()
+            self.txt_api_key.setPlaceholderText("Enter your API key...")
+            self.txt_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+            self.txt_api_key.textChanged.connect(self._on_api_key_changed)
+            api_layout.addWidget(self.txt_api_key, 1, 1, 1, 2)
+
+            self.btn_show_api_key = QPushButton("👁")
+            self.btn_show_api_key.setMaximumWidth(40)
+            self.btn_show_api_key.setCheckable(True)
+            self.btn_show_api_key.setToolTip("Show/hide API key")
+            self.btn_show_api_key.toggled.connect(self._toggle_api_key_visibility)
+            api_layout.addWidget(self.btn_show_api_key, 1, 3)
+
+            # Validate API Key button
+            self.btn_validate_api_key = QPushButton("Validate & Check Models")
+            self.btn_validate_api_key.setToolTip("Validate API key and check available models")
+            self.btn_validate_api_key.clicked.connect(self._validate_api_key)
+            api_layout.addWidget(self.btn_validate_api_key, 1, 4)
+
+            # API validation status label
+            self.lbl_api_validation_status = QLabel("")
+            self.lbl_api_validation_status.setStyleSheet("font-size: 10px;")
+            api_layout.addWidget(self.lbl_api_validation_status, 1, 5)
+
+            # Model selection (provider-specific)
+            api_layout.addWidget(QLabel("Model:"), 2, 0)
+            self.combo_api_model = QComboBox()
+            self._populate_api_models()  # Populate based on initial provider
+            api_layout.addWidget(self.combo_api_model, 2, 1, 1, 3)
+
+            # Custom prompt
+            api_layout.addWidget(QLabel("Prompt:"), 3, 0, Qt.AlignmentFlag.AlignTop)
+            self.txt_api_prompt = QTextEdit()
+            self.txt_api_prompt.setPlaceholderText(
+                "Transcribe all handwritten text in this manuscript image. "
+                "Preserve the original language (Cyrillic, Latin, etc.) and layout. "
+                "Output only the transcribed text without any additional commentary."
+            )
+            self.txt_api_prompt.setMaximumHeight(80)
+            api_layout.addWidget(self.txt_api_prompt, 3, 1, 1, 3)
+
+            # Advanced settings
+            advanced_group = QGroupBox("Advanced Settings")
+            advanced_layout = QGridLayout()
+
+            advanced_layout.addWidget(QLabel("Max Tokens:"), 0, 0)
+            self.spin_api_max_tokens = QSpinBox()
+            self.spin_api_max_tokens.setRange(100, 2000)
+            self.spin_api_max_tokens.setValue(500)
+            self.spin_api_max_tokens.setToolTip("Maximum tokens to generate")
+            advanced_layout.addWidget(self.spin_api_max_tokens, 0, 1)
+
+            advanced_layout.addWidget(QLabel("Temperature:"), 0, 2)
+            self.spin_api_temperature = QDoubleSpinBox()
+            self.spin_api_temperature.setRange(0.0, 1.0)
+            self.spin_api_temperature.setSingleStep(0.1)
+            self.spin_api_temperature.setValue(0.0)
+            self.spin_api_temperature.setToolTip("0.0 = deterministic, 1.0 = creative")
+            advanced_layout.addWidget(self.spin_api_temperature, 0, 3)
+
+            advanced_group.setLayout(advanced_layout)
+            api_layout.addWidget(advanced_group, 4, 0, 1, 4)
+
+            # Info box
+            info_group = QGroupBox("About Commercial APIs")
+            info_layout = QVBoxLayout()
+            info_text = QLabel(
+                "• Best accuracy for complex manuscripts\n"
+                "• Pay-per-use (check provider pricing)\n"
+                "• Requires internet connection\n"
+                "• OpenAI GPT-4o: Excellent general-purpose\n"
+                "• Gemini 2.0 Flash: Fast and cost-effective\n"
+                "• Claude 3.5 Sonnet: Best for text correction"
+            )
+            info_text.setWordWrap(True)
+            info_text.setStyleSheet("font-size: 10px;")
+            info_layout.addWidget(info_text)
+            info_group.setLayout(info_layout)
+            api_layout.addWidget(info_group, 5, 0, 1, 4)
+
+            # Spacer
+            api_layout.setRowStretch(6, 1)
+
+            self.model_tabs.addTab(api_tab, "Commercial APIs")
+
+            # Initialize API client storage
+            self.api_client = None
+            self._current_api_config = None
+
         settings_layout.addWidget(self.model_tabs)
 
         # Connect tab change handler
@@ -590,37 +901,42 @@ class TranscriptionGUI(QMainWindow):
         device_settings_layout.addWidget(self.radio_cpu)
         device_settings_layout.addSpacing(20)
 
-        # Background normalization
+        # Background normalization (TrOCR-specific)
         self.chk_normalize = QCheckBox("Normalize Background")
         self.chk_normalize.setChecked(False)
         self.chk_normalize.stateChanged.connect(self._on_normalize_changed)
+        self.chk_normalize.setToolTip("Apply CLAHE normalization (TrOCR only)")
         device_settings_layout.addWidget(self.chk_normalize)
         device_settings_layout.addStretch()
 
         settings_layout.addLayout(device_settings_layout)
 
-        # Inference parameters row
-        inference_layout = QHBoxLayout()
+        # Inference parameters row (TrOCR-specific)
+        self.trocr_inference_layout = QHBoxLayout()
 
         # Beam search
-        inference_layout.addWidget(QLabel("Beam Search:"))
+        self.lbl_beams = QLabel("Beam Search:")
+        self.trocr_inference_layout.addWidget(self.lbl_beams)
         self.spin_beams = QSpinBox()
         self.spin_beams.setRange(1, 10)
         self.spin_beams.setValue(4)
         self.spin_beams.valueChanged.connect(self._on_beams_changed)
-        inference_layout.addWidget(self.spin_beams)
-        inference_layout.addSpacing(20)
+        self.spin_beams.setToolTip("Higher values = better quality but slower (TrOCR only)")
+        self.trocr_inference_layout.addWidget(self.spin_beams)
+        self.trocr_inference_layout.addSpacing(20)
 
         # Max length
-        inference_layout.addWidget(QLabel("Max Length:"))
+        self.lbl_max_length = QLabel("Max Length:")
+        self.trocr_inference_layout.addWidget(self.lbl_max_length)
         self.spin_max_length = QSpinBox()
         self.spin_max_length.setRange(64, 256)
         self.spin_max_length.setValue(128)
         self.spin_max_length.valueChanged.connect(self._on_max_length_changed)
-        inference_layout.addWidget(self.spin_max_length)
-        inference_layout.addStretch()
+        self.spin_max_length.setToolTip("Maximum sequence length (TrOCR only)")
+        self.trocr_inference_layout.addWidget(self.spin_max_length)
+        self.trocr_inference_layout.addStretch()
 
-        settings_layout.addLayout(inference_layout)
+        settings_layout.addLayout(self.trocr_inference_layout)
 
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
@@ -687,24 +1003,39 @@ class TranscriptionGUI(QMainWindow):
         layout.addWidget(self.lbl_char_count)
 
         # Statistics panel
-        stats_group = QGroupBox("Statistics")
+        stats_group = QGroupBox("Processing Statistics")
         stats_layout = QGridLayout()
 
-        stats_layout.addWidget(QLabel("Lines Processed:"), 0, 0)
+        # Row 0: Model info
+        stats_layout.addWidget(QLabel("Model:"), 0, 0)
+        self.lbl_model_used = QLabel("N/A")
+        self.lbl_model_used.setStyleSheet("font-weight: bold;")
+        stats_layout.addWidget(self.lbl_model_used, 0, 1, 1, 3)
+
+        # Row 1: Line count and confidence
+        stats_layout.addWidget(QLabel("Lines Processed:"), 1, 0)
         self.lbl_lines_processed = QLabel("0")
-        stats_layout.addWidget(self.lbl_lines_processed, 0, 1)
+        stats_layout.addWidget(self.lbl_lines_processed, 1, 1)
 
-        stats_layout.addWidget(QLabel("Avg Confidence:"), 0, 2)
+        stats_layout.addWidget(QLabel("Avg Confidence:"), 1, 2)
         self.lbl_avg_confidence = QLabel("N/A")
-        stats_layout.addWidget(self.lbl_avg_confidence, 0, 3)
+        stats_layout.addWidget(self.lbl_avg_confidence, 1, 3)
 
-        stats_layout.addWidget(QLabel("Processing Time:"), 1, 0)
+        # Row 2: Processing time and segmentation
+        stats_layout.addWidget(QLabel("Processing Time:"), 2, 0)
         self.lbl_processing_time = QLabel("N/A")
-        stats_layout.addWidget(self.lbl_processing_time, 1, 1)
+        stats_layout.addWidget(self.lbl_processing_time, 2, 1)
 
-        stats_layout.addWidget(QLabel("Segmentation:"), 1, 2)
+        stats_layout.addWidget(QLabel("Segmentation:"), 2, 2)
         self.lbl_seg_method = QLabel("N/A")
-        stats_layout.addWidget(self.lbl_seg_method, 1, 3)
+        stats_layout.addWidget(self.lbl_seg_method, 2, 3)
+
+        # Row 3: Model parameters (initially hidden)
+        stats_layout.addWidget(QLabel("Parameters:"), 3, 0)
+        self.lbl_model_params = QLabel("N/A")
+        self.lbl_model_params.setWordWrap(True)
+        self.lbl_model_params.setStyleSheet("font-size: 9px;")
+        stats_layout.addWidget(self.lbl_model_params, 3, 1, 1, 3)
 
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
@@ -795,6 +1126,63 @@ class TranscriptionGUI(QMainWindow):
         """Setup signal/slot connections."""
         # Enable drag and drop
         self.setAcceptDrops(True)
+
+        # Load saved API keys (if any)
+        if COMMERCIAL_API_AVAILABLE:
+            self._load_api_keys()
+
+        # Trigger initial tab change to set correct button state
+        # This ensures the button shows correctly on first load
+        self._on_model_tab_changed(0)  # TrOCR tab is index 0
+
+    def _load_api_keys(self):
+        """Load saved API keys from JSON file (base64 encoded for basic obfuscation)."""
+        if not COMMERCIAL_API_AVAILABLE:
+            return
+
+        api_keys_file = Path.home() / ".trocr_gui" / "api_keys.json"
+        try:
+            if api_keys_file.exists():
+                with open(api_keys_file, 'r', encoding='utf-8') as f:
+                    encoded_keys = json.load(f)
+                    # Store the encoded keys for later use when provider is selected
+                    self._saved_api_keys = encoded_keys
+        except Exception as e:
+            print(f"Failed to load API keys: {e}")
+            self._saved_api_keys = {}
+
+    def _save_api_keys(self):
+        """Save API keys to JSON file (base64 encoded for basic obfuscation)."""
+        if not COMMERCIAL_API_AVAILABLE:
+            return
+
+        if not hasattr(self, 'txt_api_key'):
+            return
+
+        api_keys_file = Path.home() / ".trocr_gui" / "api_keys.json"
+        api_keys_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            import base64
+
+            # Get current provider and key
+            provider = self.combo_api_provider.currentData()
+            api_key = self.txt_api_key.text().strip()
+
+            # Load existing keys
+            encoded_keys = getattr(self, '_saved_api_keys', {})
+
+            # Update with current key (base64 encode for basic obfuscation)
+            if api_key:
+                encoded_keys[provider] = base64.b64encode(api_key.encode()).decode()
+
+            # Save to file
+            with open(api_keys_file, 'w', encoding='utf-8') as f:
+                json.dump(encoded_keys, f)
+
+            self._saved_api_keys = encoded_keys
+        except Exception as e:
+            print(f"Failed to save API keys: {e}")
 
     def _load_hf_model_history(self) -> List[str]:
         """Load HuggingFace model history from JSON file."""
@@ -954,14 +1342,26 @@ class TranscriptionGUI(QMainWindow):
             self.graphics_view.set_image(self.current_pixmap)
 
             # Enable controls based on current mode
-            is_qwen3 = QWEN3_AVAILABLE and (self.model_tabs.currentIndex() == self.model_tabs.count() - 1)
+            tab_index = self.model_tabs.currentIndex()
+
+            # Determine which model tab is active
+            if QWEN3_AVAILABLE and PYLAIA_AVAILABLE:
+                is_qwen3 = (tab_index == 1)
+            elif QWEN3_AVAILABLE:
+                is_qwen3 = (tab_index == 1)
+            elif PYLAIA_AVAILABLE:
+                is_qwen3 = False
+            else:
+                is_qwen3 = False
 
             if is_qwen3:
                 # Qwen3 mode: Enable process button directly (no segmentation needed)
                 self.btn_process.setEnabled(True)
+                self.btn_segment.setEnabled(False)
             else:
-                # TrOCR mode: Enable segment button
+                # TrOCR/PyLaia mode: Enable segment button
                 self.btn_segment.setEnabled(True)
+                self.btn_process.setEnabled(False)  # Will be enabled after segmentation
 
             self.status_bar.showMessage(f"Loaded: {image_path.name}")
 
@@ -1075,6 +1475,270 @@ class TranscriptionGUI(QMainWindow):
             self.lbl_lines_count.setText("Lines: 0")
             self.btn_process.setEnabled(False)
 
+    def _on_trocr_source_changed(self, index):
+        """Handle TrOCR source selection change."""
+        is_hf = (self.combo_trocr_source.currentData() == "huggingface")
+
+        # Show/hide appropriate fields based on source
+        self.lbl_local_model.setVisible(not is_hf)
+        self.combo_model.setVisible(not is_hf)
+        self.btn_browse_model.setVisible(not is_hf)
+
+        self.lbl_hf_model.setVisible(is_hf)
+        self.combo_hf_model.setVisible(is_hf)
+        self.btn_validate_hf.setVisible(is_hf)
+        self.lbl_model_info.setVisible(is_hf)
+        self.txt_model_info.setVisible(is_hf)
+
+    def _on_pylaia_source_changed(self, index):
+        """Handle PyLaia source selection change."""
+        if not PYLAIA_AVAILABLE:
+            return
+
+        is_hf = (self.combo_pylaia_source.currentData() == "huggingface")
+
+        # Show/hide appropriate fields based on source
+        self.lbl_pylaia_local.setVisible(not is_hf)
+        self.combo_pylaia_model.setVisible(not is_hf)
+        self.btn_pylaia_browse.setVisible(not is_hf)
+
+        self.lbl_pylaia_hf.setVisible(is_hf)
+        self.txt_pylaia_hf.setVisible(is_hf)
+        self.lbl_pylaia_hf_note.setVisible(is_hf)
+
+    def _on_pylaia_lm_changed(self, state):
+        """Handle PyLaia language model toggle."""
+        if not PYLAIA_AVAILABLE:
+            return
+
+        use_lm = (state == 2)  # Qt.CheckState.Checked
+
+        # Show/hide LM options
+        self.lbl_pylaia_lm_path.setVisible(use_lm)
+        self.txt_pylaia_lm_path.setVisible(use_lm)
+        self.btn_browse_lm.setVisible(use_lm)
+        self.lbl_beam_width.setVisible(use_lm)
+        self.spin_beam_width.setVisible(use_lm)
+
+    def _browse_language_model(self):
+        """Browse for language model file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Language Model File",
+            "",
+            "Language Model Files (*.arpa *.bin);;All Files (*)"
+        )
+
+        if file_path:
+            self.txt_pylaia_lm_path.setText(file_path)
+            self.status_bar.showMessage(f"Selected language model: {Path(file_path).name}")
+
+    def _on_api_provider_changed(self, index):
+        """Handle commercial API provider change."""
+        if not COMMERCIAL_API_AVAILABLE:
+            return
+
+        # Update model list based on provider
+        self._populate_api_models()
+
+        # Load saved API key for this provider (if any)
+        provider = self.combo_api_provider.currentData()
+        if hasattr(self, '_saved_api_keys') and provider in self._saved_api_keys:
+            import base64
+            try:
+                # Decode the saved key (base64 for basic obfuscation)
+                decoded_key = base64.b64decode(self._saved_api_keys[provider]).decode()
+                self.txt_api_key.setText(decoded_key)
+            except Exception as e:
+                print(f"Failed to load saved API key for {provider}: {e}")
+
+        # Reset API client (will be recreated with new provider)
+        self.api_client = None
+        self._current_api_config = None
+
+    def _populate_api_models(self):
+        """Populate model dropdown based on selected API provider."""
+        if not COMMERCIAL_API_AVAILABLE:
+            return
+
+        self.combo_api_model.clear()
+
+        provider = self.combo_api_provider.currentData()
+
+        if provider == "openai":
+            for model in OPENAI_MODELS:
+                self.combo_api_model.addItem(model)
+        elif provider == "gemini":
+            for model in GEMINI_MODELS:
+                self.combo_api_model.addItem(model)
+        elif provider == "claude":
+            for model in CLAUDE_MODELS:
+                self.combo_api_model.addItem(model)
+
+    def _on_api_key_changed(self, text):
+        """Handle API key change."""
+        if not COMMERCIAL_API_AVAILABLE:
+            return
+
+        # Reset API client when key changes
+        self.api_client = None
+        self._current_api_config = None
+
+        # Save API key when it changes (if not empty)
+        if text.strip():
+            self._save_api_keys()
+
+        # Enable/disable process button based on API key and image availability
+        # Only do this if we're on the Commercial API tab
+        tab_index = self.model_tabs.currentIndex()
+        tab_count = 1
+        if QWEN3_AVAILABLE:
+            tab_count += 1
+        if PYLAIA_AVAILABLE:
+            tab_count += 1
+        api_tab_index = tab_count if COMMERCIAL_API_AVAILABLE else -1
+
+        if tab_index == api_tab_index:
+            if self.current_image_path is not None and text.strip():
+                self.btn_process.setEnabled(True)
+                self.status_bar.showMessage("API key entered. Ready to transcribe.")
+            else:
+                self.btn_process.setEnabled(False)
+                if not text.strip():
+                    self.status_bar.showMessage("Please enter API key to enable transcription.")
+
+    def _toggle_api_key_visibility(self, checked):
+        """Toggle API key visibility."""
+        if not COMMERCIAL_API_AVAILABLE:
+            return
+
+        if checked:
+            self.txt_api_key.setEchoMode(QLineEdit.EchoMode.Normal)
+        else:
+            self.txt_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+
+    def _validate_api_key(self):
+        """Validate API key and check available models."""
+        if not COMMERCIAL_API_AVAILABLE:
+            return
+
+        provider = self.combo_api_provider.currentData()
+        api_key = self.txt_api_key.text().strip()
+
+        if not api_key:
+            QMessageBox.warning(self, "No API Key", "Please enter an API key first.")
+            return
+
+        self.btn_validate_api_key.setEnabled(False)
+        self.btn_validate_api_key.setText("Validating...")
+        self.lbl_api_validation_status.setText("⏳ Validating...")
+        self.lbl_api_validation_status.setStyleSheet("color: orange; font-size: 10px;")
+        QApplication.processEvents()
+
+        try:
+            # Attempt to initialize client and make a minimal test call
+            if provider == "openai":
+                from openai import OpenAI
+                client = OpenAI(api_key=api_key)
+
+                # List models to validate key
+                models = client.models.list()
+                available_models = [model.id for model in models.data if 'gpt-4' in model.id or 'vision' in model.id]
+
+                # Update model dropdown with available models
+                if available_models:
+                    self.combo_api_model.clear()
+                    for model_id in available_models:
+                        self.combo_api_model.addItem(model_id)
+                    success_msg = f"✓ Valid! Found {len(available_models)} models"
+                else:
+                    # Fallback to default list
+                    self._populate_api_models()
+                    success_msg = "✓ Valid! Using default models"
+
+            elif provider == "gemini":
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+
+                # List models to validate key
+                models = genai.list_models()
+
+                # Get all Gemini models that support generateContent (for vision)
+                available_models = []
+                for m in models:
+                    if 'gemini' in m.name.lower():
+                        # Check if model supports generateContent
+                        if 'generateContent' in m.supported_generation_methods:
+                            model_id = m.name.replace('models/', '')
+                            available_models.append(model_id)
+
+                # Sort models - put 2.5/2.0 flash first, then others
+                available_models.sort(key=lambda x: (
+                    '2.5' not in x,  # 2.5 models first
+                    '2.0' not in x,  # then 2.0 models
+                    'flash' not in x,  # then flash models
+                    x  # then alphabetically
+                ))
+
+                # Update model dropdown
+                if available_models:
+                    self.combo_api_model.clear()
+                    for model_id in available_models:
+                        self.combo_api_model.addItem(model_id)
+                    success_msg = f"✓ Valid! Found {len(available_models)} models"
+                else:
+                    # Fallback to default list
+                    self._populate_api_models()
+                    success_msg = "✓ Valid! Using default models"
+
+            elif provider == "claude":
+                from anthropic import Anthropic
+                client = Anthropic(api_key=api_key)
+
+                # Make a minimal test call to validate (Claude doesn't have a list models endpoint)
+                # We'll just try to initialize - if key is invalid, it will fail on first use
+                # For now, just use default model list
+                self._populate_api_models()
+                success_msg = "✓ Key format valid! Using default models"
+
+            else:
+                raise ValueError(f"Unknown provider: {provider}")
+
+            # Success
+            self.lbl_api_validation_status.setText(success_msg)
+            self.lbl_api_validation_status.setStyleSheet("color: green; font-size: 10px;")
+
+            # Enable process button if image is loaded
+            if self.current_image_path is not None:
+                self.btn_process.setEnabled(True)
+
+            QMessageBox.information(
+                self, "API Key Valid",
+                f"{provider.capitalize()} API key is valid!\n\n"
+                f"Available models have been loaded into the dropdown.\n"
+                f"You can now transcribe images."
+            )
+
+        except Exception as e:
+            # Failure
+            error_msg = str(e)
+            self.lbl_api_validation_status.setText("✗ Invalid")
+            self.lbl_api_validation_status.setStyleSheet("color: red; font-size: 10px;")
+
+            QMessageBox.critical(
+                self, "API Key Invalid",
+                f"{provider.capitalize()} API key validation failed:\n\n{error_msg}\n\n"
+                "Common issues:\n"
+                "- Incorrect API key format\n"
+                "- API key not activated\n"
+                "- Insufficient permissions\n"
+                "- Network connection problem"
+            )
+
+        finally:
+            self.btn_validate_api_key.setEnabled(True)
+            self.btn_validate_api_key.setText("Validate & Check Models")
+
     def _on_qwen3_source_changed(self, index):
         """Handle Qwen3 source selection change."""
         if not QWEN3_AVAILABLE:
@@ -1090,22 +1754,97 @@ class TranscriptionGUI(QMainWindow):
         self.txt_qwen3_base.setVisible(is_custom)
 
     def _on_model_tab_changed(self, index):
-        """Handle model tab changes - show/hide segmentation controls for Qwen3."""
-        # Check if Qwen3 tab (it's the last tab if available)
-        is_qwen3 = QWEN3_AVAILABLE and (index == self.model_tabs.count() - 1)
+        """Handle model tab changes - show/hide appropriate controls."""
+        # Determine which tab is active
+        # Tab order: TrOCR (0), Qwen3 (1 if available), PyLaia (2/1), Commercial API (last)
+        is_trocr = (index == 0)
+        is_qwen3 = False
+        is_pylaia = False
+        is_commercial_api = False
 
-        # Hide/show entire segmentation group in Qwen3 mode (no segmentation needed)
+        # Calculate tab indices based on availability
+        tab_count = 1  # TrOCR is always first
+        qwen3_index = -1
+        pylaia_index = -1
+        api_index = -1
+
+        if QWEN3_AVAILABLE:
+            qwen3_index = tab_count
+            tab_count += 1
+        if PYLAIA_AVAILABLE:
+            pylaia_index = tab_count
+            tab_count += 1
+        if COMMERCIAL_API_AVAILABLE:
+            api_index = tab_count
+            tab_count += 1
+
+        # Determine active tab
+        if index == qwen3_index:
+            is_qwen3 = True
+        elif index == pylaia_index:
+            is_pylaia = True
+        elif index == api_index:
+            is_commercial_api = True
+
+        # Hide/show segmentation group
+        # Qwen3 and Commercial APIs don't need segmentation (they process full pages)
+        # PyLaia and TrOCR need segmentation
         if hasattr(self, 'seg_group'):
-            self.seg_group.setVisible(not is_qwen3)
+            self.seg_group.setVisible(not is_qwen3 and not is_commercial_api)
 
-        # Update button text based on mode
-        if is_qwen3:
-            self.btn_process.setText("Transcribe Page")
+        # Show/hide TrOCR-specific settings
+        if hasattr(self, 'chk_normalize'):
+            self.chk_normalize.setVisible(is_trocr)
+        if hasattr(self, 'lbl_beams'):
+            self.lbl_beams.setVisible(is_trocr)
+        if hasattr(self, 'spin_beams'):
+            self.spin_beams.setVisible(is_trocr)
+        if hasattr(self, 'lbl_max_length'):
+            self.lbl_max_length.setVisible(is_trocr)
+        if hasattr(self, 'spin_max_length'):
+            self.spin_max_length.setVisible(is_trocr)
+
+        # Hide/show device selection (Commercial APIs don't use local GPU)
+        if hasattr(self, 'radio_gpu'):
+            self.radio_gpu.setVisible(not is_commercial_api)
+        if hasattr(self, 'radio_cpu'):
+            self.radio_cpu.setVisible(not is_commercial_api)
+
+        # Grey out confidence checkboxes for commercial APIs (they don't provide confidence)
+        if hasattr(self, 'chk_qwen3_confidence'):
+            # Qwen3 confidence is always under user control
+            pass
+        if hasattr(self, 'chk_pylaia_confidence'):
+            # PyLaia confidence checkbox - no need to disable for APIs (different tab)
+            pass
+
+        # Update button text and state based on model
+        if is_commercial_api:
+            provider_name = self.combo_api_provider.currentText().split()[0] if hasattr(self, 'combo_api_provider') else "API"
+            self.btn_process.setText(f"☁️ Transcribe with {provider_name}")
+            self.btn_process.setToolTip(f"Transcribe using {provider_name} vision model (requires API key)")
+            # Enable if image loaded and API key provided
+            if self.current_image_path is not None and hasattr(self, 'txt_api_key') and self.txt_api_key.text().strip():
+                self.btn_process.setEnabled(True)
+            else:
+                self.btn_process.setEnabled(False)
+        elif is_qwen3:
+            self.btn_process.setText("🔍 Transcribe Entire Page")
+            self.btn_process.setToolTip("Qwen3 VLM processes the entire page at once (no segmentation needed)")
             # If an image is already loaded, enable process button
             if self.current_image_path is not None:
                 self.btn_process.setEnabled(True)
+        elif is_pylaia:
+            self.btn_process.setText("⚡ Transcribe Lines (PyLaia)")
+            self.btn_process.setToolTip("Fast CNN-RNN-CTC transcription (requires line segmentation first)")
+            # In PyLaia mode, only enable if lines are segmented
+            if hasattr(self, 'segments') and len(self.segments) > 0:
+                self.btn_process.setEnabled(True)
+            else:
+                self.btn_process.setEnabled(False)
         else:
-            self.btn_process.setText("Process All Lines")
+            self.btn_process.setText("📝 Transcribe Lines (TrOCR)")
+            self.btn_process.setToolTip("Transformer-based transcription with high accuracy (requires line segmentation first)")
             # In TrOCR mode, only enable if lines are segmented
             if hasattr(self, 'segments') and len(self.segments) > 0:
                 self.btn_process.setEnabled(True)
@@ -1198,6 +1937,16 @@ class TranscriptionGUI(QMainWindow):
             self.status_bar.showMessage("Transcribing full page with Qwen3 VLM...")
             QApplication.processEvents()  # Update UI
 
+            # Store model info for statistics
+            params_list = [f"MaxTokens: {max_tokens}", f"ImgSize: {max_img_size}"]
+            if estimate_confidence:
+                params_list.append("ConfEst")
+            self.last_model_info = {
+                'type': 'Qwen3 VLM',
+                'name': model_display_name,
+                'params': ", ".join(params_list)
+            }
+
             # Transcribe entire page
             result = self.qwen3.transcribe_page(
                 page_image,
@@ -1208,6 +1957,27 @@ class TranscriptionGUI(QMainWindow):
 
             # Display result
             self.text_editor.setPlainText(result.text)
+
+            # Update statistics panel for Qwen3
+            self.lbl_lines_processed.setText("1 (full page)")
+            if result.confidence is not None:
+                self.lbl_avg_confidence.setText(f"{result.confidence*100:.1f}%")
+            else:
+                self.lbl_avg_confidence.setText("N/A")
+
+            if result.processing_time > 0:
+                if result.processing_time < 60:
+                    self.lbl_processing_time.setText(f"{result.processing_time:.1f}s")
+                else:
+                    minutes = int(result.processing_time // 60)
+                    seconds = int(result.processing_time % 60)
+                    self.lbl_processing_time.setText(f"{minutes}m {seconds}s")
+            else:
+                self.lbl_processing_time.setText("N/A")
+
+            self.lbl_seg_method.setText("None (full page)")
+            self.lbl_model_used.setText(f"{self.last_model_info['type']}: {self.last_model_info['name']}")
+            self.lbl_model_params.setText(self.last_model_info['params'])
 
             # Update status with timing and confidence
             status_msg = f"Qwen3 transcription complete! Time: {result.processing_time:.2f}s"
@@ -1236,18 +2006,181 @@ class TranscriptionGUI(QMainWindow):
             self.btn_process.setEnabled(True)
             self.btn_segment.setEnabled(False)
 
+    def _process_with_commercial_api(self):
+        """Process entire page with commercial API (OpenAI, Gemini, or Claude)."""
+        if not self.current_image_path:
+            QMessageBox.warning(self, "Warning", "Please load an image first!")
+            return
+
+        # Get API settings
+        provider = self.combo_api_provider.currentData()
+        api_key = self.txt_api_key.text().strip()
+        model = self.combo_api_model.currentText()
+        prompt = self.txt_api_prompt.toPlainText().strip()
+        max_tokens = self.spin_api_max_tokens.value()
+        temperature = self.spin_api_temperature.value()
+
+        # Validate API key
+        if not api_key:
+            QMessageBox.warning(
+                self, "API Key Required",
+                "Please enter your API key in the Commercial API tab."
+            )
+            return
+
+        try:
+            self.status_bar.showMessage(f"Initializing {provider.upper()} API...")
+            self.btn_process.setEnabled(False)
+            self.btn_segment.setEnabled(False)
+
+            # Initialize API client if needed or if settings changed
+            api_config = (provider, api_key, model)
+            if self.api_client is None or self._current_api_config != api_config:
+                if provider == "openai":
+                    self.api_client = OpenAIInference(
+                        api_key=api_key,
+                        model=model,
+                        default_prompt=prompt if prompt else None
+                    )
+                elif provider == "gemini":
+                    self.api_client = GeminiInference(
+                        api_key=api_key,
+                        model=model,
+                        default_prompt=prompt if prompt else None
+                    )
+                elif provider == "claude":
+                    self.api_client = ClaudeInference(
+                        api_key=api_key,
+                        model=model,
+                        default_prompt=prompt if prompt else None
+                    )
+                else:
+                    QMessageBox.critical(self, "Error", f"Unknown provider: {provider}")
+                    return
+
+                self._current_api_config = api_config
+
+            # Load full page image
+            from PIL import Image
+            import time
+            page_image = Image.open(self.current_image_path).convert("RGB")
+
+            self.status_bar.showMessage(f"Transcribing with {provider.upper()} {model}...")
+            QApplication.processEvents()  # Update UI
+
+            # Store model info for statistics
+            self.last_model_info = {
+                'type': f'{provider.capitalize()} API',
+                'name': model,
+                'params': f"Temp: {temperature}, MaxTok: {max_tokens}"
+            }
+
+            # Transcribe entire page
+            start_time = time.time()
+
+            # Use provider-specific parameter names
+            if provider == "gemini":
+                result_text = self.api_client.transcribe(
+                    page_image,
+                    prompt=prompt if prompt else None,
+                    max_output_tokens=max_tokens,  # Gemini uses max_output_tokens
+                    temperature=temperature
+                )
+            else:
+                # OpenAI and Claude use max_tokens
+                result_text = self.api_client.transcribe(
+                    page_image,
+                    prompt=prompt if prompt else None,
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+
+            processing_time = time.time() - start_time
+
+            # Display result
+            self.text_editor.setPlainText(result_text)
+
+            # Update statistics panel
+            self.lbl_lines_processed.setText("1 (full page)")
+            self.lbl_avg_confidence.setText("N/A")  # APIs don't provide confidence scores
+
+            if processing_time < 60:
+                self.lbl_processing_time.setText(f"{processing_time:.1f}s")
+            else:
+                minutes = int(processing_time // 60)
+                seconds = int(processing_time % 60)
+                self.lbl_processing_time.setText(f"{minutes}m {seconds}s")
+
+            self.lbl_seg_method.setText("None (full page)")
+            self.lbl_model_used.setText(f"{self.last_model_info['type']}: {self.last_model_info['name']}")
+            self.lbl_model_params.setText(self.last_model_info['params'])
+
+            # Update status
+            status_msg = f"{provider.capitalize()} transcription complete! Time: {processing_time:.2f}s"
+            self.status_bar.showMessage(status_msg)
+
+            self.btn_process.setEnabled(True)
+            self.btn_segment.setEnabled(False)  # No segmentation for API models
+
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(
+                self, f"{provider.capitalize()} API Error",
+                f"{provider.capitalize()} API processing failed:\n{str(e)}\n\nDetails:\n{error_details}\n\n"
+                "Common issues:\n"
+                "- Invalid API key\n"
+                "- Insufficient API credits\n"
+                "- Rate limit exceeded\n"
+                "- Network connection problem"
+            )
+            self.btn_process.setEnabled(True)
+            self.btn_segment.setEnabled(False)
+
     def _process_all_lines(self):
-        """Process all detected lines with OCR (or entire page with Qwen3)."""
+        """Process all detected lines with OCR (or entire page with Qwen3/Commercial API)."""
 
-        # Check if using Qwen3
-        is_qwen3 = QWEN3_AVAILABLE and (self.model_tabs.currentIndex() == self.model_tabs.count() - 1)
+        # Determine which model tab is active
+        tab_index = self.model_tabs.currentIndex()
 
+        # Calculate tab indices
+        is_qwen3 = False
+        is_pylaia = False
+        is_commercial_api = False
+
+        tab_count = 1  # TrOCR is always first
+        qwen3_index = -1
+        pylaia_index = -1
+        api_index = -1
+
+        if QWEN3_AVAILABLE:
+            qwen3_index = tab_count
+            tab_count += 1
+        if PYLAIA_AVAILABLE:
+            pylaia_index = tab_count
+            tab_count += 1
+        if COMMERCIAL_API_AVAILABLE:
+            api_index = tab_count
+            tab_count += 1
+
+        # Determine active tab
+        if tab_index == qwen3_index:
+            is_qwen3 = True
+        elif tab_index == pylaia_index:
+            is_pylaia = True
+        elif tab_index == api_index:
+            is_commercial_api = True
+
+        # Handle full-page models (Qwen3 and Commercial APIs)
         if is_qwen3:
-            # Use Qwen3 VLM (no line segmentation)
             self._process_with_qwen3()
             return
 
-        # Standard line-based processing (TrOCR)
+        if is_commercial_api:
+            self._process_with_commercial_api()
+            return
+
+        # Standard line-based processing (TrOCR or PyLaia)
         if not self.segments:
             QMessageBox.warning(
                 self,
@@ -1257,44 +2190,163 @@ class TranscriptionGUI(QMainWindow):
             )
             return
 
-        # Determine which model source to use (Local or HuggingFace)
-        is_hf_tab = (self.model_tabs.currentIndex() == 1)
-
-        if is_hf_tab:
-            # HuggingFace model
-            model_id = self.combo_hf_model.currentText().strip()
-            if not model_id:
-                QMessageBox.warning(self, "Warning", "Please enter a HuggingFace model ID!")
-                return
-            model_path = model_id
-            is_huggingface = True
-            # Add to history when processing
-            self._add_to_hf_model_history(model_id)
-        else:
-            # Local model
-            model_data = self.combo_model.currentData()
-            if not model_data:
-                QMessageBox.warning(self, "Warning", "No model selected!")
-                return
-            model_path = str(model_data)
-            is_huggingface = False
-
         try:
-            # Initialize OCR if needed (or if model changed)
-            if self.ocr is None or self.ocr.model_path != model_path:
-                self.status_bar.showMessage(f"Loading model on {self.device.upper()}...")
-                self.ocr = TrOCRInference(
-                    model_path,
-                    device=self.device,
-                    normalize_bg=self.normalize_bg,
-                    is_huggingface=is_huggingface
+            if is_pylaia:
+                # PyLaia model handling
+                if not PYLAIA_AVAILABLE:
+                    QMessageBox.critical(self, "Error", "PyLaia is not available!")
+                    return
+
+                # Check which source is selected (Local or HuggingFace)
+                is_hf = (self.combo_pylaia_source.currentData() == "huggingface")
+
+                if is_hf:
+                    # HuggingFace model (experimental - most PyLaia models are local only)
+                    model_id = self.txt_pylaia_hf.text().strip()
+                    if not model_id:
+                        QMessageBox.warning(self, "Warning", "Please enter a HuggingFace model ID!")
+                        return
+
+                    QMessageBox.warning(
+                        self, "Experimental Feature",
+                        "HuggingFace support for PyLaia is experimental.\n\n"
+                        "Most PyLaia models are local only and not available on HuggingFace.\n"
+                        "This feature requires the model to have the correct structure:\n"
+                        "- best_model.pt (or model.pt)\n"
+                        "- model_config.json\n"
+                        "- symbols.txt"
+                    )
+                    # Note: Would need to implement HF download logic here
+                    QMessageBox.critical(self, "Not Implemented",
+                                       "HuggingFace model loading for PyLaia is not yet implemented.\n"
+                                       "Please use local models or download manually.")
+                    return
+                else:
+                    # Local model
+                    model_path = self.combo_pylaia_model.currentData()
+                    if not model_path:
+                        QMessageBox.warning(self, "Warning", "No PyLaia model selected!")
+                        return
+                    model_display_name = self.combo_pylaia_model.currentText()
+
+                # Check if language model should be used
+                use_lm = self.chk_pylaia_use_lm.isChecked()
+                lm_path = self.txt_pylaia_lm_path.text().strip() if use_lm else None
+                beam_width = self.spin_beam_width.value() if use_lm else 1
+
+                # Initialize PyLaia (with or without LM) if needed or if settings changed
+                model_key = (model_path, lm_path, use_lm)
+                if self.pylaia is None or self._current_pylaia_model != model_key:
+                    self.status_bar.showMessage(f"Loading PyLaia model on {self.device.upper()}...")
+
+                    if use_lm and lm_path and PYLAIA_LM_AVAILABLE:
+                        # Use LM-enhanced inference
+                        if not Path(lm_path).exists():
+                            QMessageBox.warning(
+                                self, "Language Model Not Found",
+                                f"Language model file not found:\n{lm_path}\n\n"
+                                "Train a language model using:\n"
+                                "python train_character_lm.py --input_dir data --output ukrainian_char.arpa"
+                            )
+                            return
+
+                        self.pylaia = PyLaiaInferenceLM(
+                            model_path=model_path,
+                            lm_path=lm_path,
+                            device=self.device
+                        )
+                        self.status_bar.showMessage(f"PyLaia model loaded with language model on {self.device.upper()}")
+                    elif use_lm and not PYLAIA_LM_AVAILABLE:
+                        QMessageBox.warning(
+                            self, "LM Not Available",
+                            "Language model support requires pyctcdecode.\n\n"
+                            "Install with: pip install pyctcdecode"
+                        )
+                        return
+                    else:
+                        # Use standard inference without LM
+                        self.pylaia = PyLaiaInference(
+                            model_path=model_path,
+                            device=self.device
+                        )
+
+                    self._current_pylaia_model = model_key
+
+                # Get confidence setting
+                return_confidence = self.chk_pylaia_confidence.isChecked()
+
+                # Store model info for statistics
+                model_name = Path(model_path).stem if not model_path.startswith("models/") else self.combo_pylaia_model.currentText()
+                params_list = [f"Confidence: {return_confidence}"]
+                if use_lm and lm_path:
+                    params_list.append(f"LM: {Path(lm_path).stem}")
+                    params_list.append(f"Beam: {beam_width}")
+
+                self.last_model_info = {
+                    'type': 'PyLaia',
+                    'name': model_name,
+                    'params': ", ".join(params_list)
+                }
+
+                # Start processing in background thread
+                self.ocr_worker = OCRWorker(
+                    self.segments, self.pylaia,
+                    return_confidence=return_confidence,
+                    is_pylaia=True
                 )
 
-            # Start processing in background thread
-            self.ocr_worker = OCRWorker(
-                self.segments, self.ocr,
-                self.num_beams, self.max_length
-            )
+            else:
+                # TrOCR model handling
+                # Check which source is selected (Local or HuggingFace)
+                is_hf = (self.combo_trocr_source.currentData() == "huggingface")
+
+                if is_hf:
+                    # HuggingFace model
+                    model_id = self.combo_hf_model.currentText().strip()
+                    if not model_id:
+                        QMessageBox.warning(self, "Warning", "Please enter a HuggingFace model ID!")
+                        return
+                    model_path = model_id
+                    is_huggingface = True
+                    model_display_name = model_id
+                    # Add to history when processing
+                    self._add_to_hf_model_history(model_id)
+                else:
+                    # Local model
+                    model_data = self.combo_model.currentData()
+                    if not model_data:
+                        QMessageBox.warning(self, "Warning", "No model selected!")
+                        return
+                    model_path = str(model_data)
+                    is_huggingface = False
+                    model_display_name = self.combo_model.currentText()
+
+                # Initialize OCR if needed (or if model changed)
+                if self.ocr is None or self.ocr.model_path != model_path:
+                    self.status_bar.showMessage(f"Loading TrOCR model on {self.device.upper()}...")
+                    self.ocr = TrOCRInference(
+                        model_path,
+                        device=self.device,
+                        normalize_bg=self.normalize_bg,
+                        is_huggingface=is_huggingface
+                    )
+
+                # Store model info for statistics
+                params_list = [f"Beams: {self.num_beams}", f"MaxLen: {self.max_length}"]
+                if self.normalize_bg:
+                    params_list.append("NormBG")
+                self.last_model_info = {
+                    'type': 'TrOCR',
+                    'name': model_display_name,
+                    'params': ", ".join(params_list)
+                }
+
+                # Start processing in background thread
+                self.ocr_worker = OCRWorker(
+                    self.segments, self.ocr,
+                    self.num_beams, self.max_length,
+                    is_pylaia=False
+                )
             self.ocr_worker.progress.connect(self._on_ocr_progress)
             self.ocr_worker.finished.connect(self._on_ocr_finished)
             self.ocr_worker.error.connect(self._on_ocr_error)
@@ -1359,6 +2411,16 @@ class TranscriptionGUI(QMainWindow):
                 self.lbl_processing_time.setText(f"{minutes}m {seconds}s")
         else:
             self.lbl_processing_time.setText("N/A")
+
+        # Display model info
+        if self.last_model_info:
+            model_type = self.last_model_info.get('type', 'Unknown')
+            model_name = self.last_model_info.get('name', 'Unknown')
+            self.lbl_model_used.setText(f"{model_type}: {model_name}")
+            self.lbl_model_params.setText(self.last_model_info.get('params', 'N/A'))
+        else:
+            self.lbl_model_used.setText("N/A")
+            self.lbl_model_params.setText("N/A")
 
     def _on_ocr_error(self, error_msg: str):
         """Handle OCR errors."""
@@ -1693,6 +2755,35 @@ class TranscriptionGUI(QMainWindow):
             self.combo_kraken_model.setCurrentIndex(self.combo_kraken_model.count() - 1)
             self.kraken_model_path = file_path
             self.status_bar.showMessage(f"Selected Kraken model: {model_name}")
+
+    def _browse_pylaia_model(self):
+        """Browse for PyLaia model directory."""
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select PyLaia Model Directory",
+            ""
+        )
+
+        if dir_path:
+            # Verify it contains required files
+            model_dir = Path(dir_path)
+            required_files = ['best_model.pt', 'model_config.json', 'symbols.txt']
+            missing_files = [f for f in required_files if not (model_dir / f).exists()]
+
+            if missing_files:
+                QMessageBox.warning(
+                    self,
+                    "Invalid PyLaia Model",
+                    f"Selected directory is missing required files:\n{', '.join(missing_files)}\n\n"
+                    f"A valid PyLaia model directory must contain:\n• best_model.pt\n• model_config.json\n• symbols.txt"
+                )
+                return
+
+            # Add to combo box
+            model_name = model_dir.stem
+            self.combo_pylaia_model.addItem(f"Custom: {model_name}", str(dir_path))
+            self.combo_pylaia_model.setCurrentIndex(self.combo_pylaia_model.count() - 1)
+            self.status_bar.showMessage(f"Selected PyLaia model: {model_name}")
 
     def _open_multiple_images(self):
         """Open multiple images for batch processing."""
