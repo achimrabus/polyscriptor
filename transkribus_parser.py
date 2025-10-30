@@ -45,7 +45,18 @@ class TranskribusParser:
         self.normalize_background = normalize_background  # NEW: background normalization flag
         self.preserve_aspect_ratio = preserve_aspect_ratio  # NEW: aspect ratio preservation
         self.target_height = target_height  # NEW: target height for resizing (default 128px as per best practices)
-        self.num_workers = num_workers if num_workers is not None else cpu_count()  # Use all cores by default
+
+        # Optimize worker count for 16 core / 32 thread CPU
+        # Use 1.25x physical cores for mixed I/O + CPU workload
+        # Assumes hyperthreading (cpu_count() returns logical cores)
+        if num_workers is not None:
+            self.num_workers = num_workers
+        else:
+            # Use 62.5% of logical cores (equivalent to 1.25x physical cores with 2-way hyperthreading)
+            # For 16 cores / 32 threads: 32 * 0.625 = 20 workers
+            # This avoids excessive context switching while maximizing throughput
+            default_workers = max(1, int(cpu_count() * 0.625))
+            self.num_workers = default_workers
 
         # Create output directories
         self.images_dir = self.output_dir / "line_images"
@@ -371,9 +382,14 @@ class TranskribusParser:
         # Use multiprocessing Pool for parallel processing
         if self.num_workers > 1:
             with Pool(processes=self.num_workers) as pool:
+                # Chunksize: Each worker processes multiple pages before returning
+                # Reduces task distribution overhead for datasets with many pages
+                # Use dynamic sizing: total_pages / (workers * 4) ensures good load balancing
+                chunksize = max(1, len(xml_files) // (self.num_workers * 4))
+
                 # Process pages in parallel with progress bar
                 for lines in tqdm(
-                    pool.imap(self._process_single_page_wrapper, xml_files),
+                    pool.imap(self._process_single_page_wrapper, xml_files, chunksize=chunksize),
                     total=len(xml_files),
                     desc="Processing pages"
                 ):

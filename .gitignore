@@ -15,6 +15,7 @@ build/
 
 # Virtual environments
 venv/
+venv_*/
 env/
 ENV/
 .venv
@@ -109,3 +110,26 @@ nul
 
 # API keys storage (from GUI)
 .trocr_gui/
+
+# External repositories
+party_repo/
+kraken_repo/
+
+# Backup and temporary files
+*_backup.py
+*_backup_*.py
+fix_*.py
+
+# Session documentation (auto-generated)
+COMPREHENSIVE_*.md
+QWEN_*.md
+KRAKEN_*.md
+Documentation/
+
+# Test and debug scripts (temporary)
+check_*.py
+test_*.py
+
+# Legacy/broken inference implementations
+inference_pylaia.py
+inference_pylaia_lm.py

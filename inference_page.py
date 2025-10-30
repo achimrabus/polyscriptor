@@ -455,6 +455,10 @@ class TrOCRInference:
         if self.normalize_bg:
             line_image = normalize_background(line_image)
 
+        # Ensure image is in RGB mode (TrOCR requires 3 channels)
+        if line_image.mode != 'RGB':
+            line_image = line_image.convert('RGB')
+
         # Prepare image
         pixel_values = self.processor(
             images=line_image,

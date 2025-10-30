@@ -81,16 +81,30 @@ class KrakenLineSegmenter:
         Returns:
             List of LineSegment objects sorted top to bottom
         """
-        print(f"[KrakenSegmenter] Segmenting image (size={image.size}, "
+        print(f"[KrakenSegmenter] Segmenting image (size={image.size}, mode={image.mode}, "
               f"direction={text_direction}, binarize={use_binarization})")
 
         try:
-            # Step 1: Optional binarization for degraded documents
+            # Step 0: Convert to grayscale if needed (Kraken works better with grayscale)
+            if image.mode not in ('L', '1'):
+                print(f"[KrakenSegmenter] Converting from {image.mode} to grayscale...")
+                image = image.convert('L')
+
+            # Step 1: Binarize (required by pageseg.segment)
+            # pageseg.segment REQUIRES binary images
             if use_binarization:
                 print(f"[KrakenSegmenter] Applying neural binarization...")
                 processed_img = self.binarization.nlbin(image)
             else:
-                processed_img = image
+                # Simple Otsu binarization as fallback
+                print(f"[KrakenSegmenter] Applying Otsu binarization...")
+                import numpy as np
+                from PIL import ImageOps
+                # Otsu's method
+                img_array = np.array(image)
+                threshold = np.median(img_array)  # Simple threshold
+                binary = img_array > threshold
+                processed_img = Image.fromarray((binary * 255).astype(np.uint8), mode='L')
 
             # Step 2: Line segmentation using Kraken's classical algorithm
             # This is more robust than basic HPP and works well on historical documents
@@ -100,9 +114,20 @@ class KrakenLineSegmenter:
                 text_direction=text_direction
             )
 
+            # Handle both dict (old Kraken) and Segmentation object (new Kraken)
+            if isinstance(seg_result, dict):
+                print(f"[KrakenSegmenter] pageseg.segment returned dict (old Kraken API)")
+                # Old API: seg_result is a dict with 'boxes' key
+                seg_lines = seg_result.get('boxes', seg_result.get('lines', []))
+            else:
+                print(f"[KrakenSegmenter] pageseg.segment returned Segmentation object")
+                seg_lines = seg_result.lines
+
+            print(f"[KrakenSegmenter] Processing {len(seg_lines)} lines...")
+
             # Step 3: Extract line information
             lines = []
-            for idx, line in enumerate(seg_result.lines):
+            for idx, line in enumerate(seg_lines):
                 # Extract bounding box
                 bbox = line.bbox  # (x_min, y_min, x_max, y_max)
 

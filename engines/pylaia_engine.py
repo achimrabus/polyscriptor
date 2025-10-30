@@ -22,10 +22,9 @@ except ImportError:
     PYQT_AVAILABLE = False
 
 try:
-    from inference_pylaia import PyLaiaInference, PYLAIA_MODELS
-    from inference_pylaia_lm import PyLaiaInferenceLM, check_lm_availability
+    from inference_pylaia_wsl import PyLaiaInferenceWSL as PyLaiaInference, PYLAIA_MODELS
     PYLAIA_AVAILABLE = True
-    PYLAIA_LM_AVAILABLE = check_lm_availability()
+    PYLAIA_LM_AVAILABLE = False  # Language model not supported in WSL version yet
 except ImportError:
     PYLAIA_AVAILABLE = False
     PYLAIA_MODELS = {}
