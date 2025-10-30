@@ -1,21 +1,25 @@
 """
 Fine-tune Qwen3-VL on Ukrainian/Cyrillic manuscripts for handwriting recognition.
 
-This script adapts the Qwen3-VL-2B model to Ukrainian manuscript transcription
+This script adapts the Qwen3-VL-8B model to Ukrainian manuscript transcription
 using LoRA (Low-Rank Adaptation) for memory-efficient fine-tuning.
 
 Hardware: Optimized for 2x RTX 4090 (48GB total VRAM)
-Training time: ~2-4 hours for 10 epochs on 2-5K line images
+Training time: ~2-3 hours for 5 epochs on 19K line images
 
 Usage:
     # Single GPU
-    python finetune_qwen_ukrainian.py --data_dir ./processed_data --epochs 10
+    python finetune_qwen_ukrainian.py --data_root ./data/ukrainian_train_aspect_ratio --epochs 5
 
-    # Multi-GPU (automatic)
-    python finetune_qwen_ukrainian.py --data_dir ./processed_data --epochs 10 --multi_gpu
+    # Multi-GPU with torchrun (recommended for 2x4090)
+    torchrun --nproc_per_node=2 finetune_qwen_ukrainian.py \
+        --data_root ./data/ukrainian_train_aspect_ratio \
+        --train_csv train.csv \
+        --val_csv val.csv \
+        --epochs 5
 
     # Resume from checkpoint
-    python finetune_qwen_ukrainian.py --data_dir ./processed_data --resume ./results-ukrainian/checkpoint-1000
+    python finetune_qwen_ukrainian.py --data_root ./data/ukrainian_train_aspect_ratio --resume ./models/Qwen3-VL-8B-ukrainian/checkpoint-1000
 """
 
 import argparse
@@ -29,12 +33,12 @@ import pandas as pd
 
 from datasets import Dataset
 from trl import SFTTrainer, SFTConfig
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+from transformers import AutoProcessor, Qwen3VLForConditionalGeneration, EarlyStoppingCallback
 from peft import LoraConfig, get_peft_model
 from qwen_vl_utils import process_vision_info
 
 
-def load_ukrainian_dataset(data_dir: str, split: str = "train") -> Dataset:
+def load_ukrainian_dataset(data_dir: str, csv_filename: str) -> Dataset:
     """
     Load Ukrainian manuscript dataset from transkribus_parser.py output.
 
@@ -46,20 +50,16 @@ def load_ukrainian_dataset(data_dir: str, split: str = "train") -> Dataset:
                 image_002.jpg
                 ...
 
-    CSV columns: image_name, text
+    CSV format: image_path,text (no header)
     """
     data_path = Path(data_dir)
-    csv_file = data_path / f"{split}.csv"
+    csv_file = data_path / csv_filename
 
     if not csv_file.exists():
         raise FileNotFoundError(f"Dataset CSV not found: {csv_file}")
 
-    # Load CSV
-    df = pd.read_csv(csv_file)
-
-    # Validate columns
-    if "image_name" not in df.columns or "text" not in df.columns:
-        raise ValueError(f"CSV must have 'image_name' and 'text' columns. Found: {df.columns.tolist()}")
+    # Load CSV without header (transkribus_parser.py format)
+    df = pd.read_csv(csv_file, header=None, names=["image_path", "text"])
 
     # Filter out empty text
     df = df[df["text"].notna() & (df["text"].str.strip() != "")]
@@ -71,21 +71,25 @@ def load_ukrainian_dataset(data_dir: str, split: str = "train") -> Dataset:
 
     # Add image loading function
     def load_image(example):
-        image_path = data_path / "line_images" / example["image_name"]
-        if not image_path.exists():
+        # image_path is relative from CSV (e.g., "line_images\image.png")
+        image_full_path = data_path / example["image_path"]
+        if not image_full_path.exists():
             # Return None for missing images - will be filtered later
             return {"image": None, "text": example["text"]}
 
         try:
-            example["image"] = Image.open(image_path).convert("RGB")
+            example["image"] = Image.open(image_full_path).convert("RGB")
         except Exception as e:
-            print(f"Warning: Failed to load {image_path}: {e}")
+            print(f"Warning: Failed to load {image_full_path}: {e}")
             example["image"] = None
 
         return example
 
-    # Load images lazily
-    dataset = dataset.map(load_image, num_proc=4)
+    # Load images in parallel - optimized for 16 core / 32 thread CPU
+    # Use 20 workers (1.25x physical cores) for optimal I/O + CPU performance
+    import multiprocessing
+    num_workers = max(1, int(multiprocessing.cpu_count() * 0.625))  # 32 * 0.625 = 20
+    dataset = dataset.map(load_image, num_proc=num_workers)
 
     # Filter out missing images
     dataset = dataset.filter(lambda x: x["image"] is not None)
@@ -156,29 +160,35 @@ def create_collate_fn(processor):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune Qwen3-VL on Ukrainian manuscripts")
-    parser.add_argument("--data_dir", type=str, required=True,
+    parser = argparse.ArgumentParser(description="Fine-tune Qwen3-VL-8B on Ukrainian manuscripts")
+    parser.add_argument("--data_root", type=str, required=True,
                         help="Path to dataset directory (output from transkribus_parser.py)")
-    parser.add_argument("--output_dir", type=str, default="./results-ukrainian-qwen",
+    parser.add_argument("--train_csv", type=str, default="train.csv",
+                        help="Training CSV filename (default: train.csv)")
+    parser.add_argument("--val_csv", type=str, default="val.csv",
+                        help="Validation CSV filename (default: val.csv)")
+    parser.add_argument("--output_dir", type=str, default="./models/Qwen3-VL-8B-ukrainian",
                         help="Output directory for checkpoints")
-    parser.add_argument("--base_model", type=str, default="Qwen/Qwen3-VL-2B-Instruct",
-                        help="Base Qwen3-VL model (2B or 8B)")
-    parser.add_argument("--epochs", type=int, default=10,
-                        help="Number of training epochs (default: 10)")
+    parser.add_argument("--base_model", type=str, default="Qwen/Qwen3-VL-8B-Instruct",
+                        help="Base Qwen3-VL model (default: Qwen3-VL-8B-Instruct)")
+    parser.add_argument("--epochs", type=int, default=5,
+                        help="Number of training epochs (default: 5)")
     parser.add_argument("--batch_size", type=int, default=4,
-                        help="Per-device batch size (default: 4 for 2B model on 4090)")
+                        help="Per-device batch size (default: 4 for 8B model on 4090)")
     parser.add_argument("--gradient_accumulation", type=int, default=8,
-                        help="Gradient accumulation steps (default: 8, effective batch=32)")
+                        help="Gradient accumulation steps (default: 8, effective batch=64)")
     parser.add_argument("--learning_rate", type=float, default=5e-5,
                         help="Learning rate (default: 5e-5)")
     parser.add_argument("--lora_r", type=int, default=16,
                         help="LoRA rank (default: 16)")
     parser.add_argument("--lora_alpha", type=int, default=32,
                         help="LoRA alpha (default: 32)")
+    parser.add_argument("--early_stopping_patience", type=int, default=3,
+                        help="Early stopping patience in evaluations (default: 3)")
+    parser.add_argument("--early_stopping_threshold", type=float, default=0.01,
+                        help="Early stopping threshold (default: 0.01)")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume from checkpoint path")
-    parser.add_argument("--multi_gpu", action="store_true",
-                        help="Enable multi-GPU training (automatic DDP)")
     parser.add_argument("--push_to_hub", action="store_true",
                         help="Push model to HuggingFace Hub after training")
     parser.add_argument("--hub_model_id", type=str, default=None,
@@ -195,10 +205,10 @@ def main():
         json.dump(vars(args), f, indent=2)
 
     print("=" * 80)
-    print("Qwen3-VL Fine-tuning for Ukrainian Manuscripts")
+    print("Qwen3-VL-8B Fine-tuning for Ukrainian Manuscripts")
     print("=" * 80)
     print(f"Base model: {args.base_model}")
-    print(f"Data directory: {args.data_dir}")
+    print(f"Data directory: {args.data_root}")
     print(f"Output directory: {args.output_dir}")
     print(f"Epochs: {args.epochs}")
     print(f"Batch size: {args.batch_size} (per device)")
@@ -206,17 +216,18 @@ def main():
     print(f"Effective batch size: {args.batch_size * args.gradient_accumulation * torch.cuda.device_count()}")
     print(f"Learning rate: {args.learning_rate}")
     print(f"LoRA rank: {args.lora_r}, alpha: {args.lora_alpha}")
+    print(f"Early stopping: patience={args.early_stopping_patience}, threshold={args.early_stopping_threshold}")
     print("=" * 80)
 
     # Load dataset
     print("\nLoading training dataset...")
-    train_dataset = load_ukrainian_dataset(args.data_dir, split="train")
+    train_dataset = load_ukrainian_dataset(args.data_root, args.train_csv)
 
     print("\nLoading validation dataset...")
     try:
-        val_dataset = load_ukrainian_dataset(args.data_dir, split="val")
+        val_dataset = load_ukrainian_dataset(args.data_root, args.val_csv)
         eval_strategy = "steps"
-        eval_steps = 500
+        eval_steps = 100  # More frequent evaluation for early stopping
     except FileNotFoundError:
         print("No validation set found, training without evaluation")
         val_dataset = None
@@ -247,17 +258,20 @@ def main():
         warmup_steps=500,
         lr_scheduler_type="cosine",
 
-        # Evaluation
-        evaluation_strategy=eval_strategy,
+        # Evaluation (use eval_strategy for SFTConfig, not evaluation_strategy)
+        eval_strategy=eval_strategy,
         eval_steps=eval_steps,
+
+        # Early stopping
+        load_best_model_at_end=(val_dataset is not None),
+        metric_for_best_model="eval_loss" if val_dataset else None,
+        greater_is_better=False,  # Lower eval_loss is better
 
         # Logging and checkpointing
         logging_steps=50,
-        save_steps=500,
+        save_steps=100,  # More frequent saves for early stopping
         save_strategy="steps",
-        save_total_limit=3,  # Keep only 3 best checkpoints
-        load_best_model_at_end=(val_dataset is not None),
-        metric_for_best_model="eval_loss" if val_dataset else None,
+        save_total_limit=5,  # Keep 5 best checkpoints for early stopping
 
         # HuggingFace Hub
         push_to_hub=args.push_to_hub,
@@ -265,6 +279,12 @@ def main():
 
         # Qwen3-VL specific
         remove_unused_columns=False,  # Keep all columns for custom collate_fn
+
+        # DataLoader optimization - use multiple workers for data loading during training
+        # Note: This is separate from dataset.map() num_proc (which loads images during preprocessing)
+        # During training, use fewer workers to avoid CPU bottleneck (GPU is the bottleneck)
+        # Windows multiprocessing issue: set to 0 to avoid pickle errors with local functions
+        dataloader_num_workers=0,  # Must be 0 on Windows due to multiprocessing limitations
 
         # Multi-GPU (DDP will be used automatically if CUDA_VISIBLE_DEVICES is set)
         # For 2x 4090: torchrun --nproc_per_node=2 finetune_qwen_ukrainian.py ...
@@ -276,10 +296,13 @@ def main():
 
     # Load model
     print(f"\nLoading vision-language model from {args.base_model}...")
+    # Check if using DDP (torchrun sets LOCAL_RANK)
+    is_ddp = "LOCAL_RANK" in os.environ
+
     model = Qwen3VLForConditionalGeneration.from_pretrained(
         args.base_model,
         torch_dtype=torch.float16,  # Use fp16 for memory efficiency
-        device_map="auto" if not args.multi_gpu else None,  # Let DDP handle device placement
+        device_map=None if is_ddp else "auto",  # Let DDP handle device placement in multi-GPU
     )
 
     # Configure LoRA
@@ -308,14 +331,24 @@ def main():
     # Create data collator
     collate_fn = create_collate_fn(processor)
 
-    # Initialize trainer
+    # Initialize trainer with early stopping
     print("\nInitializing trainer...")
+    callbacks = []
+    if val_dataset is not None:
+        early_stopping = EarlyStoppingCallback(
+            early_stopping_patience=args.early_stopping_patience,
+            early_stopping_threshold=args.early_stopping_threshold
+        )
+        callbacks.append(early_stopping)
+        print(f"Early stopping enabled: patience={args.early_stopping_patience}, threshold={args.early_stopping_threshold}")
+
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         args=training_args,
         data_collator=collate_fn,
+        callbacks=callbacks,
     )
 
     # Resume from checkpoint if specified
