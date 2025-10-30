@@ -209,6 +209,9 @@ class Qwen3VLMInference:
             "max_new_tokens": max_new_tokens,
             "do_sample": do_sample,
             "num_beams": num_beams,
+            "repetition_penalty": 1.2,  # Penalize repetition (1.0 = no penalty, >1.0 = discourage)
+            "no_repeat_ngram_size": 3,  # Prevent repeating 3-grams
+            "early_stopping": True,  # Stop when EOS is generated
         }
 
         if do_sample and temperature is not None:
@@ -350,13 +353,13 @@ QWEN3_MODELS = {
     },
 
     # Add more finetuned models here as they become available
-    # "qwen3-vl-8b-ukrainian": {
-    #     "base": "Qwen/Qwen3-VL-8B-Instruct",
-    #     "adapter": "your-username/qwen3-vl-ukrainian",
-    #     "description": "Finetuned for Ukrainian handwriting",
-    #     "vram": "12-16 GB",
-    #     "speed": "Medium"
-    # },
+    "qwen3-vl-8b-ukrainian": {
+        "base": "Qwen/Qwen3-VL-8B-Instruct",
+        "adapter": "./models/Qwen3-VL-8B-ukrainian/final_model",
+        "description": "Finetuned for Ukrainian manuscripts (locally trained)",
+        "vram": "12-16 GB",
+        "speed": "Medium"
+    },
 }
 
 

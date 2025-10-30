@@ -1,0 +1,50 @@
+# PyLaia training configuration for Glagolitic manuscripts
+# This file specifies the training parameters for PyLaia CTC-based HTR
+
+# Positional arguments (required)
+syms: data/pylaia_glagolitic/syms.txt
+img_dirs:
+  - data/pylaia_glagolitic/images
+tr_txt_table: data/pylaia_glagolitic/train.txt
+va_txt_table: data/pylaia_glagolitic/val.txt
+
+# Common settings
+common:
+  train_path: models/pylaia_glagolitic
+  seed: 74565
+  monitor: va_cer
+
+# Data settings
+data:
+  batch_size: 16
+  color_mode: L  # Grayscale mode (1 channel) to match model
+  num_workers: 4
+
+# Training settings
+train:
+  delimiters: ['<space>']  # Use <space> token as delimiter
+  early_stopping_patience: 20
+  checkpoint_k: 3
+  augment_training: true
+
+# Optimizer settings
+optimizer:
+  name: Adam
+  learning_rate: 0.0003
+
+# Scheduler settings
+scheduler:
+  active: true
+  monitor: va_cer
+  patience: 10
+  factor: 0.5
+
+# Trainer settings (PyTorch Lightning)
+trainer:
+  max_epochs: 100
+  devices: 1
+  accelerator: gpu
+  precision: 16
+  gradient_clip_val: 5.0
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 50
