@@ -990,9 +990,9 @@ class TranscriptionGUI(QMainWindow):
         self.text_editor = QTextEdit()
         self.text_editor.setPlaceholderText("Transcription will appear here...")
 
-        # Set default font to 12pt for better readability
+        # Set default font to 14pt for better readability
         default_font = QFont()
-        default_font.setPointSize(12)
+        default_font.setPointSize(14)
         self.text_editor.setFont(default_font)
 
         layout.addWidget(self.text_editor)
