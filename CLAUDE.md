@@ -87,7 +87,37 @@ python inference_page.py \
 
 # GUI application for interactive transcription
 python transcription_gui_qt.py
+
+# Party GUI for proof-of-concept (experimental)
+python transcription_gui_party.py
 ```
+
+### Party OCR Integration
+
+**Party** is a multilingual transformer-based HTR system that operates on whole pages using PAGE XML format.
+
+```bash
+# Party inference via WSL (required on Windows)
+wsl bash -c "cd /path/to/image/directory && \
+source /mnt/c/Users/Achim/Documents/TrOCR/dhlab-slavistik/venv_party_wsl/bin/activate && \
+party -d cuda:0 ocr -i input.xml output.xml \
+-mi /path/to/model.safetensors --language chu"
+
+# Example with full paths
+wsl bash -c "cd /mnt/c/Users/Achim/Desktop && \
+source /mnt/c/Users/Achim/Documents/TrOCR/dhlab-slavistik/venv_party_wsl/bin/activate && \
+party -d cuda:0 ocr -i page.xml page_output.xml \
+-mi /mnt/c/Users/Achim/Documents/TrOCR/dhlab-slavistik/models/party_models/party_european_langs.safetensors \
+--language chu"
+```
+
+**Important Notes**:
+- Party requires PAGE XML with line segmentation (use `page_xml_exporter.py` or Transkribus export)
+- Model: `models/party_models/party_european_langs.safetensors`
+- Language code: `chu` (Church Slavonic), `rus` (Russian), `ukr` (Ukrainian)
+- **CRITICAL BUG FIX**: `party_repo/party/tokenizer.py:236` - Added `(1, 'big')` to `to_bytes()` for Python 3.10+ compatibility
+- Party runs in WSL environment (`venv_party_wsl`) to avoid dependency conflicts
+- Image and XML must be in same directory for Party to find the image file
 
 ### GPU Monitoring
 ```bash
@@ -163,11 +193,27 @@ python eval_checkpoint_detailed.py --checkpoint models/ukrainian_model/checkpoin
     - Beam search for quality (num_beams=1 for speed, 4 for quality)
 - **Preprocessing**: `normalize_background()` function applies CLAHE normalization (must match training)
 
-**4. GUI Application (`transcription_gui_qt.py`)**
-- PyQt6-based professional interface
-- Features: zoom/pan, drag & drop, model comparison, export to TXT/CSV
-- Integrates with inference pipeline
-- Supports both local and HuggingFace models
+**4. GUI Applications**
+- **`transcription_gui_qt.py`**: Main PyQt6-based GUI
+  - Features: zoom/pan, drag & drop, model comparison, export to TXT/CSV
+  - Integrates with TrOCR inference pipeline
+  - Supports both local and HuggingFace models
+- **`transcription_gui_plugin.py`**: Plugin-based GUI with HTREngine architecture
+  - Modular engine system (TrOCR, Qwen3-VL, PyLaia, Kraken)
+  - Supports line-level and page-level recognition
+  - PAGE XML export capability
+- **`transcription_gui_party.py`**: Proof-of-concept for Party OCR integration
+  - Left-image, right-transcription split view
+  - Kraken line segmentation with green box visualization
+  - Automatic PAGE XML generation for Party processing
+  - WSL subprocess integration with Party OCR
+
+**5. PAGE XML Integration (`page_xml_exporter.py`)**
+- Exports line segmentation data to PAGE XML 2013-07-15 format
+- Compatible with Transkribus, Party, and other PAGE XML processors
+- Handles optional attributes safely (`confidence`, `coords`, `text`)
+- Supports both bounding box and polygon coordinates
+- Used by GUIs for exporting segmentation results
 
 ### Configuration System
 

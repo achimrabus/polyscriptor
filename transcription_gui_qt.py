@@ -43,6 +43,7 @@ from inference_page import (
     LineSegmenter, PageXMLSegmenter, TrOCRInference,
     LineSegment, normalize_background
 )
+from page_xml_exporter import PageXMLExporter
 
 # Import Kraken segmenter (optional - will handle import error gracefully)
 try:
@@ -2579,10 +2580,12 @@ class TranscriptionGUI(QMainWindow):
         radio_txt.setChecked(True)
         radio_csv = QRadioButton("CSV with confidence (.csv)")
         radio_tsv = QRadioButton("TSV with confidence (.tsv)")
+        radio_xml = QRadioButton("PAGE XML (.xml) - for Party and other processors")
 
         format_layout.addWidget(radio_txt)
         format_layout.addWidget(radio_csv)
         format_layout.addWidget(radio_tsv)
+        format_layout.addWidget(radio_xml)
         format_group.setLayout(format_layout)
         layout.addWidget(format_group)
 
@@ -2607,7 +2610,7 @@ class TranscriptionGUI(QMainWindow):
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
 
-        if dialog.exec() != QDialog.DialogResult.Accepted:
+        if dialog.exec() != 1:  # 1 = Accepted
             return
 
         # Determine export format
@@ -2615,14 +2618,22 @@ class TranscriptionGUI(QMainWindow):
             file_filter = "CSV Files (*.csv)"
             default_ext = ".csv"
             delimiter = ","
+            export_type = "csv"
         elif radio_tsv.isChecked():
             file_filter = "TSV Files (*.tsv)"
             default_ext = ".tsv"
             delimiter = "\t"
+            export_type = "tsv"
+        elif radio_xml.isChecked():
+            file_filter = "PAGE XML Files (*.xml)"
+            default_ext = ".xml"
+            delimiter = None
+            export_type = "xml"
         else:
             file_filter = "Text Files (*.txt)"
             default_ext = ".txt"
             delimiter = None
+            export_type = "txt"
 
         # Get save location
         file_path, _ = QFileDialog.getSaveFileName(
@@ -2638,25 +2649,46 @@ class TranscriptionGUI(QMainWindow):
             file_path += default_ext
 
         try:
-            with open(file_path, 'w', encoding='utf-8', newline='') as f:
-                if delimiter:  # CSV or TSV format
-                    import csv
-                    writer = csv.writer(f, delimiter=delimiter)
+            if export_type == "xml":
+                # PAGE XML export
+                if not self.current_image_path:
+                    QMessageBox.warning(self, "Warning", "No image loaded. PAGE XML requires image reference.")
+                    return
 
-                    # Write header
-                    if chk_include_confidence.isChecked():
-                        writer.writerow(['Line', 'Text', 'Confidence'])
-                        for idx, seg in enumerate(self.segments, 1):
-                            conf_str = f"{seg.confidence*100:.2f}%" if seg.confidence is not None else "N/A"
-                            writer.writerow([idx, seg.text or "", conf_str])
-                    else:
-                        writer.writerow(['Line', 'Text'])
-                        for idx, seg in enumerate(self.segments, 1):
-                            writer.writerow([idx, seg.text or ""])
-                else:  # Plain text format
-                    for seg in self.segments:
-                        if seg.text:
-                            f.write(seg.text + "\n")
+                # Get image dimensions
+                img = Image.open(self.current_image_path)
+                width, height = img.size
+
+                # Create exporter and export
+                exporter = PageXMLExporter(self.current_image_path, width, height)
+                exporter.export(
+                    self.segments,
+                    file_path,
+                    creator="TrOCR-GUI",
+                    comments=f"Segmentation method: {self.segmentation_method}"
+                )
+
+            else:
+                # Text-based export (TXT, CSV, TSV)
+                with open(file_path, 'w', encoding='utf-8', newline='') as f:
+                    if delimiter:  # CSV or TSV format
+                        import csv
+                        writer = csv.writer(f, delimiter=delimiter)
+
+                        # Write header
+                        if chk_include_confidence.isChecked():
+                            writer.writerow(['Line', 'Text', 'Confidence'])
+                            for idx, seg in enumerate(self.segments, 1):
+                                conf_str = f"{seg.confidence*100:.2f}%" if seg.confidence is not None else "N/A"
+                                writer.writerow([idx, seg.text or "", conf_str])
+                        else:
+                            writer.writerow(['Line', 'Text'])
+                            for idx, seg in enumerate(self.segments, 1):
+                                writer.writerow([idx, seg.text or ""])
+                    else:  # Plain text format
+                        for seg in self.segments:
+                            if seg.text:
+                                f.write(seg.text + "\n")
 
             self.status_bar.showMessage(f"Exported: {file_path}")
             QMessageBox.information(self, "Export Complete", f"Transcription exported to:\n{file_path}")

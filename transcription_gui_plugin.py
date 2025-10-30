@@ -36,6 +36,7 @@ from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont, QAction
 
 # Import segmentation components
 from inference_page import LineSegmenter, PageXMLSegmenter, LineSegment
+from page_xml_exporter import PageXMLExporter
 
 # Import HTR Engine Plugin System
 from htr_engine_base import get_global_registry, HTREngine, TranscriptionResult
@@ -363,6 +364,10 @@ class TranscriptionGUI(QMainWindow):
         btn_export_csv = QPushButton("Export CSV")
         btn_export_csv.clicked.connect(self.export_csv)
         export_layout.addWidget(btn_export_csv)
+
+        btn_export_xml = QPushButton("Export PAGE XML")
+        btn_export_xml.clicked.connect(self.export_xml)
+        export_layout.addWidget(btn_export_xml)
 
         results_layout.addLayout(export_layout)
 
@@ -734,6 +739,53 @@ class TranscriptionGUI(QMainWindow):
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to export: {e}")
+
+    def export_xml(self):
+        """Export transcriptions to PAGE XML file."""
+        if not self.line_segments:
+            QMessageBox.warning(self, "No Data", "No segmentation data to export. Please segment lines first.")
+            return
+
+        if not self.current_image_path:
+            QMessageBox.warning(self, "No Image", "PAGE XML requires an image reference")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export PAGE XML",
+            str(self.current_image_path.with_suffix(".xml")) if self.current_image_path else "transcription.xml",
+            "PAGE XML Files (*.xml);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Get image dimensions
+            img = Image.open(self.current_image_path)
+            width, height = img.size
+
+            # If transcriptions exist, add them to segments
+            segments_to_export = self.line_segments.copy()
+            if self.transcriptions and len(self.transcriptions) == len(self.line_segments):
+                # Add transcriptions to segments
+                for i, (seg, text) in enumerate(zip(segments_to_export, self.transcriptions)):
+                    seg.text = text
+
+            # Create exporter and export
+            exporter = PageXMLExporter(str(self.current_image_path), width, height)
+            exporter.export(
+                segments_to_export,
+                file_path,
+                creator="HTR-Transcription-GUI-Plugin",
+                comments=f"Engine: {self.current_engine.get_name() if self.current_engine else 'None'}"
+            )
+
+            self.status_bar.showMessage(f"Exported PAGE XML to: {file_path}")
+            QMessageBox.information(self, "Success", f"Exported PAGE XML to:\n{file_path}")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to export PAGE XML: {e}")
 
     def load_settings(self):
         """Load saved settings."""
