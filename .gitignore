@@ -110,6 +110,8 @@ nul
 
 # API keys storage (from GUI)
 .trocr_gui/
+.env
+*.env
 
 # External repositories
 party_repo/
