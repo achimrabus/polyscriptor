@@ -432,14 +432,18 @@ class PartyEngine(HTREngine):
 
                 # CRITICAL: Use original image if provided (preserves language recognition)
                 if original_image_path and line_bboxes:
-                    # Copy original image to temp directory
-                    from shutil import copy2
+                    # Load and convert original image to RGB (Party requires 3 channels)
                     original_path = Path(original_image_path)
-                    page_image_path = temp_path / original_path.name
-                    copy2(original_image_path, page_image_path)
+                    img = Image.open(original_image_path)
 
-                    # Get image dimensions
-                    img = Image.open(page_image_path)
+                    # Convert to RGB if needed (handles RGBA, grayscale, etc.)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+
+                    # Save RGB image to temp directory
+                    page_image_path = temp_path / original_path.name
+                    img.save(page_image_path)
+
                     width, height = img.size
 
                     # Create segments with original coordinates
