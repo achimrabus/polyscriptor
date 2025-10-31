@@ -135,3 +135,7 @@ test_*.py
 # Legacy/broken inference implementations
 inference_pylaia.py
 inference_pylaia_lm.py
+
+htr_gui/
+
+htr_gui/

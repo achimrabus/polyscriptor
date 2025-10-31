@@ -15,6 +15,7 @@ Usage:
 """
 
 import sys
+import os
 import tempfile
 import subprocess
 from pathlib import Path
@@ -49,18 +50,11 @@ class PartyWorker(QThread):
         self.segments = segments
         self.image_path = image_path
         self.model_path = model_path
-        self.wsl_project_root = "/mnt/c/Users/Achim/Documents/TrOCR/dhlab-slavistik"
-
-    def _windows_to_wsl_path(self, windows_path: str) -> str:
-        """Convert Windows path to WSL path."""
-        path = str(Path(windows_path).absolute()).replace('\\', '/')
-        if len(path) > 1 and path[1] == ':':
-            drive = path[0].lower()
-            path = f"/mnt/{drive}{path[2:]}"
-        return path
+        self.project_root = os.path.expanduser("~/htr_gui/dhlab-slavistik")
 
     def run(self):
         temp_xml_path = None
+        output_xml_path = None
 
         try:
             self.progress.emit("Creating temporary PAGE XML...")
@@ -85,43 +79,57 @@ class PartyWorker(QThread):
 
             self.progress.emit(f"Calling Party OCR on {len(self.segments)} lines...")
 
-            # Convert paths to WSL
-            wsl_xml_path = self._windows_to_wsl_path(temp_xml_path)
-            wsl_model_path = self._windows_to_wsl_path(self.model_path)
-            wsl_image_dir = self._windows_to_wsl_path(str(image_path.parent))
+            # Use native Linux paths - no conversion needed
+            xml_path = temp_xml_path
+            model_path = self.model_path
+            image_dir = str(image_path.parent)
+
+            # Create separate output path to avoid in-place modification issues
+            output_xml_path = str(image_path.parent / f"temp_party_{image_path.stem}_output.xml")
 
             # Build Party command
             # Syntax: party -d cuda:0 ocr -i input.xml output.xml -mi model.safetensors
             # Run from image directory so Party can find the image file
+            # Note: Language is determined by the model, not a command-line option
+            # Party is now installed in the main htr_gui venv, no separate venv needed
             cmd = (
-                f"cd {wsl_image_dir} && "
-                f"source {self.wsl_project_root}/venv_party_wsl/bin/activate && "
-                f"party -d cuda:0 ocr -i {wsl_xml_path} {wsl_xml_path} -mi {wsl_model_path} --language chu"
+                f"cd {image_dir} && "
+                f"party -d cuda:0 ocr -i {xml_path} {output_xml_path} -mi {model_path}"
             )
 
-            # Execute via WSL
+            # Execute natively on Linux
             self.progress.emit("Running Party (this may take 30-60 seconds)...")
 
             result = subprocess.run(
-                ["wsl", "bash", "-c", cmd],
+                ["bash", "-c", cmd],
                 capture_output=True,
                 text=True,
                 timeout=300  # 5 minute timeout
             )
 
             if result.returncode != 0:
-                self.error.emit(f"Party failed:\n{result.stderr}")
+                # Save full error to file for debugging
+                error_log = Path(self.project_root) / "party_error.log"
+                with open(error_log, 'w') as f:
+                    f.write("=== PARTY ERROR LOG ===\n")
+                    f.write(f"Command: {cmd}\n\n")
+                    f.write("=== STDOUT ===\n")
+                    f.write(result.stdout)
+                    f.write("\n\n=== STDERR ===\n")
+                    f.write(result.stderr)
+
+                self.error.emit(f"Party failed. Full error saved to {error_log}\n\nError preview:\n{result.stderr[-500:]}")
                 return
 
             self.progress.emit("Parsing Party output...")
 
             # Check if output file exists before parsing
-            if not Path(temp_xml_path).exists():
-                self.error.emit(f"Party did not create output file: {temp_xml_path}")
+            if not Path(output_xml_path).exists():
+                self.error.emit(f"Party did not create output file: {output_xml_path}")
                 return
 
             # Parse output XML
-            transcriptions = self._parse_party_xml(temp_xml_path)
+            transcriptions = self._parse_party_xml(output_xml_path)
 
             self.progress.emit(f"Complete! Found {len(transcriptions)} transcriptions")
             self.finished.emit(transcriptions)
@@ -131,12 +139,13 @@ class PartyWorker(QThread):
         except Exception as e:
             self.error.emit(f"Error: {str(e)}")
         finally:
-            # Cleanup temp file
-            if temp_xml_path and Path(temp_xml_path).exists():
-                try:
-                    Path(temp_xml_path).unlink()
-                except:
-                    pass
+            # Cleanup temp files (both input and output)
+            for path in [temp_xml_path, output_xml_path]:
+                if path and Path(path).exists():
+                    try:
+                        Path(path).unlink()
+                    except:
+                        pass
 
     def _parse_party_xml(self, xml_path: str) -> List[str]:
         """Parse Party's output PAGE XML to extract transcriptions."""
@@ -180,6 +189,9 @@ class PartyGUI(QMainWindow):
         self.setWindowTitle("Party HTR - Proof of Concept")
         self.resize(1000, 700)
 
+        # Project root
+        self.project_root = os.path.expanduser("~/htr_gui/dhlab-slavistik")
+
         # State
         self.current_image_path = None
         self.current_image = None
@@ -187,8 +199,8 @@ class PartyGUI(QMainWindow):
         self.transcriptions = []
         self.worker = None
 
-        # Default model path
-        self.party_model_path = r"C:\Users\Achim\Documents\TrOCR\dhlab-slavistik\models\party_models\party_european_langs.safetensors"
+        # Default model path (Linux)
+        self.party_model_path = os.path.join(self.project_root, "models/party_models/party_european_langs.safetensors")
 
         self._init_ui()
 
@@ -417,8 +429,8 @@ class PartyGUI(QMainWindow):
         """Handle completed transcription."""
         self.transcriptions = transcriptions
 
-        # Display results
-        result_text = "\n".join(f"Line {i+1}: {text}" for i, text in enumerate(transcriptions))
+        # Display results (just the transcriptions, no line numbers)
+        result_text = "\n".join(transcriptions)
         self.results_text.setText(result_text)
 
         self.progress_bar.setVisible(False)
