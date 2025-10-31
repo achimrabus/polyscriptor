@@ -4,10 +4,24 @@ Commercial API Engine Plugin
 Wraps commercial HTR APIs (OpenAI, Gemini, Claude) as a unified plugin.
 """
 
+import os
+from pathlib import Path
 from typing import Dict, Any, Optional
 import numpy as np
 
 from htr_engine_base import HTREngine, TranscriptionResult
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Look for .env in the project root (parent of engines/)
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"[CommercialAPIEngine] Loaded environment variables from {env_path}")
+except ImportError:
+    print("[CommercialAPIEngine] Warning: python-dotenv not installed. API keys will not be loaded from .env file.")
+    print("Install with: pip install python-dotenv")
 
 try:
     from PyQt6.QtWidgets import (
@@ -203,7 +217,7 @@ class CommercialAPIEngine(HTREngine):
             print(f"Warning: Could not save API key: {e}")
 
     def _on_provider_changed(self, provider: str):
-        """Update model list when provider changes."""
+        """Update model list when provider changes and load API key from environment."""
         if self._model_combo is None:
             return
 
@@ -217,6 +231,25 @@ class CommercialAPIEngine(HTREngine):
             self._model_combo.addItems(CLAUDE_MODELS)
         else:
             self._model_combo.addItem("No models available")
+
+        # Auto-load API key from environment variables
+        if self._api_key_edit is not None:
+            env_key = self._get_api_key_from_env(provider)
+            if env_key:
+                self._api_key_edit.setText(env_key)
+                print(f"[CommercialAPIEngine] Loaded {provider} API key from environment")
+
+    def _get_api_key_from_env(self, provider: str) -> Optional[str]:
+        """Get API key from environment variables based on provider."""
+        env_var_map = {
+            "OpenAI": "OPENAI_API_KEY",
+            "Gemini": "GOOGLE_API_KEY",
+            "Claude": "ANTHROPIC_API_KEY"
+        }
+
+        env_var = env_var_map.get(provider)
+        if env_var:
+            return os.getenv(env_var, "")
 
     def _toggle_key_visibility(self, checked: bool):
         """Toggle API key visibility."""
@@ -317,22 +350,30 @@ class CommercialAPIEngine(HTREngine):
         custom_prompt = config.get("custom_prompt")
 
         try:
-            # All API clients have transcribe_image() method
-            result = self.model.transcribe_image(image, custom_prompt=custom_prompt)
+            # Convert numpy array to PIL Image
+            from PIL import Image
+            if isinstance(image, np.ndarray):
+                pil_image = Image.fromarray(image)
+            else:
+                pil_image = image
 
-            # Result is a dict with 'text' and optionally 'confidence', 'usage'
+            # All API clients have transcribe() method
+            # It returns a string directly, not a dict
+            text = self.model.transcribe(pil_image, prompt=custom_prompt)
+
             return TranscriptionResult(
-                text=result.get("text", ""),
-                confidence=result.get("confidence", 1.0),
+                text=text if text else "",
+                confidence=1.0,  # API models don't provide confidence
                 metadata={
                     "provider": self._current_provider,
-                    "usage": result.get("usage", {}),
                     "model": config.get("model", "")
                 }
             )
 
         except Exception as e:
             print(f"Error in API transcription: {e}")
+            import traceback
+            traceback.print_exc()
             return TranscriptionResult(text=f"[API Error: {e}]", confidence=0.0)
 
     def get_capabilities(self) -> Dict[str, bool]:

@@ -199,7 +199,7 @@ class Qwen3Engine(HTREngine):
         tokens_layout.addWidget(QLabel("Max Tokens:"))
         self._max_tokens_spin = QSpinBox()
         self._max_tokens_spin.setRange(256, 4096)
-        self._max_tokens_spin.setValue(2048)
+        self._max_tokens_spin.setValue(1024)  # Default to 1024 for faster inference
         self._max_tokens_spin.setSingleStep(256)
         tokens_layout.addWidget(self._max_tokens_spin)
         tokens_hint = QLabel("Maximum length of output")
@@ -338,6 +338,11 @@ class Qwen3Engine(HTREngine):
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load Qwen3 model."""
         try:
+            # Cleanup any existing model first to avoid memory fragmentation
+            if self.model is not None:
+                print("Cleaning up previous model before loading new one...")
+                self.unload_model()
+
             base_model = config.get("base_model", "")
             if not base_model:
                 return False
@@ -355,19 +360,32 @@ class Qwen3Engine(HTREngine):
 
         except Exception as e:
             print(f"Error loading Qwen3 model: {e}")
+            import traceback
+            traceback.print_exc()
             self.model = None
             return False
 
     def unload_model(self):
-        """Unload model from memory."""
+        """
+        Unload model from memory with proper cleanup to prevent CUDA memory fragmentation.
+
+        IMPORTANT: This method uses the cleanup() function from Qwen3VLMInference
+        which properly moves the model to CPU, deletes references, and clears CUDA cache.
+        """
         if self.model is not None:
+            # Use the proper cleanup method to avoid memory fragmentation
+            try:
+                self.model.cleanup()
+            except Exception as e:
+                print(f"Warning during model cleanup: {e}")
+                # Fallback: manual cleanup
+                try:
+                    self.model.model.cpu()
+                except:
+                    pass
+
             del self.model
             self.model = None
-
-            # Free GPU memory
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
     def is_model_loaded(self) -> bool:
         """Check if model is loaded."""

@@ -73,10 +73,22 @@ class Qwen3VLMInference:
                 print(f"  Auto-configured: {per_gpu_memory} per GPU")
 
         # Load base model
+        # IMPORTANT: Force single GPU to avoid multi-GPU generation hanging issue
+        # Multi-GPU device_map="auto" causes generation to hang on Linux (inter-GPU communication issue)
+        # Single GPU works perfectly (<4s inference time)
+        effective_device_map = device
+        if device == "auto":
+            # Auto-detect: prefer single GPU if available
+            if torch.cuda.is_available():
+                effective_device_map = "cuda:0"
+                print(f"  Using single GPU (cuda:0) to avoid multi-GPU hanging issue")
+            else:
+                effective_device_map = "cpu"
+
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             base_model,
             torch_dtype=torch_dtype,
-            device_map=device if device != "auto" else "auto",
+            device_map=effective_device_map,
             max_memory=max_memory,
             trust_remote_code=True
         )
@@ -111,6 +123,47 @@ class Qwen3VLMInference:
 
         self.model.eval()
         print("Qwen3 VLM loaded successfully!\n")
+
+    def cleanup(self):
+        """
+        Properly cleanup model from memory to prevent CUDA memory fragmentation.
+
+        Call this before reloading a new model to avoid OOM errors.
+        """
+        print("Cleaning up Qwen3 VLM from memory...")
+
+        # Move model to CPU first to free GPU memory
+        if hasattr(self, 'model') and self.model is not None:
+            try:
+                self.model.cpu()
+            except Exception as e:
+                print(f"Warning: Error moving model to CPU: {e}")
+
+        # Delete model and processor references
+        if hasattr(self, 'model'):
+            del self.model
+        if hasattr(self, 'processor'):
+            del self.processor
+
+        # Force garbage collection
+        import gc
+        gc.collect()
+
+        # Clear CUDA cache on all GPUs
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+
+        print("✓ Cleanup complete")
+
+    def __del__(self):
+        """Destructor to ensure cleanup when object is deleted."""
+        try:
+            self.cleanup()
+        except:
+            pass  # Ignore errors during destructor
 
     def preprocess_image(self, image: Image.Image) -> Image.Image:
         """

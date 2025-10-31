@@ -22,9 +22,10 @@ except ImportError:
     PYQT_AVAILABLE = False
 
 try:
-    from inference_pylaia_wsl import PyLaiaInferenceWSL as PyLaiaInference, PYLAIA_MODELS
+    # Use native Linux implementation (no WSL dependency)
+    from inference_pylaia_native import PyLaiaInference, PYLAIA_MODELS
     PYLAIA_AVAILABLE = True
-    PYLAIA_LM_AVAILABLE = False  # Language model not supported in WSL version yet
+    PYLAIA_LM_AVAILABLE = False  # Language model not yet implemented
 except ImportError:
     PYLAIA_AVAILABLE = False
     PYLAIA_MODELS = {}
@@ -241,11 +242,13 @@ class PyLaiaEngine(HTREngine):
             if not model_path or model_path == "No preset models found":
                 return False
 
-            # If it's a preset name, resolve to actual path
+            # If it's a preset name, resolve to actual path and syms
+            syms_path = None
             if model_path in PYLAIA_MODELS:
                 preset_info = PYLAIA_MODELS[model_path]
                 if isinstance(preset_info, dict):
-                    model_path = preset_info.get("path", model_path)
+                    model_path = preset_info.get("checkpoint", preset_info.get("path", model_path))
+                    syms_path = preset_info.get("syms")
                 # If preset_info is just a string, use it as the path
                 elif isinstance(preset_info, str):
                     model_path = preset_info
@@ -268,8 +271,11 @@ class PyLaiaEngine(HTREngine):
                 self.model = None
             else:
                 # Load without language model
-                # PyLaiaInference only takes model_path, not preset
-                self.model = PyLaiaInference(model_path=model_path)
+                # PyLaiaInference expects checkpoint_path and syms_path
+                self.model = PyLaiaInference(
+                    checkpoint_path=model_path,
+                    syms_path=syms_path
+                )
                 self.model_lm = None
 
             return True
@@ -307,7 +313,6 @@ class PyLaiaEngine(HTREngine):
             return TranscriptionResult(text="[Model not loaded]", confidence=0.0)
 
         try:
-            # PyLaia uses recognize_line(), not transcribe_line()
             # Convert numpy to PIL
             from PIL import Image as PILImage
             if isinstance(image, np.ndarray):
@@ -315,17 +320,25 @@ class PyLaiaEngine(HTREngine):
             else:
                 pil_image = image
 
-            # Use LM version if available
+            # PyLaiaInferenceWSL uses transcribe() which returns (text, confidence) tuple
+            # Use LM version if available (not yet implemented for WSL)
             if self.model_lm is not None:
                 # PyLaiaInferenceLM might have different method
-                result = self.model_lm.recognize_line(pil_image)
+                result = self.model_lm.transcribe(pil_image)
             else:
-                result = self.model.recognize_line(pil_image)
+                result = self.model.transcribe(pil_image)
 
-            # Result is a dict with 'text' and 'confidence'
+            # Result is a tuple: (text, confidence)
+            if isinstance(result, tuple):
+                text, confidence = result
+            else:
+                # Fallback for dict-style results
+                text = result.get("text", "")
+                confidence = result.get("confidence", 1.0)
+
             return TranscriptionResult(
-                text=result.get("text", ""),
-                confidence=result.get("confidence", 1.0),
+                text=text,
+                confidence=confidence,
                 metadata={"model": "pylaia"}
             )
 
