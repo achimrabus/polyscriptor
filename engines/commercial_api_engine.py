@@ -32,6 +32,7 @@ try:
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    QWidget = object
 
 try:
     from inference_commercial_api import (

@@ -398,3 +398,109 @@ aug_contrast: 0.3
 - **`LINUX_SERVER_MIGRATION.md`**: Complete guide for migrating from Windows to Linux server (configuration changes, package installation, model files, API keys, Claude Code sync)
 - **`PARTY_GUI_INTEGRATION_PLAN.md`**: Technical plan for Party OCR GUI integration
 - **`REFERENCE_MOBAXTERM.md`**: Quick reference for X11 GUI forwarding with MobaXterm
+
+## Recent Improvements (2025-10-31)
+
+### Party OCR Integration (Plugin GUI)
+
+**CRITICAL FIX - Language Recognition**:
+- Party now uses **original page image** instead of synthetic composite
+- Fixes Glagolitic/Church Slavonic script detection (was defaulting to German)
+- Implementation: `engines/party_engine.py` with `original_image_path` + `line_bboxes` parameters
+- Batch processing: Single Party call for entire page (faster than per-line)
+
+**Optimization Parameters**:
+- `--compile` / `--no-compile`: torch.compile() optimization (default: ON)
+- `--quantize` / `--no-quantize`: Post-training quantization for speed (default: OFF)
+- `-b <batch_size>`: Batch size for generation (default: 8, range: 1-32)
+- `--curves` / `--boxes`: Line encoding method (curves more accurate, boxes faster)
+
+**Duplicate Removal**:
+- Post-processing to remove consecutive duplicate lines
+- Configurable via checkbox (default: enabled)
+- Useful for repetitive transcriptions
+
+**RGB Conversion Fix**:
+- Automatically converts RGBA/grayscale images to RGB
+- Prevents tensor dimension mismatch errors
+
+### Qwen3-VL Custom Prompts
+
+**Prompt Presets** (`qwen3_prompts.py`):
+- 10+ domain-specific prompts (Church Slavonic, Glagolitic, Math, Degraded, etc.)
+- Custom prompt text editor
+- Prompts persist across sessions
+- Included in transcription metadata
+
+**Default Prompt**: "Transcribe the text shown in this image."
+
+**Example Prompts**:
+- Church Slavonic: "Transcribe the Church Slavonic text shown in this historical manuscript image. Preserve all diacritical marks, titlos, and abbreviations."
+- Glagolitic: "Transcribe the Glagolitic script text shown in this medieval manuscript. Output the text in Glagolitic Unicode characters."
+
+### Metadata Display (Statistics Panel)
+
+**Plugin GUI Enhancement** (`transcription_gui_plugin.py`):
+- **Horizontal split layout**: Transcription text (70%) + Statistics panel (30%)
+- **Resizable splitter**: User can adjust ratio
+- Statistics panel shows:
+  - **Model Information**: Engine name, model path/HF Hub ID
+  - **Statistics**: Line count, character count
+  - **Performance**: Inference time, speed (lines/second)
+  - **Confidence**: Average (color-coded), range, low confidence count
+
+**Color Coding**:
+- Green ≥90%: High confidence
+- Orange ≥75%: Medium confidence
+- Red <75%: Low confidence
+
+**Timing Capture**:
+- TranscriptionWorker tracks inference time
+- Calculates lines/second speed
+- Displays in status bar and statistics panel
+
+**Engine Metadata**:
+- TrOCR: Includes HF model ID or local checkpoint path
+- Party: Includes model filename
+- All engines: Populate metadata dict for statistics display
+
+### Key Files Modified
+
+- `engines/party_engine.py`: Original image support, optimization params, duplicate removal
+- `engines/qwen3_engine.py`: Custom prompt UI and integration
+- `engines/trocr_engine.py`: Model metadata tracking
+- `transcription_gui_plugin.py`: Statistics panel, timing capture, horizontal layout
+- `qwen3_prompts.py`: New file with prompt presets
+
+### PyLaia Ukrainian Training Script
+
+**New Training Script** (`start_pylaia_ukrainian_training.py`):
+- Trains on 21,944 Ukrainian PAGE XML line images (814 validation)
+- Uses custom `train_pylaia.py` implementation (not CLI tools)
+- Single GPU mode to avoid multi-GPU errors
+- Transkribus-optimized architecture: CRNN with [12, 24, 48, 48] filters, 3 LSTM layers, 256 units
+- 250 epochs with early stopping (patience: 15)
+- Outputs: `best_model.pt`, `checkpoint_epoch_*.pt`, `training_history.json`
+
+**Training Command**:
+```bash
+source htr_gui/bin/activate
+python3 start_pylaia_ukrainian_training.py
+```
+
+**Output Directory**: `models/pylaia_ukrainian_pagexml_<timestamp>/`
+
+### Testing
+
+**Party OCR**:
+```bash
+python3 transcription_gui_plugin.py
+# Load Glagolitic manuscript
+# Select Party engine, configure optimization params
+# Verify language recognition (not German!)
+```
+
+**Statistics Display**:
+- All engines now show model name, timing, and confidence (if available)
+- Layout preserves full vertical height for transcription text
+- Statistics panel is compact and scrollable

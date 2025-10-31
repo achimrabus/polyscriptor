@@ -20,6 +20,7 @@ try:
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    QWidget = object
 
 try:
     from inference_page import TrOCRInference
@@ -34,6 +35,7 @@ class TrOCREngine(HTREngine):
     def __init__(self):
         self.model: Optional[TrOCRInference] = None
         self._config_widget: Optional[QWidget] = None
+        self._current_model_path: Optional[str] = None  # Store loaded model path
 
         # Widget references (set when config widget is created)
         self._model_source_combo: Optional[QComboBox] = None
@@ -240,11 +242,15 @@ class TrOCREngine(HTREngine):
                 is_huggingface=is_hf
             )
 
+            # Store the model path for metadata
+            self._current_model_path = model_path
+
             return True
 
         except Exception as e:
             print(f"Error loading TrOCR model: {e}")
             self.model = None
+            self._current_model_path = None
             return False
 
     def unload_model(self):
@@ -252,6 +258,7 @@ class TrOCREngine(HTREngine):
         if self.model is not None:
             del self.model
             self.model = None
+            self._current_model_path = None
 
             # Free GPU memory
             import torch
@@ -280,10 +287,20 @@ class TrOCREngine(HTREngine):
 
             text = self.model.transcribe_line(pil_image, num_beams=beam_search)
 
+            # Build metadata with model information
+            metadata = {
+                "beam_search": beam_search,
+                "engine": "TrOCR"
+            }
+
+            # Add model path if available
+            if self._current_model_path:
+                metadata["model"] = self._current_model_path
+
             return TranscriptionResult(
                 text=text,
                 confidence=1.0,  # TrOCR doesn't provide confidence scores
-                metadata={"beam_search": beam_search}
+                metadata=metadata
             )
 
         except Exception as e:

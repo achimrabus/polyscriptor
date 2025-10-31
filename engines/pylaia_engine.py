@@ -20,6 +20,7 @@ try:
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    QWidget = object
 
 try:
     # Use native Linux implementation (no WSL dependency)

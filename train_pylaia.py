@@ -364,15 +364,19 @@ class PyLaiaTrainer:
         self.model.train()
         total_loss = 0
         num_batches = 0
-        
+
         pbar = tqdm(self.train_loader, desc="Training")
-        for images, targets, input_lengths, target_lengths, _, _ in pbar:
+        logger.info("Starting training loop iteration")
+        for batch_idx, (images, targets, input_lengths, target_lengths, _, _) in enumerate(pbar):
+            logger.info(f"Batch {batch_idx}: Loading data to device")
             images = images.to(self.device)
             targets = targets.to(self.device)
             target_lengths = target_lengths.to(self.device)
-            
+
+            logger.info(f"Batch {batch_idx}: Running forward pass")
             # Forward pass
             log_probs = self.model(images)
+            logger.info(f"Batch {batch_idx}: Forward pass complete")
             
             # Use actual output sequence length from model
             batch_size = images.size(0)
@@ -525,25 +529,35 @@ class PyLaiaTrainer:
 
 
 def main():
-    # Fixed parameters based on Transkribus and your requirements
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Train PyLaia CRNN model')
+    parser.add_argument('--train_dir', type=str, default='data/pylaia_efendiev_train', help='Training data directory')
+    parser.add_argument('--val_dir', type=str, default='data/pylaia_efendiev_val', help='Validation data directory')
+    parser.add_argument('--output_dir', type=str, default='models/pylaia_efendiev', help='Output directory for models')
+    parser.add_argument('--batch_size', type=int, default=24, help='Batch size per GPU')
+    parser.add_argument('--epochs', type=int, default=100, help='Maximum number of epochs')
+    parser.add_argument('--learning_rate', type=float, default=0.0003, help='Learning rate')
+    args = parser.parse_args()
+
+    # Configuration based on Transkribus and command-line arguments
     config = {
-        'train_dir': 'data/pylaia_efendiev_train',
-        'val_dir': 'data/pylaia_efendiev_val',
-        'output_dir': 'models/pylaia_efendiev',
+        'train_dir': args.train_dir,
+        'val_dir': args.val_dir,
+        'output_dir': args.output_dir,
         'img_height': 128,
-        'batch_size': 24,
+        'batch_size': args.batch_size,
         'num_workers': 4,
         'cnn_filters': [12, 24, 48, 48],
         'cnn_poolsize': [2, 2, 0, 2],
         'rnn_hidden': 256,
         'rnn_layers': 3,
         'dropout': 0.5,
-        'learning_rate': 0.0003,
+        'learning_rate': args.learning_rate,
         'weight_decay': 0.0,
-        'max_epochs': 100,
+        'max_epochs': args.epochs,
         'early_stopping': 20,
         'augment': True,
-        'use_multi_gpu': True  # NEW: Enable multi-GPU training
+        'use_multi_gpu': False  # TEMPORARY: Disable multi-GPU for debugging
     }
     
     # Set device
@@ -585,20 +599,21 @@ def main():
     )
     
     # Create data loaders
+    # IMPORTANT: num_workers=0 to avoid multiprocessing deadlock
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=config['num_workers'],
+        num_workers=0,  # Single-process loading to avoid deadlock
         collate_fn=collate_fn,
         pin_memory=True if torch.cuda.is_available() else False
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=config['num_workers'],
+        num_workers=0,  # Single-process loading to avoid deadlock
         collate_fn=collate_fn,
         pin_memory=True if torch.cuda.is_available() else False
     )

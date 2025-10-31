@@ -19,12 +19,12 @@ import sys
 import json
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any
 import numpy as np
 from PIL import Image
 
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QSplitter, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
     QPushButton, QLabel, QTextEdit, QLineEdit, QComboBox,
     QFileDialog, QProgressBar, QStatusBar, QMessageBox,
@@ -109,11 +109,167 @@ class ZoomableGraphicsView(QGraphicsView):
             self._zoom += 1 if factor > 1 else -1
 
 
+class StatisticsPanel(QWidget):
+    """Panel displaying transcription metadata and statistics."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_ui()
+        self.clear()
+
+    def _init_ui(self):
+        """Initialize UI components."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(8)
+
+        # Model Information Group
+        model_group = QGroupBox("Model Information")
+        model_layout = QGridLayout()
+        model_layout.setColumnStretch(1, 1)
+        model_layout.setSpacing(5)
+
+        model_layout.addWidget(QLabel("Engine:"), 0, 0)
+        self.lbl_engine = QLabel("N/A")
+        self.lbl_engine.setStyleSheet("font-weight: bold;")
+        model_layout.addWidget(self.lbl_engine, 0, 1)
+
+        model_layout.addWidget(QLabel("Model:"), 1, 0)
+        self.lbl_model = QLabel("N/A")
+        self.lbl_model.setWordWrap(True)
+        self.lbl_model.setStyleSheet("font-size: 10pt;")
+        model_layout.addWidget(self.lbl_model, 1, 1)
+
+        model_group.setLayout(model_layout)
+        layout.addWidget(model_group)
+
+        # Transcription Statistics Group
+        stats_group = QGroupBox("Statistics")
+        stats_layout = QGridLayout()
+        stats_layout.setColumnStretch(1, 1)
+        stats_layout.setSpacing(5)
+
+        stats_layout.addWidget(QLabel("Lines:"), 0, 0)
+        self.lbl_lines = QLabel("0")
+        stats_layout.addWidget(self.lbl_lines, 0, 1)
+
+        stats_layout.addWidget(QLabel("Characters:"), 1, 0)
+        self.lbl_chars = QLabel("0")
+        stats_layout.addWidget(self.lbl_chars, 1, 1)
+
+        stats_group.setLayout(stats_layout)
+        layout.addWidget(stats_group)
+
+        # Timing Statistics Group
+        timing_group = QGroupBox("Performance")
+        timing_layout = QGridLayout()
+        timing_layout.setColumnStretch(1, 1)
+        timing_layout.setSpacing(5)
+
+        timing_layout.addWidget(QLabel("Time:"), 0, 0)
+        self.lbl_time = QLabel("0.0s")
+        timing_layout.addWidget(self.lbl_time, 0, 1)
+
+        timing_layout.addWidget(QLabel("Speed:"), 1, 0)
+        self.lbl_speed = QLabel("0.0 l/s")
+        timing_layout.addWidget(self.lbl_speed, 1, 1)
+
+        timing_group.setLayout(timing_layout)
+        layout.addWidget(timing_group)
+
+        # Confidence Statistics Group
+        conf_group = QGroupBox("Confidence")
+        conf_layout = QGridLayout()
+        conf_layout.setColumnStretch(1, 1)
+        conf_layout.setSpacing(5)
+
+        conf_layout.addWidget(QLabel("Average:"), 0, 0)
+        self.lbl_avg_conf = QLabel("N/A")
+        conf_layout.addWidget(self.lbl_avg_conf, 0, 1)
+
+        conf_layout.addWidget(QLabel("Range:"), 1, 0)
+        self.lbl_conf_range = QLabel("N/A")
+        conf_layout.addWidget(self.lbl_conf_range, 1, 1)
+
+        conf_layout.addWidget(QLabel("Low (<80%):"), 2, 0)
+        self.lbl_low_conf = QLabel("0")
+        conf_layout.addWidget(self.lbl_low_conf, 2, 1)
+
+        conf_group.setLayout(conf_layout)
+        layout.addWidget(conf_group)
+
+        layout.addStretch()
+
+    def clear(self):
+        """Clear all statistics."""
+        self.lbl_engine.setText("N/A")
+        self.lbl_model.setText("N/A")
+        self.lbl_lines.setText("0")
+        self.lbl_chars.setText("0")
+        self.lbl_time.setText("0.0s")
+        self.lbl_speed.setText("0.0 l/s")
+        self.lbl_avg_conf.setText("N/A")
+        self.lbl_conf_range.setText("N/A")
+        self.lbl_low_conf.setText("0")
+
+    def update_statistics(self, stats: Dict[str, Any]):
+        """Update statistics display with new data."""
+        # Model information
+        if "engine" in stats:
+            self.lbl_engine.setText(stats["engine"])
+        if "model_name" in stats:
+            model_name = stats["model_name"]
+            # Truncate long paths
+            if len(model_name) > 40:
+                model_name = "..." + model_name[-37:]
+            self.lbl_model.setText(model_name)
+
+        # Transcription statistics
+        if "line_count" in stats:
+            self.lbl_lines.setText(str(stats["line_count"]))
+        if "char_count" in stats:
+            self.lbl_chars.setText(f"{stats['char_count']:,}")
+
+        # Timing statistics
+        if "inference_time" in stats:
+            time_val = stats["inference_time"]
+            self.lbl_time.setText(f"{time_val:.2f}s")
+
+            # Calculate speed
+            line_count = stats.get("line_count", 0)
+            if line_count > 0 and time_val > 0:
+                speed = line_count / time_val
+                self.lbl_speed.setText(f"{speed:.2f} l/s")
+
+        # Confidence statistics
+        if "avg_confidence" in stats:
+            avg = stats["avg_confidence"]
+            if avg is not None:
+                self.lbl_avg_conf.setText(f"{avg*100:.1f}%")
+                # Color code by confidence
+                if avg >= 0.9:
+                    color = "green"
+                elif avg >= 0.75:
+                    color = "orange"
+                else:
+                    color = "red"
+                self.lbl_avg_conf.setStyleSheet(f"color: {color}; font-weight: bold;")
+
+        if "min_confidence" in stats and "max_confidence" in stats:
+            min_conf = stats["min_confidence"]
+            max_conf = stats["max_confidence"]
+            if min_conf is not None and max_conf is not None:
+                self.lbl_conf_range.setText(f"{min_conf*100:.0f}% - {max_conf*100:.0f}%")
+
+        if "low_confidence_lines" in stats:
+            self.lbl_low_conf.setText(str(stats["low_confidence_lines"]))
+
+
 class TranscriptionWorker(QThread):
     """Background worker for HTR transcription."""
 
     progress = pyqtSignal(int, int, str)  # current, total, text
-    finished = pyqtSignal(list)  # List of transcriptions
+    finished = pyqtSignal(list, dict)  # List of transcriptions, metadata dict
     error = pyqtSignal(str)
 
     def __init__(self, engine: HTREngine, line_segments: List[LineSegment], image: Image.Image, image_path: Optional[Path] = None):
@@ -125,8 +281,12 @@ class TranscriptionWorker(QThread):
 
     def run(self):
         """Process all line segments."""
+        import time
+        start_time = time.time()
+
         try:
             transcriptions = []
+            results_with_confidence = []  # Store full results for confidence stats
 
             # Check if engine prefers batch processing with original image context
             # (CRITICAL for Party to correctly recognize scripts like Glagolitic)
@@ -154,6 +314,7 @@ class TranscriptionWorker(QThread):
                 for i, result in enumerate(results):
                     text = str(result.text) if hasattr(result, 'text') else str(result)
                     transcriptions.append(text)
+                    results_with_confidence.append(result)
                     self.progress.emit(i + 1, len(self.line_segments), text)
             else:
                 # Line-by-line processing (default behavior)
@@ -169,9 +330,51 @@ class TranscriptionWorker(QThread):
                     # Ensure we get the text as a string
                     text = str(result.text) if hasattr(result, 'text') else str(result)
                     transcriptions.append(text)
+                    results_with_confidence.append(result)
                     self.progress.emit(i + 1, len(self.line_segments), text)
 
-            self.finished.emit(transcriptions)
+            # Calculate statistics
+            elapsed_time = time.time() - start_time
+
+            # Build metadata dictionary
+            metadata = {
+                "inference_time": elapsed_time,
+                "line_count": len(transcriptions),
+                "char_count": sum(len(t) for t in transcriptions),
+                "engine": self.engine.get_name() if hasattr(self.engine, 'get_name') else "Unknown"
+            }
+
+            # Extract confidence statistics if available
+            confidences = []
+            for result in results_with_confidence:
+                if hasattr(result, 'confidence') and result.confidence is not None:
+                    # Ensure confidence is a valid number (0-1 range)
+                    conf = float(result.confidence)
+                    if 0 <= conf <= 1:
+                        confidences.append(conf)
+                    elif conf > 1:
+                        # If confidence is in percentage (0-100), normalize it
+                        confidences.append(conf / 100.0)
+
+            if confidences:
+                metadata["avg_confidence"] = sum(confidences) / len(confidences)
+                metadata["min_confidence"] = min(confidences)
+                metadata["max_confidence"] = max(confidences)
+                metadata["low_confidence_lines"] = sum(1 for c in confidences if c < 0.8)
+            else:
+                # No confidence data available
+                metadata["avg_confidence"] = None
+                metadata["min_confidence"] = None
+                metadata["max_confidence"] = None
+                metadata["low_confidence_lines"] = 0
+
+            # Add model name from engine metadata
+            if results_with_confidence and hasattr(results_with_confidence[0], 'metadata'):
+                result_meta = results_with_confidence[0].metadata
+                if isinstance(result_meta, dict) and 'model' in result_meta:
+                    metadata["model_name"] = result_meta['model']
+
+            self.finished.emit(transcriptions, metadata)
 
         except Exception as e:
             self.error.emit(str(e))
@@ -376,15 +579,42 @@ class TranscriptionGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         right_layout.addWidget(self.progress_bar)
 
-        # Transcription results
+        # Transcription results (horizontal split: text + statistics)
         results_group = QGroupBox("Transcriptions")
         results_layout = QVBoxLayout()
 
+        # Horizontal splitter for text and statistics
+        results_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left: Transcription text
+        text_container = QWidget()
+        text_layout = QVBoxLayout(text_container)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+
         self.transcription_text = QTextEdit()
         self.transcription_text.setReadOnly(True)
-        results_layout.addWidget(self.transcription_text)
+        text_layout.addWidget(self.transcription_text)
 
-        # Export buttons
+        results_splitter.addWidget(text_container)
+
+        # Right: Statistics panel (compact, scrollable)
+        stats_scroll = QScrollArea()
+        stats_scroll.setWidgetResizable(True)
+        stats_scroll.setMinimumWidth(200)
+        stats_scroll.setMaximumWidth(300)
+
+        self.stats_panel = StatisticsPanel()
+        stats_scroll.setWidget(self.stats_panel)
+
+        results_splitter.addWidget(stats_scroll)
+
+        # Set initial sizes (70% text, 30% stats)
+        results_splitter.setStretchFactor(0, 7)  # Text gets more space
+        results_splitter.setStretchFactor(1, 3)  # Stats gets less space
+
+        results_layout.addWidget(results_splitter)
+
+        # Export buttons (below splitter)
         export_layout = QHBoxLayout()
 
         btn_export_txt = QPushButton("Export TXT")
@@ -695,7 +925,7 @@ class TranscriptionGUI(QMainWindow):
         self.progress_bar.setValue(current)
         self.status_bar.showMessage(f"Transcribing line {current}/{total}...")
 
-    def on_transcription_finished(self, transcriptions: List[str]):
+    def on_transcription_finished(self, transcriptions: List[str], metadata: Dict[str, Any] = None):
         """Handle completion of transcription."""
         self.transcriptions = transcriptions
 
@@ -703,10 +933,19 @@ class TranscriptionGUI(QMainWindow):
         result_text = "\n".join(transcriptions)
         self.transcription_text.setPlainText(result_text)
 
+        # Update statistics panel
+        if metadata:
+            self.stats_panel.update_statistics(metadata)
+
         # UI updates
         self.btn_process.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.status_bar.showMessage(f"Transcription complete ({len(transcriptions)} lines)")
+
+        # Status bar message with timing
+        status_msg = f"Transcription complete ({len(transcriptions)} lines)"
+        if metadata and "inference_time" in metadata:
+            status_msg += f" in {metadata['inference_time']:.1f}s"
+        self.status_bar.showMessage(status_msg)
 
     def on_transcription_error(self, error_msg: str):
         """Handle transcription error."""

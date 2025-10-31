@@ -20,6 +20,7 @@ try:
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    QWidget = object
 
 try:
     from kraken import rpred
@@ -287,13 +288,11 @@ class KrakenEngine(HTREngine):
             if pil_image.mode != 'L':
                 pil_image = pil_image.convert('L')
 
-            # Binarize the image (required for Kraken models)
-            # Use simple thresholding
-            img_array = np.array(pil_image)
-            # Use Otsu-like threshold
-            threshold = np.median(img_array)
-            binary_array = (img_array > threshold).astype(np.uint8) * 255
-            binary_image = PILImage.fromarray(binary_array, mode='L')
+            # IMPORTANT: Do NOT binarize! Kraken models work better with grayscale
+            # Modern Kraken models are trained on grayscale images and binarization
+            # destroys character details, especially in historical manuscripts
+            # The previous median threshold was causing poor recognition quality
+            binary_image = pil_image  # Keep original grayscale
 
             # Create a simple segmentation boundary for the full line image
             # Kraken's rpred needs a Segmentation object with line boundaries

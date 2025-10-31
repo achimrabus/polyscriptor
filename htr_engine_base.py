@@ -268,6 +268,13 @@ class HTREngineRegistry:
         except ImportError as e:
             print(f"Warning: Failed to load Commercial API engine: {e}")
 
+        # Import and register Party engine
+        try:
+            from engines.party_engine import PartyEngine
+            self.register(PartyEngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load Party engine: {e}")
+
         # Import and register OpenWebUI engine
         try:
             from engines.openwebui_engine import OpenWebUIEngine

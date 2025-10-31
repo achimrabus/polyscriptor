@@ -239,6 +239,23 @@ class PartyEngine(HTREngine):
         perf_group.setLayout(perf_layout)
         layout.addWidget(perf_group)
 
+        # Post-processing group
+        postproc_group = QGroupBox("Post-Processing")
+        postproc_layout = QVBoxLayout()
+
+        # Remove duplicates toggle
+        self._remove_duplicates_checkbox = QCheckBox("Remove consecutive duplicate lines")
+        self._remove_duplicates_checkbox.setChecked(True)  # Default: enabled
+        self._remove_duplicates_checkbox.setToolTip(
+            "Remove lines that are exact duplicates of the previous line.\n"
+            "Useful when Party generates repetitive transcriptions.\n"
+            "Only removes consecutive duplicates, not all duplicates."
+        )
+        postproc_layout.addWidget(self._remove_duplicates_checkbox)
+
+        postproc_group.setLayout(postproc_layout)
+        layout.addWidget(postproc_group)
+
         # Info label
         info_label = QLabel(
             "💡 For fastest results: Disable torch.compile and enable quantization.\n"
@@ -296,13 +313,17 @@ class PartyEngine(HTREngine):
         batch_size = self._batch_size_spin.value()
         encoding = self._encoding_combo.currentData()
 
+        # Get post-processing parameters
+        remove_duplicates = self._remove_duplicates_checkbox.isChecked()
+
         return {
             "model_path": model_path,
             "device": device,
             "compile": compile_enabled,
             "quantize": quantize_enabled,
             "batch_size": batch_size,
-            "encoding": encoding
+            "encoding": encoding,
+            "remove_duplicates": remove_duplicates
         }
 
     def set_config(self, config: Dict[str, Any]):
@@ -338,6 +359,9 @@ class PartyEngine(HTREngine):
             if self._encoding_combo.itemData(i) == encoding:
                 self._encoding_combo.setCurrentIndex(i)
                 break
+
+        # Update post-processing parameters
+        self._remove_duplicates_checkbox.setChecked(config.get("remove_duplicates", True))
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load Party model (validate paths)."""
@@ -502,6 +526,11 @@ class PartyEngine(HTREngine):
                             "model": config.get("model_path", "unknown")
                         }
                     ))
+
+                # Optional: Remove consecutive duplicate transcriptions
+                # (Party sometimes generates identical text for adjacent lines)
+                if config.get("remove_duplicates", True):
+                    results = self._remove_consecutive_duplicates(results)
 
                 # Pad with empty results if we got fewer than expected
                 while len(results) < len(images):
@@ -679,6 +708,39 @@ class PartyEngine(HTREngine):
             results.append((text, confidence))
 
         return results
+
+    def _remove_consecutive_duplicates(self, results: List[TranscriptionResult]) -> List[TranscriptionResult]:
+        """
+        Remove consecutive duplicate transcriptions.
+
+        Party sometimes generates identical text for adjacent lines, especially
+        when lines are similar or there's repetitive content in the manuscript.
+        This method removes exact consecutive duplicates while preserving
+        the original sequence.
+
+        Args:
+            results: List of transcription results
+
+        Returns:
+            Filtered list with consecutive duplicates removed
+        """
+        if len(results) <= 1:
+            return results
+
+        filtered = [results[0]]  # Always keep first result
+
+        for i in range(1, len(results)):
+            current = results[i]
+            previous = filtered[-1]
+
+            # Only remove if text is EXACTLY the same and both are non-empty
+            if current.text and current.text == previous.text:
+                # Skip this duplicate
+                continue
+            else:
+                filtered.append(current)
+
+        return filtered
 
     def get_capabilities(self) -> Dict[str, bool]:
         """Party engine capabilities."""
