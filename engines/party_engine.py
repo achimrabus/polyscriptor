@@ -21,6 +21,8 @@ import numpy as np
 from PIL import Image
 
 from htr_engine_base import HTREngine, TranscriptionResult
+from inference_page import LineSegment
+from page_xml_exporter import PageXMLExporter
 
 try:
     from PyQt6.QtWidgets import (
@@ -517,9 +519,6 @@ class PartyEngine(HTREngine):
 
         Based on PartyWorker._create_page_xml() from transcription_gui_party.py
         """
-        from page_xml_exporter import PageXMLExporter
-        from inference_page import LineSegment
-
         # Use first image as reference for page dimensions
         first_img = Image.open(image_paths[0])
         page_width = first_img.width
