@@ -124,28 +124,32 @@ class PartyEngine(HTREngine):
 
 ## Implementation Plan
 
-### Phase 1: Refactor Existing `party_engine.py`
+### Phase 1: Create New Linux-Native `party_engine.py`
+
+**IMPORTANT**: The existing `engines/party_engine.py` is Windows/WSL-specific and outdated. The **working Linux-native code** is already in `transcription_gui_party.py` (PartyWorker class, lines 41-181). We will create a **fresh** implementation based on the PoC, not refactor the old WSL code.
 
 **Tasks:**
 
-1. **Remove WSL-specific code**
-   - Delete `_windows_to_wsl_path()` and `_wsl_to_windows_path()`
-   - Remove `wsl_project_root` parameter
-   - Update `_run_wsl_command()` → rename to `_run_bash_command()`
-   - Use native Linux paths throughout
-
-2. **Implement HTREngine interface**
-   - Add all required abstract methods
+1. **Create new PartyEngine class from scratch**
+   - Start with `HTREngine` interface implementation
    - Import `HTREngine` and `TranscriptionResult` from `htr_engine_base`
+   - Copy working subprocess logic from `transcription_gui_party.py` (lines 95-108)
+   - Use native Linux paths (NO WSL conversion needed)
+
+2. **Port PAGE XML workflow from PoC GUI**
+   - Copy `_create_page_xml()` logic from PartyWorker (lines 60-78)
+   - Copy `_call_party()` subprocess execution (lines 80-122)
+   - Copy `_parse_party_output()` XML parsing (lines 150-181)
+   - Adapt from QThread to synchronous execution
+
+3. **Implement HTREngine interface**
+   - Add all required abstract methods
    - Implement `get_config_widget()` with PyQt6 controls
+   - Implement `load_model()`, `unload_model()`, `is_model_loaded()`
+   - Implement `transcribe_line()` and `transcribe_lines()`
 
-3. **Add PAGE XML workflow support**
-   - Import `PageXMLExporter` and `LineSegment`
-   - Create internal buffer for segments
-   - Implement PAGE XML generation before Party call
-   - Implement PAGE XML parsing after Party returns
-
-**File**: `engines/party_engine.py`
+**Reference Code**: `transcription_gui_party.py` (PartyWorker class)
+**File to Create**: `engines/party_engine.py` (overwrite existing WSL version)
 
 ### Phase 2: Create Configuration Widget
 
