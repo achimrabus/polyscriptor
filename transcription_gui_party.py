@@ -93,9 +93,11 @@ class PartyWorker(QThread):
             # Build Party command
             # Syntax: party -d cuda:0 ocr -i input.xml output.xml -mi model.safetensors
             # Run from image directory so Party can find the image file
-            cmd = f"""cd {wsl_image_dir} && \
-source {self.wsl_project_root}/venv_party_wsl/bin/activate && \
-party -d cuda:0 ocr -i {wsl_xml_path} {wsl_xml_path} -mi {wsl_model_path} --language chu"""
+            cmd = (
+                f"cd {wsl_image_dir} && "
+                f"source {self.wsl_project_root}/venv_party_wsl/bin/activate && "
+                f"party -d cuda:0 ocr -i {wsl_xml_path} {wsl_xml_path} -mi {wsl_model_path} --language chu"
+            )
 
             # Execute via WSL
             self.progress.emit("Running Party (this may take 30-60 seconds)...")
@@ -112,6 +114,11 @@ party -d cuda:0 ocr -i {wsl_xml_path} {wsl_xml_path} -mi {wsl_model_path} --lang
                 return
 
             self.progress.emit("Parsing Party output...")
+
+            # Check if output file exists before parsing
+            if not Path(temp_xml_path).exists():
+                self.error.emit(f"Party did not create output file: {temp_xml_path}")
+                return
 
             # Parse output XML
             transcriptions = self._parse_party_xml(temp_xml_path)
@@ -135,8 +142,18 @@ party -d cuda:0 ocr -i {wsl_xml_path} {wsl_xml_path} -mi {wsl_model_path} --lang
         """Parse Party's output PAGE XML to extract transcriptions."""
         import xml.etree.ElementTree as ET
 
-        tree = ET.parse(xml_path)
-        root = tree.getroot()
+        # Check if file exists and is not empty
+        if not Path(xml_path).exists():
+            raise FileNotFoundError(f"Output XML not found: {xml_path}")
+
+        if Path(xml_path).stat().st_size == 0:
+            raise ValueError(f"Output XML is empty: {xml_path}")
+
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+        except ET.ParseError as e:
+            raise ValueError(f"Failed to parse XML: {e}. The file may be corrupted or incomplete.")
 
         # PAGE XML namespace
         ns = {'p': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15'}

@@ -395,3 +395,6 @@ aug_contrast: 0.3
 - **`MULTI_GPU_TRAINING.md`**: Multi-GPU setup and performance details
 - **`example_config.yaml`**: Annotated configuration template
 - **`README.md`**: Project overview and quick start
+- **`LINUX_SERVER_MIGRATION.md`**: Complete guide for migrating from Windows to Linux server (configuration changes, package installation, model files, API keys, Claude Code sync)
+- **`PARTY_GUI_INTEGRATION_PLAN.md`**: Technical plan for Party OCR GUI integration
+- **`REFERENCE_MOBAXTERM.md`**: Quick reference for X11 GUI forwarding with MobaXterm
