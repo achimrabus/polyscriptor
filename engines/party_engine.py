@@ -25,7 +25,7 @@ from htr_engine_base import HTREngine, TranscriptionResult
 try:
     from PyQt6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-        QPushButton, QLineEdit, QGroupBox, QFileDialog
+        QPushButton, QLineEdit, QGroupBox, QFileDialog, QCheckBox, QSpinBox
     )
     PYQT_AVAILABLE = True
 except ImportError:
