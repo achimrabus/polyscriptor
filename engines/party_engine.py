@@ -30,6 +30,7 @@ try:
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    QWidget = object
 
 
 class PartyEngine(HTREngine):
@@ -49,6 +50,9 @@ class PartyEngine(HTREngine):
         # Default model path
         self.default_model_path = str(self.project_root / "models/party_models/party_european_langs.safetensors")
 
+        # Find party executable (check multiple locations)
+        self.party_exe = self._find_party_executable()
+
         # Config widget references
         self._config_widget: Optional[QWidget] = None
         self._model_combo: Optional[QComboBox] = None
@@ -57,6 +61,34 @@ class PartyEngine(HTREngine):
 
         # Batch processing state
         self._is_loaded = False
+
+    def _find_party_executable(self) -> Optional[str]:
+        """Find party executable in multiple possible locations."""
+        # Check locations in order of preference
+        possible_locations = [
+            Path.home() / "htr_gui/bin/party",  # htr_gui venv
+            Path.home() / "party/party_env/bin/party",  # party_env
+            "party",  # System PATH (fallback)
+        ]
+
+        for location in possible_locations:
+            if isinstance(location, Path) and location.exists():
+                return str(location)
+            elif location == "party":
+                # Check if party is in PATH
+                try:
+                    result = subprocess.run(
+                        ["which", "party"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        return "party"  # Use command directly from PATH
+                except:
+                    pass
+
+        return None
 
     def get_name(self) -> str:
         return "Party OCR"
@@ -67,15 +99,8 @@ class PartyEngine(HTREngine):
     def is_available(self) -> bool:
         """Check if Party is installed and model exists."""
         try:
-            # Check if party command is available
-            result = subprocess.run(
-                ["bash", "-c", "which party"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-
-            if result.returncode != 0:
+            # Check if party executable was found
+            if self.party_exe is None:
                 return False
 
             # Check if default model exists
@@ -90,15 +115,8 @@ class PartyEngine(HTREngine):
     def get_unavailable_reason(self) -> str:
         """Get reason why Party is unavailable."""
         try:
-            result = subprocess.run(
-                ["bash", "-c", "which party"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-
-            if result.returncode != 0:
-                return "Party not installed. Install with: pip install party-ocr"
+            if self.party_exe is None:
+                return "Party executable not found. Checked: ~/htr_gui/bin/party, ~/party/party_env/bin/party, and system PATH"
 
             if not Path(self.default_model_path).exists():
                 return f"Party model not found at: {self.default_model_path}"
@@ -162,10 +180,68 @@ class PartyEngine(HTREngine):
         device_group.setLayout(device_layout)
         layout.addWidget(device_group)
 
+        # Performance optimization group
+        perf_group = QGroupBox("Performance Optimization")
+        perf_layout = QVBoxLayout()
+
+        # Compilation toggle
+        self._compile_checkbox = QCheckBox("Use torch.compile (faster inference, slower startup)")
+        self._compile_checkbox.setChecked(True)  # Default: enabled
+        self._compile_checkbox.setToolTip(
+            "Enable torch.compile() for faster inference.\n"
+            "First run will be slow (10-20s startup), but subsequent inference is faster.\n"
+            "Disable for faster startup with slightly slower inference."
+        )
+        perf_layout.addWidget(self._compile_checkbox)
+
+        # Quantization toggle
+        self._quantize_checkbox = QCheckBox("Use quantization (lower VRAM, faster)")
+        self._quantize_checkbox.setChecked(False)  # Default: disabled
+        self._quantize_checkbox.setToolTip(
+            "Enable post-training quantization for faster inference and lower VRAM usage.\n"
+            "May slightly reduce quality, but significantly improves speed."
+        )
+        perf_layout.addWidget(self._quantize_checkbox)
+
+        # Batch size
+        batch_layout = QHBoxLayout()
+        batch_layout.addWidget(QLabel("Batch Size:"))
+        self._batch_size_spin = QSpinBox()
+        self._batch_size_spin.setRange(1, 32)
+        self._batch_size_spin.setValue(8)  # Default: 8
+        self._batch_size_spin.setToolTip(
+            "Number of lines to process simultaneously.\n"
+            "Higher = faster for large batches, but uses more VRAM.\n"
+            "Lower = slower but uses less VRAM."
+        )
+        batch_layout.addWidget(self._batch_size_spin)
+        batch_layout.addStretch()
+        perf_layout.addLayout(batch_layout)
+
+        # Line encoding method
+        encoding_layout = QHBoxLayout()
+        encoding_layout.addWidget(QLabel("Line Encoding:"))
+        self._encoding_combo = QComboBox()
+        self._encoding_combo.addItem("Curves (more accurate)", "curves")
+        self._encoding_combo.addItem("Boxes (faster)", "boxes")
+        self._encoding_combo.setCurrentIndex(0)  # Default: curves
+        self._encoding_combo.setToolTip(
+            "Method for encoding line regions in PAGE XML.\n"
+            "Curves: More accurate, preserves baseline curvature\n"
+            "Boxes: Faster, uses simple bounding boxes"
+        )
+        encoding_layout.addWidget(self._encoding_combo)
+        encoding_layout.addStretch()
+        perf_layout.addLayout(encoding_layout)
+
+        perf_group.setLayout(perf_layout)
+        layout.addWidget(perf_group)
+
         # Info label
         info_label = QLabel(
-            "Party processes entire pages using PAGE XML format.\n"
-            "Batch processing is recommended for best performance."
+            "💡 For fastest results: Disable torch.compile and enable quantization.\n"
+            "For best quality: Enable torch.compile, disable quantization.\n"
+            "Party processes entire pages using PAGE XML format."
         )
         info_label.setStyleSheet("color: gray; font-size: 9pt; padding: 10px;")
         info_label.setWordWrap(True)
@@ -201,16 +277,30 @@ class PartyEngine(HTREngine):
         if self._config_widget is None:
             return {
                 "model_path": self.default_model_path,
-                "device": "cuda:0"
+                "device": "cuda:0",
+                "compile": True,
+                "quantize": False,
+                "batch_size": 8,
+                "encoding": "curves"
             }
 
         # Get model path from label (handles both default and custom)
         model_path = self._model_path_label.text()
         device = self._device_combo.currentText()
 
+        # Get optimization parameters
+        compile_enabled = self._compile_checkbox.isChecked()
+        quantize_enabled = self._quantize_checkbox.isChecked()
+        batch_size = self._batch_size_spin.value()
+        encoding = self._encoding_combo.currentData()
+
         return {
             "model_path": model_path,
-            "device": device
+            "device": device,
+            "compile": compile_enabled,
+            "quantize": quantize_enabled,
+            "batch_size": batch_size,
+            "encoding": encoding
         }
 
     def set_config(self, config: Dict[str, Any]):
@@ -234,6 +324,18 @@ class PartyEngine(HTREngine):
         idx = self._device_combo.findText(device)
         if idx >= 0:
             self._device_combo.setCurrentIndex(idx)
+
+        # Update optimization parameters
+        self._compile_checkbox.setChecked(config.get("compile", True))
+        self._quantize_checkbox.setChecked(config.get("quantize", False))
+        self._batch_size_spin.setValue(config.get("batch_size", 8))
+
+        # Update encoding combo
+        encoding = config.get("encoding", "curves")
+        for i in range(self._encoding_combo.count()):
+            if self._encoding_combo.itemData(i) == encoding:
+                self._encoding_combo.setCurrentIndex(i)
+                break
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load Party model (validate paths)."""
@@ -370,10 +472,11 @@ class PartyEngine(HTREngine):
             width, height = img.size
 
             segment = LineSegment(
+                image=img,  # LineSegment requires image as first parameter
                 bbox=(0, y_offset, width, y_offset + height),
                 coords=None,
-                confidence=None,
-                text=None  # Will be filled by Party
+                text=None,  # Will be filled by Party
+                confidence=None
             )
             segments.append(segment)
             y_offset += height + 10  # 10px gap between lines
@@ -406,21 +509,37 @@ class PartyEngine(HTREngine):
 
     def _call_party(self, input_xml: Path, config: Dict[str, Any], temp_dir: Path) -> Path:
         """
-        Execute Party OCR subprocess.
+        Execute Party OCR subprocess with optimization parameters.
 
         Based on PartyWorker.run() from transcription_gui_party.py (lines 80-122)
+        Enhanced with CLI parameters from party ocr --help
         """
         model_path = config.get("model_path", self.model_path)
         device = config.get("device", self.device)
 
+        # Get optimization parameters
+        compile_enabled = config.get("compile", True)
+        quantize_enabled = config.get("quantize", False)
+        batch_size = config.get("batch_size", 8)
+        encoding = config.get("encoding", "curves")
+
+        # Build optimization flags
+        compile_flag = "--compile" if compile_enabled else "--no-compile"
+        quantize_flag = "--quantize" if quantize_enabled else "--no-quantize"
+
         # Output XML path
         output_xml = temp_dir / "output.xml"
 
-        # Build Party command
+        # Build enhanced Party command with all optimization parameters
         # Note: Must run from image directory so Party can find the image file
         cmd = (
             f"cd {temp_dir} && "
-            f"party -d {device} ocr -i {input_xml.name} {output_xml.name} -mi {model_path}"
+            f"{self.party_exe} -d {device} ocr "
+            f"-i {input_xml.name} {output_xml.name} "
+            f"-mi {model_path} "
+            f"{compile_flag} {quantize_flag} "
+            f"-b {batch_size} "
+            f"--{encoding}"
         )
 
         # Execute Party
