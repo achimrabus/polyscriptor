@@ -65,6 +65,9 @@ unpacked-datasets/
 !example*.png
 !sample*.png
 
+# Test images directory
+HTR_Images/
+
 # Logs and temporary files
 logs/
 *.log
