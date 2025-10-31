@@ -116,30 +116,60 @@ class TranscriptionWorker(QThread):
     finished = pyqtSignal(list)  # List of transcriptions
     error = pyqtSignal(str)
 
-    def __init__(self, engine: HTREngine, line_segments: List[LineSegment], image: Image.Image):
+    def __init__(self, engine: HTREngine, line_segments: List[LineSegment], image: Image.Image, image_path: Optional[Path] = None):
         super().__init__()
         self.engine = engine
         self.line_segments = line_segments
         self.image = image
+        self.image_path = image_path  # Store original image path for Party
 
     def run(self):
         """Process all line segments."""
         try:
             transcriptions = []
 
-            for i, line_seg in enumerate(self.line_segments):
-                # Crop line from image
-                x1, y1, x2, y2 = line_seg.bbox
-                line_img = self.image.crop((x1, y1, x2, y2))
-                line_array = np.array(line_img)
+            # Check if engine prefers batch processing with original image context
+            # (CRITICAL for Party to correctly recognize scripts like Glagolitic)
+            if hasattr(self.engine, 'prefers_batch_with_context') and self.engine.prefers_batch_with_context() and self.image_path:
+                # Batch processing with original image (Party-specific)
+                line_images = []
+                line_bboxes = []
 
-                # Transcribe with engine
-                result = self.engine.transcribe_line(line_array)
+                for line_seg in self.line_segments:
+                    x1, y1, x2, y2 = line_seg.bbox
+                    line_img = self.image.crop((x1, y1, x2, y2))
+                    line_array = np.array(line_img)
+                    line_images.append(line_array)
+                    line_bboxes.append((x1, y1, x2, y2))
 
-                # Ensure we get the text as a string
-                text = str(result.text) if hasattr(result, 'text') else str(result)
-                transcriptions.append(text)
-                self.progress.emit(i + 1, len(self.line_segments), text)
+                # Call batch transcription with original image context
+                results = self.engine.transcribe_lines(
+                    line_images,
+                    config=None,
+                    original_image_path=str(self.image_path),
+                    line_bboxes=line_bboxes
+                )
+
+                # Extract text from results
+                for i, result in enumerate(results):
+                    text = str(result.text) if hasattr(result, 'text') else str(result)
+                    transcriptions.append(text)
+                    self.progress.emit(i + 1, len(self.line_segments), text)
+            else:
+                # Line-by-line processing (default behavior)
+                for i, line_seg in enumerate(self.line_segments):
+                    # Crop line from image
+                    x1, y1, x2, y2 = line_seg.bbox
+                    line_img = self.image.crop((x1, y1, x2, y2))
+                    line_array = np.array(line_img)
+
+                    # Transcribe with engine
+                    result = self.engine.transcribe_line(line_array)
+
+                    # Ensure we get the text as a string
+                    text = str(result.text) if hasattr(result, 'text') else str(result)
+                    transcriptions.append(text)
+                    self.progress.emit(i + 1, len(self.line_segments), text)
 
             self.finished.emit(transcriptions)
 
@@ -643,7 +673,8 @@ class TranscriptionGUI(QMainWindow):
         self.worker = TranscriptionWorker(
             self.current_engine,
             line_segments,
-            self.current_image
+            self.current_image,
+            self.current_image_path  # Pass original image path for Party context
         )
 
         self.worker.progress.connect(self.on_transcription_progress)

@@ -372,6 +372,18 @@ class PartyEngine(HTREngine):
         """Check if model is loaded."""
         return self._is_loaded
 
+    def prefers_batch_with_context(self) -> bool:
+        """
+        Indicate that Party engine works best with batch processing using original image.
+
+        This signals to the GUI that it should call transcribe_lines() with
+        original_image_path and line_bboxes instead of processing lines individually.
+
+        CRITICAL for language recognition: Party needs the original page image to
+        correctly detect scripts like Glagolitic, Church Slavonic, etc.
+        """
+        return True
+
     def transcribe_line(self, image: np.ndarray, config: Optional[Dict[str, Any]] = None) -> TranscriptionResult:
         """
         Transcribe a single line image.
@@ -383,11 +395,27 @@ class PartyEngine(HTREngine):
         results = self.transcribe_lines([image], config)
         return results[0] if results else TranscriptionResult(text="", confidence=0.0)
 
-    def transcribe_lines(self, images: List[np.ndarray], config: Optional[Dict[str, Any]] = None) -> List[TranscriptionResult]:
+    def transcribe_lines(
+        self,
+        images: List[np.ndarray],
+        config: Optional[Dict[str, Any]] = None,
+        original_image_path: Optional[str] = None,
+        line_bboxes: Optional[List[tuple]] = None
+    ) -> List[TranscriptionResult]:
         """
         Batch transcription using Party's PAGE XML workflow.
 
         This is the recommended way to use Party - processes entire page at once.
+
+        Args:
+            images: List of line images (np.ndarray)
+            config: Engine configuration
+            original_image_path: Path to original page image (CRITICAL for language recognition!)
+                                If provided, Party will use the original image instead of
+                                creating a synthetic composite, preserving page-level context
+                                needed for proper script/language detection (e.g., Glagolitic)
+            line_bboxes: List of (x1, y1, x2, y2) bounding boxes for each line in original image
+                        Required when original_image_path is provided
         """
         if not self._is_loaded:
             return [TranscriptionResult(text="[Model not loaded]", confidence=0.0) for _ in images]
@@ -400,22 +428,56 @@ class PartyEngine(HTREngine):
             with tempfile.TemporaryDirectory(prefix="party_") as temp_dir:
                 temp_path = Path(temp_dir)
 
-                # Save images to temp directory
-                image_paths = []
-                for i, img_array in enumerate(images):
-                    # Convert numpy to PIL
-                    if isinstance(img_array, np.ndarray):
-                        pil_img = Image.fromarray(img_array)
-                    else:
-                        pil_img = img_array
+                # CRITICAL: Use original image if provided (preserves language recognition)
+                if original_image_path and line_bboxes:
+                    # Copy original image to temp directory
+                    from shutil import copy2
+                    original_path = Path(original_image_path)
+                    page_image_path = temp_path / original_path.name
+                    copy2(original_image_path, page_image_path)
 
-                    # Save to temp file
-                    img_path = temp_path / f"line_{i:04d}.png"
-                    pil_img.save(img_path)
-                    image_paths.append(img_path)
+                    # Get image dimensions
+                    img = Image.open(page_image_path)
+                    width, height = img.size
 
-                # Create PAGE XML from images
-                xml_path = self._create_page_xml(image_paths, temp_path)
+                    # Create segments with original coordinates
+                    segments = []
+                    for i, bbox in enumerate(line_bboxes):
+                        x1, y1, x2, y2 = bbox
+                        segments.append(LineSegment(
+                            image=img.crop(bbox),  # Cropped for metadata
+                            bbox=bbox,
+                            coords=None,
+                            text=None,
+                            confidence=None
+                        ))
+
+                    # Generate PAGE XML with original image reference
+                    xml_path = temp_path / "input.xml"
+                    exporter = PageXMLExporter(str(page_image_path), width, height)
+                    exporter.export(
+                        segments,
+                        str(xml_path),
+                        creator="PartyEngine-Plugin-OriginalImage",
+                        comments="PAGE XML with original image (preserves language recognition)"
+                    )
+                else:
+                    # Fallback: Save individual line images (old behavior, creates synthetic composite)
+                    image_paths = []
+                    for i, img_array in enumerate(images):
+                        # Convert numpy to PIL
+                        if isinstance(img_array, np.ndarray):
+                            pil_img = Image.fromarray(img_array)
+                        else:
+                            pil_img = img_array
+
+                        # Save to temp file
+                        img_path = temp_path / f"line_{i:04d}.png"
+                        pil_img.save(img_path)
+                        image_paths.append(img_path)
+
+                    # Create PAGE XML from images (synthetic composite)
+                    xml_path = self._create_page_xml(image_paths, temp_path)
 
                 # Call Party OCR
                 output_xml_path = self._call_party(xml_path, config, temp_path)
