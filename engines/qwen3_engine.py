@@ -14,12 +14,13 @@ try:
     from PyQt6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
         QPushButton, QSpinBox, QCheckBox, QLineEdit, QFileDialog,
-        QGroupBox, QRadioButton, QButtonGroup, QSlider
+        QGroupBox, QRadioButton, QButtonGroup, QSlider, QTextEdit
     )
     from PyQt6.QtCore import Qt
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    QWidget = object
 
 try:
     from inference_qwen3 import Qwen3VLMInference, QWEN3_MODELS
@@ -27,6 +28,15 @@ try:
 except ImportError:
     QWEN3_AVAILABLE = False
     QWEN3_MODELS = {}
+
+try:
+    from qwen3_prompts import QWEN3_PROMPT_PRESETS, get_prompt
+    PROMPTS_AVAILABLE = True
+except ImportError:
+    PROMPTS_AVAILABLE = False
+    QWEN3_PROMPT_PRESETS = {
+        "default": {"name": "Default", "prompt": "Transcribe the text shown in this image.", "description": ""}
+    }
 
 
 class Qwen3Engine(HTREngine):
@@ -210,11 +220,50 @@ class Qwen3Engine(HTREngine):
         gen_group.setLayout(gen_layout)
         settings_layout.addWidget(gen_group)
 
+        # Prompt customization group
+        prompt_group = QGroupBox("Transcription Prompt")
+        prompt_layout = QVBoxLayout()
+
+        # Prompt presets dropdown
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("Preset:"))
+        self._prompt_preset_combo = QComboBox()
+
+        # Populate with presets
+        for key, info in QWEN3_PROMPT_PRESETS.items():
+            self._prompt_preset_combo.addItem(info["name"], key)
+
+        self._prompt_preset_combo.currentIndexChanged.connect(self._on_prompt_preset_changed)
+        preset_layout.addWidget(self._prompt_preset_combo)
+        prompt_layout.addLayout(preset_layout)
+
+        # Custom prompt text edit
+        self._prompt_text_edit = QTextEdit()
+        self._prompt_text_edit.setPlaceholderText("Enter custom prompt or select a preset above...")
+        self._prompt_text_edit.setMaximumHeight(80)
+        self._prompt_text_edit.setEnabled(False)  # Disabled until "Custom" is selected
+        prompt_layout.addWidget(self._prompt_text_edit)
+
+        # Prompt hints
+        hint_label = QLabel(
+            "💡 Tip: Specify language, script type, or content domain for better results.\n"
+            "Examples: 'Church Slavonic', 'mathematical formulas', 'degraded manuscript'"
+        )
+        hint_label.setStyleSheet("color: gray; font-size: 9pt; padding: 5px;")
+        hint_label.setWordWrap(True)
+        prompt_layout.addWidget(hint_label)
+
+        prompt_group.setLayout(prompt_layout)
+        settings_layout.addWidget(prompt_group)
+
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
 
         layout.addStretch()
         widget.setLayout(layout)
+
+        # Initialize prompt to default
+        self._on_prompt_preset_changed(0)
 
         # Initialize preset description
         self._on_preset_changed(self._preset_combo.currentText())
@@ -279,6 +328,23 @@ class Qwen3Engine(HTREngine):
         if self._temperature_spin:
             self._temperature_spin.setEnabled(checked)
 
+    def _on_prompt_preset_changed(self, index: int):
+        """Update prompt text when preset changes."""
+        if self._prompt_preset_combo is None or self._prompt_text_edit is None:
+            return
+
+        preset_key = self._prompt_preset_combo.currentData()
+
+        if preset_key == "custom":
+            # Enable custom editing
+            self._prompt_text_edit.setEnabled(True)
+            self._prompt_text_edit.setFocus()
+        else:
+            # Load preset and disable editing
+            self._prompt_text_edit.setEnabled(False)
+            preset_info = QWEN3_PROMPT_PRESETS.get(preset_key, QWEN3_PROMPT_PRESETS["default"])
+            self._prompt_text_edit.setPlainText(preset_info["prompt"])
+
     def get_config(self) -> Dict[str, Any]:
         """Extract configuration from widget controls."""
         if self._config_widget is None:
@@ -293,6 +359,9 @@ class Qwen3Engine(HTREngine):
             "temperature": self._temperature_spin.value() / 10.0,  # Convert to 0.1-2.0 range
             "repetition_penalty": self._repetition_penalty_spin.value() / 10.0,  # Convert to 1.0-3.0 range
             "max_new_tokens": self._max_tokens_spin.value(),
+            # Prompt configuration
+            "prompt_preset": self._prompt_preset_combo.currentData(),
+            "prompt_text": self._prompt_text_edit.toPlainText().strip()
         }
 
         if is_preset:
@@ -334,6 +403,18 @@ class Qwen3Engine(HTREngine):
         self._temperature_spin.setValue(int(config.get("temperature", 1.0) * 10))
         self._repetition_penalty_spin.setValue(int(config.get("repetition_penalty", 1.2) * 10))
         self._max_tokens_spin.setValue(config.get("max_new_tokens", 2048))
+
+        # Prompt configuration
+        prompt_preset = config.get("prompt_preset", "default")
+        for i in range(self._prompt_preset_combo.count()):
+            if self._prompt_preset_combo.itemData(i) == prompt_preset:
+                self._prompt_preset_combo.setCurrentIndex(i)
+                break
+
+        # If custom prompt, restore text
+        if prompt_preset == "custom":
+            custom_text = config.get("prompt_text", "")
+            self._prompt_text_edit.setPlainText(custom_text)
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load Qwen3 model."""
@@ -405,6 +486,18 @@ class Qwen3Engine(HTREngine):
             else:
                 pil_image = image
 
+            # Extract prompt from config
+            prompt = "Transcribe the text shown in this image."  # Default
+            if config:
+                prompt_preset = config.get("prompt_preset", "default")
+                prompt_text = config.get("prompt_text", "")
+
+                # Determine which prompt to use
+                if PROMPTS_AVAILABLE:
+                    prompt = get_prompt(prompt_preset, prompt_text)
+                elif prompt_preset == "custom" and prompt_text:
+                    prompt = prompt_text
+
             # Use transcribe_page which handles the full image
             # Pass generation parameters from config
             generation_kwargs = {}
@@ -414,7 +507,7 @@ class Qwen3Engine(HTREngine):
                 generation_kwargs["max_new_tokens"] = config.get("max_new_tokens", 2048)
                 # Note: repetition_penalty is already set in inference_qwen3.py
 
-            result = self.model.transcribe_page(pil_image, return_confidence=True, **generation_kwargs)
+            result = self.model.transcribe_page(pil_image, prompt=prompt, return_confidence=True, **generation_kwargs)
 
             # Extract just the text from PageTranscription object
             text = result.text if hasattr(result, 'text') else str(result)
@@ -423,7 +516,11 @@ class Qwen3Engine(HTREngine):
             return TranscriptionResult(
                 text=text,
                 confidence=confidence if confidence is not None else 1.0,
-                metadata={"model": "qwen3-vlm"}
+                metadata={
+                    "model": "qwen3-vlm",
+                    "prompt": prompt,
+                    "prompt_preset": config.get("prompt_preset", "default") if config else "default"
+                }
             )
 
         except Exception as e:
@@ -433,25 +530,63 @@ class Qwen3Engine(HTREngine):
             return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
 
     def transcribe_lines(self, images: list[np.ndarray], config: Optional[Dict[str, Any]] = None) -> list[TranscriptionResult]:
-        """Batch transcription with Qwen3 (optimized)."""
+        """Batch transcription with Qwen3 (processes each line with custom prompt)."""
         if self.model is None:
             return [TranscriptionResult(text="[Model not loaded]", confidence=0.0) for _ in images]
 
         try:
-            # Qwen3 supports batch processing
-            results = self.model.transcribe_lines(images)
+            # Extract prompt from config (same logic as transcribe_line)
+            prompt = "Transcribe the text shown in this image."  # Default
+            if config:
+                prompt_preset = config.get("prompt_preset", "default")
+                prompt_text = config.get("prompt_text", "")
 
-            return [
-                TranscriptionResult(
-                    text=r.get("text", ""),
-                    confidence=r.get("confidence", 1.0),
-                    metadata={"model": "qwen3-vlm"}
-                )
-                for r in results
-            ]
+                # Determine which prompt to use
+                if PROMPTS_AVAILABLE:
+                    prompt = get_prompt(prompt_preset, prompt_text)
+                elif prompt_preset == "custom" and prompt_text:
+                    prompt = prompt_text
+
+            # Process each image with the custom prompt
+            from PIL import Image
+            results = []
+
+            for img_array in images:
+                # Convert to PIL
+                if isinstance(img_array, np.ndarray):
+                    pil_img = Image.fromarray(img_array)
+                else:
+                    pil_img = img_array
+
+                # Transcribe with custom prompt
+                generation_kwargs = {}
+                if config:
+                    generation_kwargs["do_sample"] = config.get("do_sample", False)
+                    generation_kwargs["temperature"] = config.get("temperature", 1.0) if config.get("do_sample") else None
+                    generation_kwargs["max_new_tokens"] = config.get("max_new_tokens", 2048)
+
+                result = self.model.transcribe_page(pil_img, prompt=prompt, return_confidence=True, **generation_kwargs)
+
+                # Extract text and confidence
+                text = result.text if hasattr(result, 'text') else str(result)
+                confidence = result.confidence if hasattr(result, 'confidence') else 1.0
+
+                results.append(TranscriptionResult(
+                    text=text,
+                    confidence=confidence if confidence is not None else 1.0,
+                    metadata={
+                        "model": "qwen3-vlm",
+                        "prompt": prompt,
+                        "prompt_preset": config.get("prompt_preset", "default") if config else "default"
+                    }
+                ))
+
+            return results
 
         except Exception as e:
             print(f"Error in Qwen3 batch transcription: {e}")
+            import traceback
+            traceback.print_exc()
             return [TranscriptionResult(text=f"[Error: {e}]", confidence=0.0) for _ in images]
 
     def supports_batch(self) -> bool:
