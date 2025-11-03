@@ -157,6 +157,9 @@ test_*.py
 # Accidentally created files
 =*
 
+# HuggingFace model download history (auto-generated)
+.hf_model_history.json
+
 # Legacy/broken inference implementations
 inference_pylaia.py
 inference_pylaia_lm.py
