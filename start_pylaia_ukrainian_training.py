@@ -27,6 +27,11 @@ import logging
 from datetime import datetime
 import sys
 
+# Configure PyTorch to use 75% of CPU threads (24 of 32 available on AMD EPYC 9124)
+# This leaves 8 cores free for other users on shared server
+torch.set_num_threads(24)
+torch.set_num_interop_threads(24)
+
 # Add parent dir to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 from train_pylaia import (
@@ -60,7 +65,7 @@ def main():
         "dropout": 0.5,
 
         # Training hyperparameters (Transkribus optimized)
-        "batch_size": 16,  # Adjust based on GPU memory
+        "batch_size": 32,  # Optimal for CPU training (tested: 32 fastest, 128/512 slower)
         "num_epochs": 250,
         "learning_rate": 0.0003,  # Transkribus default
         "weight_decay": 1e-5,
@@ -69,9 +74,9 @@ def main():
         # Data augmentation
         "augment_train": True,
 
-        # Hardware (single GPU to avoid multi-GPU errors)
-        "num_workers": 4,
-        "device": "cuda:0" if torch.cuda.is_available() else "cpu"
+        # Hardware (CPU with 24 threads, 75% of AMD EPYC 9124 capacity)
+        "num_workers": 12,  # Use half of 24 threads for data loading (other half for training)
+        "device": "cpu"  # Using CPU due to GPU memory exhaustion (45GB/46GB used by other processes)
     }
 
     logger.info("="*80)
@@ -111,7 +116,7 @@ def main():
         shuffle=True,
         num_workers=config["num_workers"],
         collate_fn=collate_fn,
-        pin_memory=True
+        pin_memory=False  # Disabled for CPU training (pin_memory requires GPU memory)
     )
 
     val_loader = DataLoader(
@@ -120,7 +125,7 @@ def main():
         shuffle=False,
         num_workers=config["num_workers"],
         collate_fn=collate_fn,
-        pin_memory=True
+        pin_memory=False  # Disabled for CPU training
     )
 
     vocab_size = len(train_dataset.symbols) + 1  # +1 for CTC blank

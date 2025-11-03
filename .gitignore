@@ -131,6 +131,9 @@ QWEN_*.md
 KRAKEN_*.md
 Documentation/
 
+# Detailed project documentation (hardware-specific, too detailed for public)
+CLAUDE.md
+
 # Test and debug scripts (temporary)
 check_*.py
 test_*.py
