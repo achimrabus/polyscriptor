@@ -110,14 +110,16 @@ class PyLaiaInference:
     Loads PyTorch checkpoint directly and runs inference on Linux.
     """
 
-    def __init__(self, checkpoint_path: str, syms_path: str = None):
+    def __init__(self, checkpoint_path: str, syms_path: str = None, enable_spaces: bool = True):
         """
         Initialize PyLaia inference.
 
         Args:
             checkpoint_path: Path to .ckpt checkpoint file
             syms_path: Path to symbols file. If None, will look in data directory.
+            enable_spaces: If True, convert <space> tokens to actual spaces. If False, keep as <space>.
         """
+        self.enable_spaces = enable_spaces
         self.checkpoint_path = Path(checkpoint_path)
 
         if not self.checkpoint_path.exists():
@@ -132,19 +134,42 @@ class PyLaiaInference:
         if not self.syms_path.exists():
             raise FileNotFoundError(f"Symbols file not found: {syms_path}")
 
-        # Load symbols
+        # Load symbols (handle both list and KALDI formats)
         with open(self.syms_path, 'r', encoding='utf-8') as f:
-            self.symbols = [line.strip() for line in f]
+            symbols_raw = [line.strip() for line in f if line.strip()]
+
+        # Auto-detect format: KALDI format has "symbol index" pairs
+        if symbols_raw and ' ' in symbols_raw[0]:
+            parts = symbols_raw[0].split()
+            if len(parts) == 2 and parts[1].isdigit():
+                # KALDI format: "symbol index"
+                self.symbols = [line.split()[0] for line in symbols_raw if line.split()]
+                logger.info(f"Detected KALDI format vocabulary")
+            else:
+                # List format (one symbol per line)
+                self.symbols = symbols_raw
+        else:
+            # List format (one symbol per line)
+            self.symbols = symbols_raw
+
+        # Remove <ctc> token if present (CTC blank is handled separately as index 0)
+        if self.symbols and self.symbols[0] == '<ctc>':
+            self.symbols = self.symbols[1:]
+            logger.info(f"Removed <ctc> token from vocabulary (using index 0 for CTC blank)")
 
         # Create char-to-index mapping (0 reserved for CTC blank)
         self.char2idx = {char: idx + 1 for idx, char in enumerate(self.symbols)}
         self.idx2char = {idx: char for char, idx in self.char2idx.items()}
         self.idx2char[0] = ''  # CTC blank
 
-        # Map <SPACE> to actual space
-        if '<SPACE>' in self.char2idx:
-            space_idx = self.char2idx['<SPACE>']
-            self.idx2char[space_idx] = ' '
+        # Map <SPACE> or <space> to actual space (if enabled)
+        if self.enable_spaces:
+            if '<SPACE>' in self.char2idx:
+                space_idx = self.char2idx['<SPACE>']
+                self.idx2char[space_idx] = ' '
+            elif '<space>' in self.char2idx:
+                space_idx = self.char2idx['<space>']
+                self.idx2char[space_idx] = ' '
 
         # Load checkpoint
         logger.info(f"Loading PyLaia checkpoint: {checkpoint_path}")
@@ -286,9 +311,24 @@ class PyLaiaInference:
 
 # Model registry (updated for trained models)
 PYLAIA_MODELS = {
-    "Glagolitic (best)": {
+    "Glagolitic (5.33% CER)": {
+        "checkpoint": "models/pylaia_glagolitic_with_spaces_20251102_182103/best_model.pt",
+        "syms": "data/pylaia_glagolitic/syms.txt",
+        "description": "PyLaia CRNN - Glagolitic manuscript (76 symbols, 5.33% CER)"
+    },
+    "Ukrainian (13.53% CER - NEW)": {
+        "checkpoint": "models/pylaia_ukrainian_retrain_20251102_213431/best_model.pt",
+        "syms": "models/pylaia_ukrainian_retrain_20251102_213431/symbols.txt",
+        "description": "PyLaia CRNN - Ukrainian manuscript (180 symbols, 13.53% CER, retrained)"
+    },
+    "Ukrainian (10.80% CER - OLD)": {
+        "checkpoint": "models/pylaia_ukrainian_pagexml_20251101_182736/best_model.pt",
+        "syms": "models/pylaia_ukrainian_pagexml_20251101_182736/symbols.txt",
+        "description": "PyLaia CRNN - Ukrainian manuscript (180 symbols, 10.80% CER)"
+    },
+    "Glagolitic (old)": {
         "checkpoint": "models/pylaia_glagolitic_single_gpu/best_model.pt",
         "syms": "models/pylaia_glagolitic_single_gpu/symbols.txt",
-        "description": "PyLaia model - best checkpoint from Glagolitic training"
+        "description": "PyLaia model - old Glagolitic training (no spaces)"
     }
 }

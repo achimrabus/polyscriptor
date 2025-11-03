@@ -47,6 +47,7 @@ class PyLaiaEngine(HTREngine):
         self._lm_weight_spin: Optional[QDoubleSpinBox] = None
         self._custom_model_edit: Optional[QLineEdit] = None
         self._custom_lm_edit: Optional[QLineEdit] = None
+        self._enable_spaces_check: Optional[QCheckBox] = None
 
     def get_name(self) -> str:
         return "PyLaia"
@@ -139,6 +140,21 @@ class PyLaiaEngine(HTREngine):
         lm_group.setLayout(lm_layout)
         layout.addWidget(lm_group)
 
+        # Output options
+        output_group = QGroupBox("Output Options")
+        output_layout = QVBoxLayout()
+
+        self._enable_spaces_check = QCheckBox("Convert <space> tokens to spaces")
+        self._enable_spaces_check.setChecked(True)
+        self._enable_spaces_check.setToolTip(
+            "When enabled, <space> or <SPACE> tokens in the vocabulary are converted to actual spaces.\n"
+            "Disable to keep them as literal <space> text."
+        )
+        output_layout.addWidget(self._enable_spaces_check)
+
+        output_group.setLayout(output_layout)
+        layout.addWidget(output_group)
+
         layout.addStretch()
         widget.setLayout(layout)
 
@@ -206,6 +222,7 @@ class PyLaiaEngine(HTREngine):
             "model_path": custom_model if custom_model else preset_model,
             "use_lm": self._use_lm_check.isChecked(),
             "lm_weight": self._lm_weight_spin.value(),
+            "enable_spaces": self._enable_spaces_check.isChecked(),
         }
 
         if config["use_lm"]:
@@ -232,6 +249,7 @@ class PyLaiaEngine(HTREngine):
 
         self._use_lm_check.setChecked(config.get("use_lm", False))
         self._lm_weight_spin.setValue(config.get("lm_weight", 1.5))
+        self._enable_spaces_check.setChecked(config.get("enable_spaces", True))
 
         if "lm_path" in config:
             self._custom_lm_edit.setText(config["lm_path"])
@@ -272,10 +290,12 @@ class PyLaiaEngine(HTREngine):
                 self.model = None
             else:
                 # Load without language model
-                # PyLaiaInference expects checkpoint_path and syms_path
+                # PyLaiaInference expects checkpoint_path, syms_path, and enable_spaces
+                enable_spaces = config.get("enable_spaces", True)
                 self.model = PyLaiaInference(
                     checkpoint_path=model_path,
-                    syms_path=syms_path
+                    syms_path=syms_path,
+                    enable_spaces=enable_spaces
                 )
                 self.model_lm = None
 

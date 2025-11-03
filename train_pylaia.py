@@ -61,19 +61,41 @@ class PyLaiaDataset(Dataset):
         with open(list_path, 'r', encoding='utf-8') as f:
             self.sample_ids = [line.strip() for line in f if line.strip()]
         
-        # Load vocabulary
+        # Load vocabulary (handle both list and KALDI formats)
         symbols_path = self.data_dir / symbols_file
         with open(symbols_path, 'r', encoding='utf-8') as f:
-            self.symbols = [line.strip() for line in f]
-        
+            symbols_raw = [line.strip() for line in f if line.strip()]
+
+        # Auto-detect format: KALDI format has "symbol index" pairs
+        if symbols_raw and ' ' in symbols_raw[0]:
+            parts = symbols_raw[0].split()
+            if len(parts) == 2 and parts[1].isdigit():
+                # KALDI format: "symbol index"
+                self.symbols = [line.split()[0] for line in symbols_raw if line.split()]
+                logger.info(f"Detected KALDI format vocabulary")
+            else:
+                # List format (one symbol per line)
+                self.symbols = symbols_raw
+        else:
+            # List format (one symbol per line)
+            self.symbols = symbols_raw
+
+        # Remove <ctc> token if present (CTC blank is handled separately as index 0)
+        if self.symbols and self.symbols[0] == '<ctc>':
+            self.symbols = self.symbols[1:]
+            logger.info(f"Removed <ctc> token from vocabulary (using index 0 for CTC blank)")
+
         # Create char-to-index mapping (0 reserved for CTC blank)
         self.char2idx = {char: idx + 1 for idx, char in enumerate(self.symbols)}
         self.idx2char = {idx: char for char, idx in self.char2idx.items()}
         self.idx2char[0] = ''  # CTC blank
-        
-        # Map <SPACE> to actual space
+
+        # Map <SPACE> or <space> to actual space (handle both uppercase and lowercase)
         if '<SPACE>' in self.char2idx:
             space_idx = self.char2idx['<SPACE>']
+            self.idx2char[space_idx] = ' '
+        elif '<space>' in self.char2idx:
+            space_idx = self.char2idx['<space>']
             self.idx2char[space_idx] = ' '
         
         logger.info(f"Loaded {len(self.sample_ids)} samples from {list_path}")
@@ -126,7 +148,11 @@ class PyLaiaDataset(Dataset):
         target = []
         for char in text:
             if char == ' ':
-                target.append(self.char2idx.get('<SPACE>', 0))
+                # Try both <SPACE> and <space> to handle different vocab formats
+                space_idx = self.char2idx.get('<SPACE>')
+                if space_idx is None:
+                    space_idx = self.char2idx.get('<space>', 0)
+                target.append(space_idx)
             else:
                 target.append(self.char2idx.get(char, 0))
         
