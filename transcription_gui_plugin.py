@@ -41,6 +41,9 @@ from page_xml_exporter import PageXMLExporter
 # Import HTR Engine Plugin System
 from htr_engine_base import get_global_registry, HTREngine, TranscriptionResult
 
+# Import logo handler
+from logo_handler import get_logo_handler
+
 # Get available engines
 engine_registry = get_global_registry()
 available_engines = engine_registry.get_available_engines()
@@ -385,8 +388,12 @@ class TranscriptionGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HTR Transcription Tool - Plugin System")
+        self.setWindowTitle("Polyscript - Multi-Engine HTR Tool")
         self.setGeometry(100, 100, 1400, 900)
+
+        # Set application icon
+        logo_handler = get_logo_handler()
+        self.setWindowIcon(logo_handler.get_icon())
 
         # State
         self.current_image_path: Optional[Path] = None
@@ -415,6 +422,15 @@ class TranscriptionGUI(QMainWindow):
         # Left panel: Image view
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+
+        # Logo display at top
+        logo_handler = get_logo_handler()
+        logo_label = QLabel()
+        logo_pixmap = logo_handler.get_logo_pixmap(width=300)
+        logo_label.setPixmap(logo_pixmap)
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_label.setStyleSheet("padding: 10px;")
+        left_layout.addWidget(logo_label)
 
         # Image view
         self.image_view = ZoomableGraphicsView()

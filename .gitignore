@@ -64,6 +64,7 @@ unpacked-datasets/
 *.bmp
 !example*.png
 !sample*.png
+!assets/*.png
 
 # Test images directory
 HTR_Images/
