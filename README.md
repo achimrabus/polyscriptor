@@ -123,7 +123,6 @@ python3 train_pylaia.py \
 │   └── README.md                    # Links to downloadable models
 │
 └── docs/
-    ├── CLAUDE.md                    # Claude Code project guide
     ├── PYLAIA_TRAINING_STATUS.md    # PyLaia training results & bug fixes
     └── LINUX_SERVER_MIGRATION.md    # Linux setup guide
 ```
@@ -220,7 +219,6 @@ fp16: true                     # Mixed precision training
 
 ## 📖 Documentation
 
-- **[CLAUDE.md](CLAUDE.md)**: Comprehensive project guide for Claude Code
 - **[PYLAIA_TRAINING_STATUS.md](PYLAIA_TRAINING_STATUS.md)**: Training results, bug fixes, and insights
 - **[LINUX_SERVER_MIGRATION.md](LINUX_SERVER_MIGRATION.md)**: Server setup guide
 
