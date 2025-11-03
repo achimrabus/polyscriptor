@@ -134,9 +134,28 @@ Documentation/
 # Detailed project documentation (hardware-specific, too detailed for public)
 CLAUDE.md
 
+# Internal planning documents (not for public repo)
+*_PLAN.md
+IMPLEMENTATION_SUMMARY.md
+PARTY_FIX_TESTING.md
+PARTY_POC_VS_PLUGIN_COMPARISON.md
+QUICK_START_IMPROVEMENTS.md
+
+# Training scripts and logs (specific to our setup)
+run_pylaia_*.sh
+start_pylaia_*training*.py
+start_pylaia_*replica.py
+resume_pylaia_*.py
+train_pylaia_*_pagexml.py
+monitor_*.sh
+*.backup
+
 # Test and debug scripts (temporary)
 check_*.py
 test_*.py
+
+# Accidentally created files
+=*
 
 # Legacy/broken inference implementations
 inference_pylaia.py

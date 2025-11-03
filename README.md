@@ -17,12 +17,11 @@ A comprehensive toolkit for training and comparing different Handwritten Text Re
 
 ### Commercial & Local Vision Models
 - **Commercial APIs**: Google Gemini, Anthropic Claude Vision (via API keys)
-- **Local LLMs**: Ollama integration for local vision models
+- **Local LLMs**: OpenWebUI integration for local vision models
 - **Unified interface**: All models accessible through same engine plugin system
 
 ### Core Capabilities
 - **Plugin GUI**: Compare engines side-by-side with unified interface
-- **Engine abstraction**: Common API for all HTR backends (local models, commercial APIs)
 - **Model management**: Easy switching between trained models and API providers
 - **Export formats**: TXT, CSV, PAGE XML
 
@@ -108,7 +107,7 @@ python3 train_pylaia.py \
 │   ├── kraken_engine.py            # Kraken segmentation
 │   ├── gemini_engine.py            # Google Gemini API
 │   ├── claude_engine.py            # Anthropic Claude API
-│   └── ollama_engine.py            # Ollama local LLMs
+│   └── openwebui_engine.py         # OpenWebUI local LLMs
 │
 ├── optimized_training.py            # TrOCR fine-tuning script
 ├── transkribus_parser.py            # PAGE XML data preparation
