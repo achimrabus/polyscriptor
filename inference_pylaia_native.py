@@ -135,15 +135,25 @@ class PyLaiaInference:
             raise FileNotFoundError(f"Symbols file not found: {syms_path}")
 
         # Load symbols (handle both list and KALDI formats)
+        # CRITICAL: Use rstrip('\n\r') not strip() to preserve leading/trailing whitespace in symbols (e.g., TAB)
         with open(self.syms_path, 'r', encoding='utf-8') as f:
-            symbols_raw = [line.strip() for line in f if line.strip()]
+            symbols_raw = [line.rstrip('\n\r') for line in f if line.rstrip('\n\r')]
 
         # Auto-detect format: KALDI format has "symbol index" pairs
         if symbols_raw and ' ' in symbols_raw[0]:
             parts = symbols_raw[0].split()
             if len(parts) == 2 and parts[1].isdigit():
                 # KALDI format: "symbol index"
-                self.symbols = [line.split()[0] for line in symbols_raw if line.split()]
+                # Parse carefully to handle whitespace symbols (e.g., TAB at index 131)
+                self.symbols = []
+                for line in symbols_raw:
+                    # Get the last token (index)
+                    idx_str = line.split()[-1]
+                    if not idx_str.isdigit():
+                        continue
+                    # Symbol is everything before the last space + index
+                    symbol = line[:line.rfind(' ' + idx_str)]
+                    self.symbols.append(symbol)
                 logger.info(f"Detected KALDI format vocabulary")
             else:
                 # List format (one symbol per line)
@@ -311,6 +321,11 @@ class PyLaiaInference:
 
 # Model registry (updated for trained models)
 PYLAIA_MODELS = {
+    "Church Slavonic (3.51% CER)": {
+        "checkpoint": "models/pylaia_church_slavonic_20251103_162857/best_model.pt",
+        "syms": "data/pylaia_church_slavonic/syms.txt",
+        "description": "PyLaia CRNN - Church Slavonic manuscript (153 symbols, 3.51% CER)"
+    },
     "Glagolitic (5.33% CER)": {
         "checkpoint": "models/pylaia_glagolitic_with_spaces_20251102_182103/best_model.pt",
         "syms": "data/pylaia_glagolitic/syms.txt",

@@ -40,6 +40,7 @@ class TrOCREngine(HTREngine):
         # Widget references (set when config widget is created)
         self._model_source_combo: Optional[QComboBox] = None
         self._local_model_combo: Optional[QComboBox] = None
+        self._hf_preset_combo: Optional[QComboBox] = None
         self._hf_model_edit: Optional[QLineEdit] = None
         self._beam_spin: Optional[QSpinBox] = None
         self._normalize_check: Optional[QCheckBox] = None
@@ -100,10 +101,24 @@ class TrOCREngine(HTREngine):
         self._hf_group = QGroupBox("HuggingFace Model")
         hf_layout = QVBoxLayout()
 
-        self._hf_model_edit = QLineEdit()
-        self._hf_model_edit.setPlaceholderText("e.g., kazars24/trocr-base-handwritten-ru")
-        self._hf_model_edit.setText("kazars24/trocr-base-handwritten-ru")
+        # Predefined models dropdown
+        hf_layout.addWidget(QLabel("Preset Models:"))
+        self._hf_preset_combo = QComboBox()
+        self._hf_preset_combo.addItems([
+            "Custom (enter below)",
+            "cyrillic-trocr/trocr-handwritten-cyrillic",
+            "kazars24/trocr-base-handwritten-ru",
+            "microsoft/trocr-base-handwritten",
+            "microsoft/trocr-large-handwritten"
+        ])
+        self._hf_preset_combo.currentTextChanged.connect(self._on_preset_changed)
+        hf_layout.addWidget(self._hf_preset_combo)
+
+        # Custom model ID entry
         hf_layout.addWidget(QLabel("Model ID:"))
+        self._hf_model_edit = QLineEdit()
+        self._hf_model_edit.setPlaceholderText("e.g., cyrillic-trocr/trocr-handwritten-cyrillic")
+        self._hf_model_edit.setText("cyrillic-trocr/trocr-handwritten-cyrillic")
         hf_layout.addWidget(self._hf_model_edit)
 
         self._hf_group.setLayout(hf_layout)
@@ -191,6 +206,11 @@ class TrOCREngine(HTREngine):
         is_local = (source == "Local Models")
         self._local_group.setVisible(is_local)
         self._hf_group.setVisible(not is_local)
+
+    def _on_preset_changed(self, preset: str):
+        """Update model ID when preset is selected."""
+        if preset != "Custom (enter below)":
+            self._hf_model_edit.setText(preset)
 
     def get_config(self) -> Dict[str, Any]:
         """Extract configuration from widget controls."""

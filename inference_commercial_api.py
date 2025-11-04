@@ -412,34 +412,133 @@ def check_api_availability() -> Dict[str, bool]:
     }
 
 
-# API model lists (for GUI dropdown)
-OPENAI_MODELS = [
+# Fallback API model lists (used if dynamic fetching fails)
+OPENAI_MODELS_FALLBACK = [
     "gpt-4o",
     "gpt-4o-mini",
+    "gpt-4o-2024-11-20",
+    "chatgpt-4o-latest",
     "gpt-4-turbo",
     "gpt-4-vision-preview",
+    "o1-preview",
+    "o1-mini",
 ]
 
-GEMINI_MODELS = [
+GEMINI_MODELS_FALLBACK = [
     # Free tier models (generally available)
     "gemini-1.5-flash",
     "gemini-1.5-flash-002",
     "gemini-1.5-flash-8b",
+    "gemini-2.0-flash-exp",
     # Paid/preview models (may require upgrade)
     "gemini-1.5-pro",
     "gemini-1.5-pro-002",
-    "gemini-2.0-flash-exp",
+    "gemini-1.5-pro-exp-0827",
     # Experimental (may not be available to all users)
     "gemini-exp-1206",
+    "gemini-exp-1121",
 ]
 
-CLAUDE_MODELS = [
+CLAUDE_MODELS_FALLBACK = [
     "claude-3-5-sonnet-20241022",
     "claude-3-5-haiku-20241022",
     "claude-3-opus-20240229",
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
 ]
+
+
+def fetch_openai_models(api_key: str = None) -> list:
+    """
+    Dynamically fetch available OpenAI models from API.
+
+    Args:
+        api_key: OpenAI API key (uses env var if not provided)
+
+    Returns:
+        List of vision-capable model IDs, or fallback list if fetch fails
+    """
+    if not OPENAI_AVAILABLE:
+        return OPENAI_MODELS_FALLBACK
+
+    try:
+        import os
+        api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return OPENAI_MODELS_FALLBACK
+
+        client = OpenAI(api_key=api_key)
+        models = client.models.list()
+
+        # Filter for vision-capable models (GPT-4 family + o1)
+        vision_models = []
+        for model in models.data:
+            model_id = model.id
+            # Include GPT-4 vision models and o1 models
+            if any(prefix in model_id for prefix in [
+                "gpt-4o", "gpt-4-turbo", "gpt-4-vision",
+                "chatgpt-4o", "o1-", "gpt-4.5"  # Include potential GPT-4.5
+            ]):
+                vision_models.append(model_id)
+
+        # Sort with newest/best models first
+        vision_models.sort(reverse=True)
+
+        # Return dynamic list if we found models, otherwise fallback
+        return vision_models if vision_models else OPENAI_MODELS_FALLBACK
+
+    except Exception as e:
+        print(f"[OpenAI] Could not fetch models dynamically: {e}")
+        print(f"[OpenAI] Using fallback model list")
+        return OPENAI_MODELS_FALLBACK
+
+
+def fetch_gemini_models(api_key: str = None) -> list:
+    """
+    Dynamically fetch available Gemini models from API.
+
+    Args:
+        api_key: Google API key (uses env var if not provided)
+
+    Returns:
+        List of Gemini model IDs, or fallback list if fetch fails
+    """
+    if not GEMINI_AVAILABLE:
+        return GEMINI_MODELS_FALLBACK
+
+    try:
+        import os
+        api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            return GEMINI_MODELS_FALLBACK
+
+        genai.configure(api_key=api_key)
+
+        # List all available models
+        available_models = []
+        for model in genai.list_models():
+            # Filter for vision-capable models (have 'generateContent' method)
+            if 'generateContent' in model.supported_generation_methods:
+                # Extract short model name (e.g., "models/gemini-1.5-pro" -> "gemini-1.5-pro")
+                model_id = model.name.replace("models/", "")
+                available_models.append(model_id)
+
+        # Sort with newest models first
+        available_models.sort(reverse=True)
+
+        # Return dynamic list if we found models, otherwise fallback
+        return available_models if available_models else GEMINI_MODELS_FALLBACK
+
+    except Exception as e:
+        print(f"[Gemini] Could not fetch models dynamically: {e}")
+        print(f"[Gemini] Using fallback model list")
+        return GEMINI_MODELS_FALLBACK
+
+
+# Initialize model lists (will be updated when API keys are provided)
+OPENAI_MODELS = OPENAI_MODELS_FALLBACK.copy()
+GEMINI_MODELS = GEMINI_MODELS_FALLBACK.copy()
+CLAUDE_MODELS = CLAUDE_MODELS_FALLBACK.copy()  # Claude doesn't have dynamic listing API yet
 
 
 if __name__ == "__main__":
