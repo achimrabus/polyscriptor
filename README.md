@@ -263,11 +263,11 @@ SOFTWARE.
 
 ## 🙏 Acknowledgments
 
-- **PyLaia**: CTC-based HTR system
-- **TrOCR**: Microsoft's Transformer-based OCR
-- **Party**: DHLab multilingual HTR
-- **Transkribus**: Ground truth annotation platform
-- **Qwen3-VL**: Alibaba's Vision-Language Model
+- **PyLaia**: CTC-based HTR system: https://github.com/jpuigcerver/PyLaia
+- **TrOCR**: Microsoft's Transformer-based OCR: https://huggingface.co/microsoft/trocr-base-handwritten
+- **Party**: PAge-wise Recognition of Text-y https://github.com/mittagessen/party/
+- **Transkribus**: Transcription, training, and inference plattform: https://app.transkribus.org/
+- **Qwen3-VL**: Alibaba's Vision-Language Model: https://github.com/QwenLM/Qwen3-VL
 
 ---
 

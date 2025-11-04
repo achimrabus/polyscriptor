@@ -38,7 +38,8 @@ try:
     from inference_commercial_api import (
         OpenAIInference, GeminiInference, ClaudeInference,
         check_api_availability,
-        OPENAI_MODELS, GEMINI_MODELS, CLAUDE_MODELS
+        OPENAI_MODELS, GEMINI_MODELS, CLAUDE_MODELS,
+        fetch_openai_models, fetch_gemini_models
     )
     COMMERCIAL_API_AVAILABLE = True
     API_AVAILABILITY = check_api_availability()
@@ -48,6 +49,8 @@ except ImportError:
     OPENAI_MODELS = []
     GEMINI_MODELS = []
     CLAUDE_MODELS = []
+    fetch_openai_models = lambda api_key=None: []
+    fetch_gemini_models = lambda api_key=None: []
 
 
 class CommercialAPIEngine(HTREngine):
@@ -61,6 +64,9 @@ class CommercialAPIEngine(HTREngine):
         # Widget references
         self._provider_combo: Optional[QComboBox] = None
         self._model_combo: Optional[QComboBox] = None
+        self._custom_model_edit: Optional[QLineEdit] = None
+        self._use_custom_model_check: Optional[QCheckBox] = None
+        self._refresh_models_btn: Optional[QPushButton] = None
         self._api_key_edit: Optional[QLineEdit] = None
         self._show_key_check: Optional[QCheckBox] = None
         self._prompt_edit: Optional[QTextEdit] = None
@@ -118,8 +124,37 @@ class CommercialAPIEngine(HTREngine):
         model_group = QGroupBox("Model")
         model_layout = QVBoxLayout()
 
+        # Dropdown for standard models
+        model_dropdown_layout = QHBoxLayout()
         self._model_combo = QComboBox()
-        model_layout.addWidget(self._model_combo)
+        model_dropdown_layout.addWidget(self._model_combo)
+
+        # Refresh models button
+        self._refresh_models_btn = QPushButton("🔄 Refresh")
+        self._refresh_models_btn.setToolTip("Fetch latest models from API")
+        self._refresh_models_btn.setMaximumWidth(80)
+        self._refresh_models_btn.clicked.connect(self._on_refresh_models)
+        model_dropdown_layout.addWidget(self._refresh_models_btn)
+
+        model_layout.addLayout(model_dropdown_layout)
+
+        # Custom model ID checkbox and field
+        custom_model_layout = QHBoxLayout()
+        self._use_custom_model_check = QCheckBox("Use custom model ID:")
+        self._use_custom_model_check.toggled.connect(self._on_custom_model_toggled)
+        custom_model_layout.addWidget(self._use_custom_model_check)
+
+        self._custom_model_edit = QLineEdit()
+        self._custom_model_edit.setPlaceholderText("e.g., gpt-4.5, o1-preview-2024-12-17")
+        self._custom_model_edit.setEnabled(False)  # Disabled by default
+        custom_model_layout.addWidget(self._custom_model_edit)
+
+        model_layout.addLayout(custom_model_layout)
+
+        model_hint = QLabel("💡 Use custom model ID for bleeding-edge models not in the dropdown")
+        model_hint.setStyleSheet("color: gray; font-size: 8pt;")
+        model_hint.setWordWrap(True)
+        model_layout.addWidget(model_hint)
 
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
@@ -259,6 +294,48 @@ class CommercialAPIEngine(HTREngine):
         else:
             self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
+    def _on_custom_model_toggled(self, checked: bool):
+        """Enable/disable custom model field."""
+        self._custom_model_edit.setEnabled(checked)
+        self._model_combo.setEnabled(not checked)
+
+    def _on_refresh_models(self):
+        """Refresh model list from API dynamically."""
+        if self._model_combo is None or self._api_key_edit is None:
+            return
+
+        provider = self._provider_combo.currentText()
+        api_key = self._api_key_edit.text().strip()
+
+        if not api_key:
+            print(f"[CommercialAPIEngine] Cannot refresh models: No API key provided")
+            return
+
+        print(f"[CommercialAPIEngine] Refreshing {provider} models from API...")
+
+        # Save current selection
+        current_model = self._model_combo.currentText()
+
+        # Fetch models dynamically
+        if provider == "OpenAI":
+            models = fetch_openai_models(api_key)
+        elif provider == "Gemini":
+            models = fetch_gemini_models(api_key)
+        else:
+            print(f"[CommercialAPIEngine] Dynamic refresh not supported for {provider}")
+            return
+
+        # Update dropdown
+        self._model_combo.clear()
+        self._model_combo.addItems(models)
+
+        # Restore selection if possible
+        idx = self._model_combo.findText(current_model)
+        if idx >= 0:
+            self._model_combo.setCurrentIndex(idx)
+
+        print(f"[CommercialAPIEngine] Refreshed {len(models)} models for {provider}")
+
     def get_config(self) -> Dict[str, Any]:
         """Extract configuration from widget controls."""
         if self._config_widget is None:
@@ -266,11 +343,19 @@ class CommercialAPIEngine(HTREngine):
 
         prompt_text = self._prompt_edit.toPlainText().strip()
 
+        # Use custom model if checkbox is enabled, otherwise use dropdown
+        if self._use_custom_model_check.isChecked():
+            model = self._custom_model_edit.text().strip()
+        else:
+            model = self._model_combo.currentText()
+
         return {
             "provider": self._provider_combo.currentText(),
-            "model": self._model_combo.currentText(),
+            "model": model,
             "api_key": self._api_key_edit.text().strip(),
             "custom_prompt": prompt_text if prompt_text else None,
+            "use_custom_model": self._use_custom_model_check.isChecked(),
+            "custom_model_id": self._custom_model_edit.text().strip(),
         }
 
     def set_config(self, config: Dict[str, Any]):
@@ -283,10 +368,18 @@ class CommercialAPIEngine(HTREngine):
         if idx >= 0:
             self._provider_combo.setCurrentIndex(idx)
 
-        model = config.get("model", "")
-        idx = self._model_combo.findText(model)
-        if idx >= 0:
-            self._model_combo.setCurrentIndex(idx)
+        # Restore custom model checkbox and field
+        use_custom = config.get("use_custom_model", False)
+        self._use_custom_model_check.setChecked(use_custom)
+
+        if use_custom:
+            custom_model_id = config.get("custom_model_id", "")
+            self._custom_model_edit.setText(custom_model_id)
+        else:
+            model = config.get("model", "")
+            idx = self._model_combo.findText(model)
+            if idx >= 0:
+                self._model_combo.setCurrentIndex(idx)
 
         self._api_key_edit.setText(config.get("api_key", ""))
 

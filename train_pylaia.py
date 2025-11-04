@@ -540,7 +540,9 @@ class PyLaiaTrainer:
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_cer': self.best_val_cer,
             'current_cer': cer,
-            'history': self.history
+            'history': self.history,
+            'idx2char': self.idx2char,  # CRITICAL: Save character mapping for inference
+            'char2idx': {char: idx for idx, char in self.idx2char.items()}  # Also save reverse mapping
         }
         
         # Save regular checkpoint
