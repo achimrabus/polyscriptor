@@ -185,6 +185,18 @@ class PyLaiaInference:
         logger.info(f"Loading PyLaia checkpoint: {checkpoint_path}")
         checkpoint = torch.load(self.checkpoint_path, map_location='cpu', weights_only=False)
 
+        # CRITICAL: If checkpoint has idx2char, use it instead of vocabulary file
+        # This handles models trained with different vocabulary parsing (strip vs rstrip)
+        if 'idx2char' in checkpoint:
+            logger.info(f"Using idx2char from checkpoint ({len(checkpoint['idx2char'])} characters)")
+            self.idx2char = checkpoint['idx2char']
+            self.char2idx = checkpoint.get('char2idx', {char: idx for idx, char in self.idx2char.items()})
+            # Still apply enable_spaces setting
+            if self.enable_spaces:
+                for idx, char in list(self.idx2char.items()):
+                    if char == '<SPACE>' or char == '<space>':
+                        self.idx2char[idx] = ' '
+
         # Extract model state dict from checkpoint
         # train_pylaia.py saves checkpoints with 'model_state_dict' key
         state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
