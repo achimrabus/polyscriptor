@@ -1,5 +1,5 @@
 """
-Logo Handler for Polyscript HTR Application
+Logo Handler for Polyscriptor HTR Application
 
 Manages application logo loading, fallback text logo, and icon generation.
 """
@@ -16,11 +16,14 @@ class LogoHandler:
     # Logo file search paths (in order of preference)
     LOGO_PATHS = [
         "assets/logo.png",
-        "assets/polyscript_logo.png",
+        "assets/polyscriptor_logo.png",
+        "assets/polyscript_logo.png",  # Legacy support
         "logo.png",
-        "polyscript_logo.png",
+        "polyscriptor_logo.png",
+        "polyscript_logo.png",  # Legacy support
         "assets/logo.svg",
-        "assets/polyscript_logo.svg",
+        "assets/polyscriptor_logo.svg",
+        "assets/polyscript_logo.svg",  # Legacy support
     ]
 
     # Supported image formats
@@ -82,12 +85,12 @@ class LogoHandler:
         # gradient.setColorAt(1, QColor(142, 68, 173))  # Purple
         # painter.fillRect(0, 0, width, height, gradient)
 
-        # Main text: "Polyscript"
+        # Main text: "Polyscriptor"
         font = QFont("Arial", 36, QFont.Weight.Bold)
         painter.setFont(font)
         painter.setPen(QColor(41, 128, 185))  # Blue
         painter.drawText(0, 0, width, height * 0.6,
-                        Qt.AlignmentFlag.AlignCenter, "Polyscript")
+                        Qt.AlignmentFlag.AlignCenter, "Polyscriptor")
 
         # Subtitle: "Multi-Engine HTR"
         font_small = QFont("Arial", 14)

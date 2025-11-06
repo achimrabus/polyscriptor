@@ -41,6 +41,9 @@ from page_xml_exporter import PageXMLExporter
 # Import HTR Engine Plugin System
 from htr_engine_base import get_global_registry, HTREngine, TranscriptionResult
 
+# Import comparison widget
+from comparison_widget import ComparisonWidget
+
 # Import logo handler
 from logo_handler import get_logo_handler
 
@@ -388,7 +391,7 @@ class TranscriptionGUI(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Polyscript - Multi-Engine HTR Tool")
+        self.setWindowTitle("Polyscriptor - Multi-Engine HTR Tool")
         self.setGeometry(100, 100, 1400, 900)
 
         # Set application icon
@@ -402,6 +405,8 @@ class TranscriptionGUI(QMainWindow):
         self.transcriptions: List[str] = []
         self.current_engine: Optional[HTREngine] = None
         self.worker: Optional[TranscriptionWorker] = None
+        self.comparison_widget: Optional[ComparisonWidget] = None
+        self.comparison_mode_active: bool = False
 
         # Cache config widgets to prevent deletion
         self.config_widgets_cache: Dict[str, QWidget] = {}
@@ -600,38 +605,56 @@ class TranscriptionGUI(QMainWindow):
         results_layout = QVBoxLayout()
 
         # Horizontal splitter for text and statistics
-        results_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.results_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Left: Transcription text
-        text_container = QWidget()
-        text_layout = QVBoxLayout(text_container)
+        self.text_container = QWidget()
+        text_layout = QVBoxLayout(self.text_container)
         text_layout.setContentsMargins(0, 0, 0, 0)
 
         self.transcription_text = QTextEdit()
         self.transcription_text.setReadOnly(True)
         text_layout.addWidget(self.transcription_text)
 
-        results_splitter.addWidget(text_container)
+        self.results_splitter.addWidget(self.text_container)
 
         # Right: Statistics panel (compact, scrollable)
-        stats_scroll = QScrollArea()
-        stats_scroll.setWidgetResizable(True)
-        stats_scroll.setMinimumWidth(200)
-        stats_scroll.setMaximumWidth(300)
+        self.stats_scroll = QScrollArea()
+        self.stats_scroll.setWidgetResizable(True)
+        self.stats_scroll.setMinimumWidth(200)
+        self.stats_scroll.setMaximumWidth(300)
 
         self.stats_panel = StatisticsPanel()
-        stats_scroll.setWidget(self.stats_panel)
+        self.stats_scroll.setWidget(self.stats_panel)
 
-        results_splitter.addWidget(stats_scroll)
+        self.results_splitter.addWidget(self.stats_scroll)
 
         # Set initial sizes (70% text, 30% stats)
-        results_splitter.setStretchFactor(0, 7)  # Text gets more space
-        results_splitter.setStretchFactor(1, 3)  # Stats gets less space
+        self.results_splitter.setStretchFactor(0, 7)  # Text gets more space
+        self.results_splitter.setStretchFactor(1, 3)  # Stats gets less space
 
-        results_layout.addWidget(results_splitter)
+        results_layout.addWidget(self.results_splitter)
 
-        # Export buttons (below splitter)
+        # Export and comparison buttons (below splitter)
         export_layout = QHBoxLayout()
+
+        # Compare button (checkable - toggles comparison mode)
+        self.btn_compare = QPushButton("⚖ Compare")
+        self.btn_compare.setCheckable(True)
+        self.btn_compare.setStyleSheet("""
+            QPushButton {
+                min-height: 30px;
+                font-weight: bold;
+            }
+            QPushButton:checked {
+                background-color: #4CAF50;
+                color: white;
+            }
+        """)
+        self.btn_compare.toggled.connect(self.toggle_comparison_mode)
+        export_layout.addWidget(self.btn_compare)
+
+        export_layout.addStretch()  # Push export buttons to the right
 
         btn_export_txt = QPushButton("Export TXT")
         btn_export_txt.clicked.connect(self.export_txt)
@@ -695,6 +718,97 @@ class TranscriptionGUI(QMainWindow):
         config_widget.show()
         self.config_layout.insertWidget(0, config_widget)
         self.status_bar.showMessage(f"Engine: {engine_name}")
+
+    def toggle_comparison_mode(self, enabled: bool):
+        """Toggle comparison mode on/off."""
+        if enabled:
+            # Validate prerequisites
+            if not self.current_engine or not self.current_engine.is_model_loaded():
+                QMessageBox.warning(self, "No Model",
+                                   "Please load an engine and model first!")
+                self.btn_compare.setChecked(False)
+                return
+
+            if not self.transcriptions:
+                QMessageBox.warning(self, "No Transcriptions",
+                                   "Please process the image first!")
+                self.btn_compare.setChecked(False)
+                return
+
+            # Prepare line segments and images for comparison
+            # Handle both line-based models (PyLaia, TrOCR) and page-based models (Qwen, APIs)
+            if self.line_segments:
+                # Line-based: use actual segments
+                line_images = []
+                if self.current_image:
+                    img_np = np.array(self.current_image)
+                    for segment in self.line_segments:
+                        x, y, w, h = segment.bbox
+                        line_img = img_np[y:y+h, x:x+w]
+                        line_images.append(line_img)
+            else:
+                # Page-based: treat whole page as single "line"
+                from inference_page import LineSegment
+                self.line_segments = [LineSegment(
+                    image=self.current_image,
+                    bbox=(0, 0, self.current_image.width, self.current_image.height),
+                    coords=None,
+                    text=None,
+                    confidence=None,
+                    char_confidences=None
+                )]
+                line_images = [np.array(self.current_image)]
+
+            # Create comparison widget
+            self.comparison_widget = ComparisonWidget(
+                self.current_engine,
+                self.line_segments,
+                line_images,
+                self
+            )
+
+            # Connect signals
+            self.comparison_widget.comparison_closed.connect(
+                lambda: self.btn_compare.setChecked(False)
+            )
+            self.comparison_widget.status_message.connect(
+                self.status_bar.showMessage
+            )
+
+            # Set base transcriptions
+            self.comparison_widget.set_base_transcriptions(self.transcriptions)
+
+            # Hide statistics panel and replace with comparison widget
+            self.stats_scroll.hide()
+            self.results_splitter.replaceWidget(1, self.comparison_widget)
+            self.comparison_widget.show()
+
+            # Update button text
+            self.btn_compare.setText("⚖ Comparison Active")
+
+            self.comparison_mode_active = True
+            self.status_bar.showMessage("Comparison mode activated")
+
+        else:
+            # Close comparison mode
+            if self.comparison_widget:
+                # Clean up comparison widget
+                self.comparison_widget.unload_comparison_engine()
+                self.comparison_widget.hide()
+
+                # Restore statistics panel
+                self.results_splitter.replaceWidget(1, self.stats_scroll)
+                self.stats_scroll.show()
+
+                # Delete comparison widget
+                self.comparison_widget.deleteLater()
+                self.comparison_widget = None
+
+            # Update button text
+            self.btn_compare.setText("⚖ Compare")
+
+            self.comparison_mode_active = False
+            self.status_bar.showMessage("Comparison mode closed")
 
     def update_process_button_state(self):
         """Update process button enabled state based on current conditions."""

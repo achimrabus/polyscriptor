@@ -45,8 +45,8 @@ A comprehensive toolkit for training and comparing different Handwritten Text Re
 
 ```bash
 # Clone repository
-git clone https://github.com/achimrabus/polyscript.git
-cd polyscript
+git clone https://github.com/achimrabus/polyscriptor.git
+cd polyscriptor
 
 # Create virtual environment
 python3 -m venv htr_env
@@ -274,7 +274,7 @@ SOFTWARE.
 ## 📧 Contact
 
 For questions, bug reports, or collaboration inquiries:
-- GitHub Issues: [Create an issue](https://github.com/achimrabus/polyscript/issues)
+- GitHub Issues: [Create an issue](https://github.com/achimrabus/polyscriptor/issues)
 
 ---
 
