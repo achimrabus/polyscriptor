@@ -165,6 +165,35 @@ test_*.py
 inference_pylaia.py
 inference_pylaia_lm.py
 
-htr_gui/
+# Virtual environments (project-specific)
+churro_venv/
+party_env/
+
+# Status and implementation notes (temporary documentation)
+*_STATUS.md
+*_NOTES.md
+*_READY.md
+*_COMPLETE.md
+*_TODO.md
+*_ISSUE.md
+*_QUICKSTART.md
+*_LESSONS_LEARNED.md
+*_UPDATE.md
+*_IMPLEMENTATION.md
+*_BUGFIX_*.md
+TRAINING_STATUS_*.md
+
+# Experimental scripts (Churro)
+convert_pylaia_to_churro_*.py
+prepare_*_churro.py
+finetune_churro_*.py
+inference_churro.py
+run_churro_*.sh
+
+# Debug scripts
+debug_*.py
+
+# Server environment config (private)
+SERVER_ENV.md
 
 htr_gui/
