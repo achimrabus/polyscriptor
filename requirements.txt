@@ -19,6 +19,9 @@ jiwer==4.0.0
 tensorboard==2.8.0
 tqdm==4.67.1
 
+# Comparison feature
+python-Levenshtein>=0.23.0  # Fast edit distance for CER/WER calculation
+
 # Configuration
 pyyaml==6.0.2
 
