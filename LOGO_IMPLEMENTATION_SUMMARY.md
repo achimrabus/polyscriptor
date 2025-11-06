@@ -5,7 +5,7 @@
 
 ## Overview
 
-Implemented a comprehensive logo system for Polyscript with automatic detection, fallback generation, and easy customization.
+Implemented a comprehensive logo system for Polyscriptor with automatic detection, fallback generation, and easy customization.
 
 ## Changes Made
 
@@ -19,13 +19,13 @@ Implemented a comprehensive logo system for Polyscript with automatic detection,
    - Icon generation for window/taskbar
 
 2. **[create_demo_logo.py](create_demo_logo.py)** - Demo logo generator (165 lines)
-   - Creates placeholder logo: "Polyscript" + "Multi-Engine HTR"
+   - Creates placeholder logo: "Polyscriptor" + "Multi-Engine HTR"
    - Generates 256×256px icon with Cyrillic 'П'
    - Cross-platform font support (Linux, Windows)
    - Run: `python3 create_demo_logo.py`
 
 3. **[assets/logo.png](assets/logo.png)** - Generated demo logo (400×120px, 5.4KB)
-   - Blue text "Polyscript" on transparent background
+   - Blue text "Polyscriptor" on transparent background
    - Gray subtitle "Multi-Engine HTR"
    - Placeholder for professional logo
 
@@ -51,7 +51,7 @@ Implemented a comprehensive logo system for Polyscript with automatic detection,
 1. **[transcription_gui_plugin.py](transcription_gui_plugin.py)** - GUI integration
    - **Line 45**: Added `from logo_handler import get_logo_handler`
    - **Lines 391-396**: Window title + icon setup
-     - Title: "Polyscript - Multi-Engine HTR Tool"
+     - Title: "Polyscriptor - Multi-Engine HTR Tool"
      - Icon: Loaded from logo_handler
    - **Lines 426-433**: Logo display in left panel
      - Positioned at top of image view
@@ -72,7 +72,7 @@ The system searches for logo files in this order:
 ### Fallback Logo Generation
 
 If no logo file found, automatically generates:
-- **Main text**: "Polyscript" (blue #2980b9, Arial Bold 36pt)
+- **Main text**: "Polyscriptor" (blue #2980b9, Arial Bold 36pt)
 - **Subtitle**: "Multi-Engine HTR" (gray #7f8c8d, Arial 14pt)
 - **Transparent background**, 400×120px
 
@@ -129,7 +129,7 @@ Outputs:
 
 ## Design Recommendations
 
-**Visual Theme**: "Polyscript" = Many Scripts + AI
+**Visual Theme**: "Polyscriptor" = Many Scripts + AI
 - **Historical**: Cyrillic (Ґ, Ѳ, Ѣ), Glagolitic (Ⰰ, Ⱂ, Ⱃ)
 - **Modern**: Clean tech aesthetics, subtle AI motifs
 - **Colors**:
@@ -191,7 +191,7 @@ python3 transcription_gui_plugin.py
 ```
 
 Expected results:
-- Window title: "Polyscript - Multi-Engine HTR Tool"
+- Window title: "Polyscriptor - Multi-Engine HTR Tool"
 - Logo displayed at top of left panel
 - Icon in window title bar and taskbar
 

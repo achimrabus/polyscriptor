@@ -1,6 +1,6 @@
 # Logo Integration Guide
 
-This document explains the logo system implemented in Polyscript and how to customize it.
+This document explains the logo system implemented in Polyscriptor and how to customize it.
 
 ## Current Status
 
@@ -30,7 +30,7 @@ This document explains the logo system implemented in Polyscript and how to cust
 4. **[transcription_gui_plugin.py](transcription_gui_plugin.py)**: Modified GUI
    - Logo display at top of image panel (300px width)
    - Window icon set from logo/icon
-   - Window title: "Polyscript - Multi-Engine HTR Tool"
+   - Window title: "Polyscriptor - Multi-Engine HTR Tool"
 
 ## How the Logo System Works
 
@@ -48,7 +48,7 @@ The `LogoHandler` searches for logo files in this order:
 ### Fallback Behavior
 
 If no logo file is found, the system automatically generates a text-based logo:
-- Main text: "Polyscript" (blue #2980b9, Arial Bold 36pt)
+- Main text: "Polyscriptor" (blue #2980b9, Arial Bold 36pt)
 - Subtitle: "Multi-Engine HTR" (gray #7f8c8d, Arial 14pt)
 - Transparent background, 400×120px
 
@@ -85,7 +85,7 @@ Generate a logo using AI tools:
 
 **DALL-E Prompt Example**:
 ```
-Logo for software application called "Polyscript", featuring Cyrillic and
+Logo for software application called "Polyscriptor", featuring Cyrillic and
 Glagolitic manuscript letters combined with modern circuit board elements,
 deep blue (#2980b9) and gold accents, clean minimalist design, 400x120
 horizontal layout, professional software logo, transparent background
@@ -110,7 +110,7 @@ minimalist modern design, horizontal banner 400x120px --ar 10:3 --stylize 500
 
 ### Visual Theme
 
-**Concept**: "Polyscript" = Many Scripts + AI Technology
+**Concept**: "Polyscriptor" = Many Scripts + AI Technology
 - **Historical**: Cyrillic (Ґ, Ѳ, Ѣ), Glagolitic glyphs (Ⰰ, Ⱂ, Ⱃ)
 - **Modern**: Clean typography, subtle tech elements (circuit patterns, AI motifs)
 - **Color palette**:
@@ -192,7 +192,7 @@ If you want a custom professional logo:
 ```
 ┌────────────────────────────────────┐
 │                                    │
-│          Polyscript                │
+│          Polyscriptor                │
 │       Multi-Engine HTR             │
 │                                    │
 └────────────────────────────────────┘

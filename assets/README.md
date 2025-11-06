@@ -1,12 +1,12 @@
 # Assets Directory
 
-This directory contains logo files and other graphical assets for the Polyscript HTR application.
+This directory contains logo files and other graphical assets for the Polyscriptor HTR application.
 
 ## Logo Files
 
 Place your application logo in this directory. Supported formats:
-- PNG (recommended): `logo.png` or `polyscript_logo.png`
-- SVG (scalable): `logo.svg` or `polyscript_logo.svg`
+- PNG (recommended): `logo.png` or `polyscriptor_logo.png`
+- SVG (scalable): `logo.svg` or `polyscriptor_logo.svg`
 - JPG/JPEG: `logo.jpg`
 - ICO (Windows icon): `logo.ico`
 
@@ -20,14 +20,14 @@ Place your application logo in this directory. Supported formats:
 
 ### Logo Design Ideas
 
-**Theme**: "Polyscript" = Many Scripts
+**Theme**: "Polyscriptor" = Many Scripts
 - Visual elements: Cyrillic letters (Ґ, Ѳ, Ѣ), Glagolitic glyphs
 - Color palette: Deep blues/purples (manuscript ink), gold accents
 - Style inspiration: Medieval manuscripts meet modern AI
 
 **AI Generation Prompts**:
 ```
-Logo for 'Polyscript' - medieval Cyrillic and Glagolitic manuscript letters
+Logo for 'Polyscriptor' - medieval Cyrillic and Glagolitic manuscript letters
 combined with modern AI circuitry, deep blue and gold colors, minimalist
 tech aesthetic, professional software logo
 ```
@@ -41,13 +41,13 @@ tech aesthetic, professional software logo
 ## Fallback Behavior
 
 If no logo file is found, the application will automatically generate a text-based logo with:
-- Main text: "Polyscript" (blue, Arial Bold 36pt)
+- Main text: "Polyscriptor" (blue, Arial Bold 36pt)
 - Subtitle: "Multi-Engine HTR" (gray, Arial 14pt)
 
 ## How to Add Your Logo
 
 1. Create or obtain a logo file (PNG recommended)
-2. Save it as `logo.png` or `polyscript_logo.png` in this directory
+2. Save it as `logo.png` or `polyscriptor_logo.png` in this directory
 3. Restart the application - the logo will be automatically detected and loaded
 
 ## Icon

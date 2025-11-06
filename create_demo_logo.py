@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Demo Logo Creator for Polyscript
+Demo Logo Creator for Polyscriptor
 
 Creates a simple text-based logo as a placeholder until a professional
 logo is designed. Run this script to generate assets/logo.png.
@@ -48,8 +48,8 @@ def create_demo_logo(output_path: str = "assets/logo.png"):
                 font_large = ImageFont.load_default()
                 font_small = ImageFont.load_default()
 
-    # Main text: "Polyscript"
-    main_text = "Polyscript"
+    # Main text: "Polyscriptor"
+    main_text = "Polyscriptor"
     main_color = (41, 128, 185)  # Blue
 
     # Get text size for centering
@@ -132,7 +132,7 @@ def create_icon(output_path: str = "assets/icon.png"):
 
 
 if __name__ == "__main__":
-    print("Creating demo logo and icon for Polyscript...")
+    print("Creating demo logo and icon for Polyscriptor...")
     print("=" * 60)
 
     create_demo_logo()
