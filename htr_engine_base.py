@@ -247,6 +247,13 @@ class HTREngineRegistry:
         except ImportError as e:
             print(f"Warning: Failed to load Qwen3 engine: {e}")
 
+        # Import and register Churro engine
+        try:
+            from engines.churro_engine import ChurroEngine
+            self.register(ChurroEngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load Churro engine: {e}")
+
         # Import and register PyLaia engine
         try:
             from engines.pylaia_engine import PyLaiaEngine

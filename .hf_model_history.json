@@ -1,7 +1,8 @@
 [
-  "pstroe/glagolitic-htr",
-  "cyrillic-trocr/trocr-handwritten-cyrillic",
-  "./models/Qwen3-VL-8B-ukrainian/final_model",
+  "wjbmattingly/Qwen3-VL-8B-old-church-slavonic",
   "Qwen/Qwen3-VL-8B-Instruct",
-  "C:\\Users\\Achim\\Documents\\TrOCR\\dhlab-slavistik\\models\\Qwen3-VL-8B-ukrainian\\final_model"
+  "cyrillic-trocr/trocr-handwritten-cyrillic",
+  "pstroe/glagolitic-htr",
+  "./models/Qwen3-VL-8B-ukrainian/final_model",
+  "./models/Qwen3-VL-8B-ukrainian/final_model"
 ]
