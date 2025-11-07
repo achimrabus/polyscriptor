@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QGroupBox, QScrollArea, QSlider, QSpinBox, QCheckBox,
     QFontDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QPointF
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QPointF, QSettings
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont, QAction
 
 # Import segmentation components
@@ -411,18 +411,30 @@ class TranscriptionGUI(QMainWindow):
         # Cache config widgets to prevent deletion
         self.config_widgets_cache: Dict[str, QWidget] = {}
 
-        # Settings file
-        self.settings_file = Path.home() / ".trocr_gui" / "settings_plugin.json"
-        self.settings_file.parent.mkdir(exist_ok=True)
-
         self.setup_ui()
-        self.load_settings()
+        self.restore_settings()
 
     def setup_ui(self):
         """Setup user interface."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+
+        # Main container layout
+        container_layout = QVBoxLayout(central_widget)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Top-level splitter: Image panel (left) ↔ Controls+Results (right)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setHandleWidth(4)
+        self.main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #cccccc;
+            }
+            QSplitter::handle:hover {
+                background-color: #999999;
+            }
+        """)
+        container_layout.addWidget(self.main_splitter)
 
         # Left panel: Image view
         left_panel = QWidget()
@@ -457,7 +469,12 @@ class TranscriptionGUI(QMainWindow):
 
         left_layout.addLayout(img_controls)
 
-        main_layout.addWidget(left_panel, stretch=2)
+        # Add left panel to main splitter
+        self.main_splitter.addWidget(left_panel)
+
+        # Right panel: Controls and Results
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
 
         # Segmentation settings
         seg_group = QGroupBox("Segmentation Settings")
@@ -621,17 +638,24 @@ class TranscriptionGUI(QMainWindow):
         # Right: Statistics panel (compact, scrollable)
         self.stats_scroll = QScrollArea()
         self.stats_scroll.setWidgetResizable(True)
-        self.stats_scroll.setMinimumWidth(200)
-        self.stats_scroll.setMaximumWidth(300)
+        self.stats_scroll.setMinimumWidth(180)  # Minimum for readable stats
+        # REMOVED: setMaximumWidth(300) - Let user decide stats panel width
 
         self.stats_panel = StatisticsPanel()
         self.stats_scroll.setWidget(self.stats_panel)
 
         self.results_splitter.addWidget(self.stats_scroll)
 
-        # Set initial sizes (70% text, 30% stats)
-        self.results_splitter.setStretchFactor(0, 7)  # Text gets more space
-        self.results_splitter.setStretchFactor(1, 3)  # Stats gets less space
+        # Set minimum widths
+        self.transcription_text.setMinimumWidth(400)  # Minimum for text
+
+        # Set initial sizes (78% text, 22% stats at 1152px right panel)
+        # At 1152px: ~900px text, ~250px stats
+        self.results_splitter.setSizes([900, 250])
+
+        # Add collapsible behavior
+        self.results_splitter.setCollapsible(0, False)  # Text cannot collapse
+        self.results_splitter.setCollapsible(1, True)   # Stats can collapse (hide)
 
         results_layout.addWidget(self.results_splitter)
 
@@ -673,16 +697,67 @@ class TranscriptionGUI(QMainWindow):
         results_group.setLayout(results_layout)
         right_layout.addWidget(results_group, stretch=1)
 
-        main_layout.addWidget(right_panel, stretch=1)
+        # Add right panel to main splitter
+        self.main_splitter.addWidget(right_panel)
+
+        # Set minimum widths to prevent crushing
+        left_panel.setMinimumWidth(400)   # Image needs at least 400px
+        right_panel.setMinimumWidth(600)  # Controls need at least 600px
+
+        # Set initial sizes (40% image, 60% controls+results at FHD 1920px)
+        # At 1920px width: 768px image, 1152px controls
+        self.main_splitter.setSizes([768, 1152])
 
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+        # Menu bar
+        self.setup_menu_bar()
+
         # Initialize first engine
         if available_engines:
             self.on_engine_changed(self.engine_combo.currentText())
+
+    def setup_menu_bar(self):
+        """Setup menu bar with view presets."""
+        menu_bar = self.menuBar()
+
+        # View menu
+        view_menu = menu_bar.addMenu("&View")
+
+        # Layout presets submenu
+        layout_menu = view_menu.addMenu("Layout Presets")
+
+        # Default layout (40/60)
+        preset_default = QAction("Default (40/60)", self)
+        preset_default.setShortcut("Ctrl+1")
+        preset_default.setStatusTip("Balanced image/text layout")
+        preset_default.triggered.connect(lambda: self.apply_layout_preset(768, 1152, "Default"))
+        layout_menu.addAction(preset_default)
+
+        # Image focus (60/40)
+        preset_image = QAction("Image Focus (60/40)", self)
+        preset_image.setShortcut("Ctrl+2")
+        preset_image.setStatusTip("Large image for detailed inspection")
+        preset_image.triggered.connect(lambda: self.apply_layout_preset(1152, 768, "Image Focus"))
+        layout_menu.addAction(preset_image)
+
+        # Transcription focus (25/75)
+        preset_text = QAction("Transcription Focus (25/75)", self)
+        preset_text.setShortcut("Ctrl+3")
+        preset_text.setStatusTip("Large text area for editing")
+        preset_text.triggered.connect(lambda: self.apply_layout_preset(480, 1440, "Transcription Focus"))
+        layout_menu.addAction(preset_text)
+
+    def apply_layout_preset(self, image_width: int, controls_width: int, preset_name: str):
+        """Apply predefined layout preset."""
+        try:
+            self.main_splitter.setSizes([image_width, controls_width])
+            self.status_bar.showMessage(f"{preset_name} layout applied", 2000)
+        except Exception as e:
+            print(f"Error applying layout preset: {e}")
 
     def on_engine_changed(self, engine_name: str):
         """Handle engine selection change."""
@@ -1187,48 +1262,87 @@ class TranscriptionGUI(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to export PAGE XML: {e}")
 
-    def load_settings(self):
-        """Load saved settings."""
-        if not self.settings_file.exists():
-            return
-
+    def save_settings(self):
+        """Save window geometry and splitter positions."""
         try:
-            with open(self.settings_file, "r") as f:
-                settings = json.load(f)
+            settings = QSettings('Polyscriptor', 'HTR_GUI')
 
-            # Restore last engine
-            last_engine = settings.get("last_engine")
+            # Save window geometry
+            settings.setValue('window/geometry', self.saveGeometry())
+            settings.setValue('window/state', self.saveState())
+
+            # Save splitter positions
+            settings.setValue('splitter/main', self.main_splitter.saveState())
+            settings.setValue('splitter/results', self.results_splitter.saveState())
+
+            # Save last used engine
+            if self.current_engine:
+                settings.setValue('engine/last_used', self.current_engine.get_name())
+
+            # Save engine configs (as JSON for compatibility)
+            engine_configs = {}
+            for engine in available_engines:
+                try:
+                    config = engine.get_config()
+                    engine_configs[engine.get_name()] = config
+                except:
+                    pass
+            settings.setValue('engine/configs', json.dumps(engine_configs))
+
+        except Exception as e:
+            print(f"Warning: Failed to save settings: {e}")
+
+    def restore_settings(self):
+        """Restore window geometry and splitter positions."""
+        try:
+            settings = QSettings('Polyscriptor', 'HTR_GUI')
+
+            # Restore window geometry (with defaults)
+            geometry = settings.value('window/geometry')
+            if geometry:
+                self.restoreGeometry(geometry)
+            else:
+                # Default: 1600×900 centered on screen
+                self.resize(1600, 900)
+                screen = QApplication.primaryScreen().geometry()
+                x = (screen.width() - self.width()) // 2
+                y = (screen.height() - self.height()) // 2
+                self.move(x, y)
+
+            state = settings.value('window/state')
+            if state:
+                self.restoreState(state)
+
+            # Restore splitter positions (with defaults from setup_ui)
+            main_state = settings.value('splitter/main')
+            if main_state:
+                self.main_splitter.restoreState(main_state)
+            # else: use initial sizes set in setup_ui (768, 1152)
+
+            results_state = settings.value('splitter/results')
+            if results_state:
+                self.results_splitter.restoreState(results_state)
+            # else: use initial sizes set in setup_ui (900, 250)
+
+            # Restore last used engine
+            last_engine = settings.value('engine/last_used')
             if last_engine:
                 idx = self.engine_combo.findText(last_engine)
                 if idx >= 0:
                     self.engine_combo.setCurrentIndex(idx)
 
             # Restore engine configs
-            engine_configs = settings.get("engine_configs", {})
-            if self.current_engine and self.current_engine.get_name() in engine_configs:
-                self.current_engine.set_config(engine_configs[self.current_engine.get_name()])
+            engine_configs_json = settings.value('engine/configs')
+            if engine_configs_json:
+                try:
+                    engine_configs = json.loads(engine_configs_json)
+                    if self.current_engine and self.current_engine.get_name() in engine_configs:
+                        self.current_engine.set_config(engine_configs[self.current_engine.get_name()])
+                except:
+                    pass
 
         except Exception as e:
-            print(f"Warning: Failed to load settings: {e}")
-
-    def save_settings(self):
-        """Save current settings."""
-        try:
-            settings = {
-                "last_engine": self.engine_combo.currentText(),
-                "engine_configs": {}
-            }
-
-            # Save all engine configs
-            for engine in available_engines:
-                config = engine.get_config()
-                settings["engine_configs"][engine.get_name()] = config
-
-            with open(self.settings_file, "w") as f:
-                json.dump(settings, f, indent=2)
-
-        except Exception as e:
-            print(f"Warning: Failed to save settings: {e}")
+            print(f"Warning: Failed to restore settings: {e}")
 
     def closeEvent(self, event):
         """Handle window close."""
