@@ -1,8 +1,9 @@
 # PyLaia Fixes Summary - 2025-11-06
 
 **Status**: ✅ COMPLETE
-**Time Taken**: 20 minutes
+**Time Taken**: 45 minutes (including CTC blank bug discovery)
 **Impact**: 2 critical bugs fixed, 1 model restored to working condition
+**Key Learning**: PyLaia models ALWAYS require CTC blank token at index 0
 
 ---
 
@@ -15,19 +16,35 @@
 - Example output: `^! 56d( 4!`-(1[0 ?/(5!`j!ž` (should be: `український текст`)
 - Root cause: Checkpoint missing `idx2char` character mapping
 
-**Solution**:
+**Initial Solution (INCORRECT)**:
 - Created `fix_ukrainian_checkpoint.py` script
 - Loaded vocabulary from `symbols.txt` (list format, 181 characters)
 - Mapped `<SPACE>` token to actual space character `' '`
 - Added `idx2char` and `char2idx` to checkpoint
 - Created backup: `best_model_BACKUP.pt`
+- **Problem**: Model output Cyrillic but scrambled (e.g., `ьмуіостуеияБоси,оеи...`)
+
+**Root Cause Discovered - CTC Blank Token**:
+- PyLaia uses CTC (Connectionist Temporal Classification)
+- **CTC ALWAYS reserves index 0 for blank token**
+- Initial fix created direct 1-to-1 mapping: index 0=' ', 1='о', 2='а'...
+- Correct mapping should be: index 0='<ctc>', 1=' ', 2='о', 3='а'...
+- Training script (line 90) does `idx + 1` to reserve index 0 for CTC blank
+- Vocabulary has 181 lines but model expects 181 classes INCLUDING CTC blank
+
+**Corrected Solution**:
+- Index 0: '<ctc>' (CTC blank token, required by PyLaia)
+- Index 1: ' ' (space, was '<SPACE>' in vocab)
+- Indices 2-180: First 180 vocabulary symbols (181 lines → 180 used + 1 CTC)
+- Properly maps <SPACE> token to actual space character
 
 **Result**:
 ```
-✅ idx2char loaded: 181 characters
-✅ char2idx loaded: 181 characters  
-✅ Space character (index 0) correctly mapped to ' '
-✅ ALL TESTS PASSED!
+✅ idx2char loaded: 181 characters (including CTC blank at index 0)
+✅ char2idx loaded: 180 characters (vocabulary symbols)
+✅ CTC blank (index 0) correctly set to '<ctc>'
+✅ Space character (index 1) correctly mapped to ' '
+✅ ALL TESTS PASSED - Model outputs correct Ukrainian text!
 ```
 
 **Model Fixed**:
@@ -119,6 +136,28 @@ symbols_raw = [line.rstrip('\n\r') for line in f if line.rstrip('\n\r')]
 ---
 
 ## Technical Details
+
+### CTC Blank Token (CRITICAL CONCEPT)
+
+**What is CTC?**
+- CTC = Connectionist Temporal Classification
+- Sequence labeling algorithm for variable-length input/output alignment
+- **Requires blank token at index 0** to handle repeated characters and alignment
+
+**Why Index 0 is Special:**
+- PyLaia training script (line 90): `char2idx = {char: idx + 1 for idx, char in enumerate(symbols)}`
+- All vocabulary symbols mapped to indices starting at 1
+- Index 0 explicitly reserved: `idx2char[0] = ''` (CTC blank)
+
+**Impact on Checkpoint Fixes:**
+- Vocabulary with 181 lines → Model with 181 output classes (180 symbols + 1 CTC blank)
+- Checkpoint must have: `idx2char[0] = '<ctc>'` or `''`
+- All vocabulary symbols start at index 1, not 0
+
+**Common Mistake:**
+- Creating direct 1-to-1 mapping without CTC blank
+- Result: All characters shifted by one index → garbage output
+- Example: Model predicts index 5 → without CTC blank maps to wrong character
 
 ### Vocabulary Formats Supported:
 
