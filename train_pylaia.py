@@ -64,7 +64,8 @@ class PyLaiaDataset(Dataset):
         # Load vocabulary (handle both list and KALDI formats)
         symbols_path = self.data_dir / symbols_file
         with open(symbols_path, 'r', encoding='utf-8') as f:
-            symbols_raw = [line.strip() for line in f if line.strip()]
+            # CRITICAL: Use rstrip('\n\r') not strip() to preserve TAB and other whitespace symbols
+            symbols_raw = [line.rstrip('\n\r') for line in f if line.rstrip('\n\r')]
 
         # Auto-detect format: KALDI format has "symbol index" pairs
         if symbols_raw and ' ' in symbols_raw[0]:
