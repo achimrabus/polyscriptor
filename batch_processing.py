@@ -553,12 +553,28 @@ class BatchHTRProcessor:
                 char_confidences=None
             )]
 
-        # Extract line images
+        # Extract line images (filter out too-small lines for PyLaia)
         line_images = []
+        filtered_lines = []
+        # PyLaia CNN needs minimum ~64px after resize to 128px height
+        # Original height * (128 / original_height) >= 64  → original >= 64
+        # But accounting for pooling layers, set conservative threshold
+        min_height_for_cnn = 40  # Conservative minimum to avoid CNN dimension errors
+
         for line in lines:
             x, y, w, h = line.bbox
+
+            # Skip lines that are too small for CNN
+            if h < min_height_for_cnn:
+                self.logger.debug(f"  Skipping line with height {h}px (too small for CNN)")
+                continue
+
             line_img = image_np[y:y+h, x:x+w]
             line_images.append(line_img)
+            filtered_lines.append(line)
+
+        # Update lines to only include filtered ones
+        lines = filtered_lines
 
         # Transcribe lines
         if len(line_images) == 0:
@@ -570,7 +586,13 @@ class BatchHTRProcessor:
             }
 
         self.logger.info(f"  Processing {len(line_images)} line(s)...")
-        transcriptions = self.engine.transcribe_lines(line_images)
+        try:
+            transcriptions = self.engine.transcribe_lines(line_images)
+        except Exception as e:
+            self.logger.error(f"  ❌ Transcription failed: {e}")
+            # Return empty transcriptions for all lines
+            from htr_engine_base import TranscriptionResult
+            transcriptions = [TranscriptionResult(text="[ERROR]", confidence=0.0) for _ in line_images]
 
         # Update lines with transcriptions
         for line, result in zip(lines, transcriptions):
