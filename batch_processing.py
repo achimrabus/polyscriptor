@@ -680,6 +680,23 @@ class BatchHTRProcessor:
                     lines = self.segmenter.segment_lines(image)
                     self.logger.debug(f"  Segmented {len(lines)} lines")
 
+                    # Normalize Kraken LineSegments to inference_page format
+                    # Kraken: bbox=(x1,y1,x2,y2), baseline attribute
+                    # inference_page: bbox=(x,y,w,h), coords attribute
+                    if self.args.segmentation_method == 'kraken' and len(lines) > 0:
+                        normalized_lines = []
+                        for line in lines:
+                            x1, y1, x2, y2 = line.bbox
+                            normalized_lines.append(LineSegment(
+                                image=line.image,
+                                bbox=(x1, y1, x2-x1, y2-y1),  # Convert to (x, y, w, h)
+                                coords=line.baseline if hasattr(line, 'baseline') else None,
+                                text=None,
+                                confidence=None,
+                                char_confidences=None
+                            ))
+                        lines = normalized_lines
+
                     # Check for empty segmentation
                     if len(lines) == 0:
                         self.logger.warning(f"  ⚠️  Segmentation found 0 lines! Image may be too small or blank.")

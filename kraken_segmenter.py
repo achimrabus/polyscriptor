@@ -5,12 +5,16 @@ This module provides an alternative to the classical HPP (Horizontal Projection 
 segmentation using Kraken's pre-trained neural models.
 """
 
-from typing import List, Optional
+from typing import List, Optional, NamedTuple
 from PIL import Image
 import numpy as np
 
-# Import LineSegment from inference_page to ensure consistency
-from inference_page import LineSegment
+
+class LineSegment(NamedTuple):
+    """Represents a segmented text line."""
+    image: Image.Image
+    bbox: tuple  # (x1, y1, x2, y2)
+    baseline: Optional[List[tuple]] = None  # List of (x, y) points
 
 
 class KrakenLineSegmenter:
@@ -136,7 +140,7 @@ class KrakenLineSegmenter:
                 lines.append(LineSegment(
                     image=line_img,
                     bbox=bbox,
-                    coords=baseline  # Kraken baseline maps to coords field
+                    baseline=baseline
                 ))
 
             # Sort lines top to bottom by Y coordinate
