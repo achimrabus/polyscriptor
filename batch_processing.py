@@ -520,8 +520,28 @@ class BatchHTRProcessor:
 
         # Segment lines (if needed)
         if self.engine.requires_line_segmentation():
-            lines = self.segmenter.segment_lines(image)
-            self.logger.debug(f"  Segmented {len(lines)} lines")
+            if self.segmenter is None:
+                # No segmentation (--segmentation-method none)
+                # Treat whole image as pre-segmented single line
+                lines = [LineSegment(
+                    image=image,
+                    bbox=(0, 0, image.width, image.height),
+                    coords=None,
+                    text=None,
+                    confidence=None,
+                    char_confidences=None
+                )]
+                self.logger.debug(f"  No segmentation: treating image as single line")
+            else:
+                # Segment lines from full page
+                lines = self.segmenter.segment_lines(image)
+                self.logger.debug(f"  Segmented {len(lines)} lines")
+
+                # Check for empty segmentation
+                if len(lines) == 0:
+                    self.logger.warning(f"  ⚠️  Segmentation found 0 lines! Image may be too small or blank.")
+                    self.logger.warning(f"     Try: --segmentation-method none (if pre-segmented lines)")
+                    self.logger.warning(f"     Or: adjust --segmentation-sensitivity (current: {self.args.segmentation_sensitivity})")
         else:
             # Page-based engine: treat whole image as single "line"
             lines = [LineSegment(
@@ -541,6 +561,15 @@ class BatchHTRProcessor:
             line_images.append(line_img)
 
         # Transcribe lines
+        if len(line_images) == 0:
+            self.logger.warning(f"  ⚠️  No lines to transcribe for {image_path.name}")
+            return {
+                'image': str(image_path),
+                'lines': 0,
+                'status': 'skipped (no lines)'
+            }
+
+        self.logger.info(f"  Processing {len(line_images)} line(s)...")
         transcriptions = self.engine.transcribe_lines(line_images)
 
         # Update lines with transcriptions
