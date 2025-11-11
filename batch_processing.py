@@ -35,7 +35,7 @@ from tqdm import tqdm
 from htr_engine_base import HTREngine, TranscriptionResult, get_global_registry
 
 # Segmentation imports
-from inference_page import LineSegmenter, LineSegment
+from inference_page import LineSegmenter, LineSegment, PageXMLSegmenter
 
 # Check for optional dependencies
 try:
@@ -159,6 +159,16 @@ Shared Server Notice:
     parser.add_argument('--min-gap', type=int, default=5,
                        help='Minimum gap between lines (default: 5)')
 
+    # PAGE XML support
+    parser.add_argument('--use-pagexml', action='store_true', default=True,
+                       help='Auto-detect and use PAGE XML if available (default: True)')
+    parser.add_argument('--no-pagexml', action='store_false', dest='use_pagexml',
+                       help='Disable PAGE XML auto-detection')
+    parser.add_argument('--xml-folder', type=Path,
+                       help='Custom PAGE XML folder (default: check same folder and page/ subfolder)')
+    parser.add_argument('--xml-suffix', type=str, default='.xml',
+                       help='PAGE XML file suffix (default: .xml)')
+
     # Performance
     parser.add_argument('--batch-size', type=str, default='auto',
                        help='Batch size for engine (default: auto, or specify number)')
@@ -227,6 +237,109 @@ def discover_images(input_folder: Path, verbose: bool = False) -> List[Path]:
         print(f"{'='*60}\n")
 
     return images
+
+
+def discover_images_with_xml(input_folder: Path, xml_folder: Optional[Path],
+                              xml_suffix: str, verbose: bool = False) -> List[Tuple[Path, Optional[Path]]]:
+    """
+    Discover images and pair with PAGE XML files.
+
+    Args:
+        input_folder: Folder containing images
+        xml_folder: Optional custom XML folder (None = auto-detect)
+        xml_suffix: XML file extension (default: .xml)
+        verbose: Print discovery details
+
+    Returns:
+        List of (image_path, xml_path) tuples. xml_path is None if not found.
+    """
+    images = discover_images(input_folder, verbose=False)
+
+    paired = []
+    xml_found_count = 0
+
+    for img_path in images:
+        xml_path = None
+
+        # Search locations for XML file
+        if xml_folder is not None:
+            # Custom XML folder specified
+            search_paths = [xml_folder / f"{img_path.stem}{xml_suffix}"]
+        else:
+            # Auto-detect: check same folder and page/ subfolder
+            search_paths = [
+                img_path.parent / f"{img_path.stem}{xml_suffix}",  # Same folder
+                img_path.parent / 'page' / f"{img_path.stem}{xml_suffix}",  # page/ subfolder
+            ]
+
+        # Find first existing XML
+        for search_path in search_paths:
+            if search_path.exists():
+                xml_path = search_path
+                xml_found_count += 1
+                break
+
+        paired.append((img_path, xml_path))
+
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Found {len(images)} images in {input_folder}")
+        print(f"  - {xml_found_count} with PAGE XML")
+        print(f"  - {len(images) - xml_found_count} without PAGE XML (will use segmentation)")
+        print(f"{'='*60}\n")
+
+    return paired
+
+
+def validate_pagexml(xml_path: Path, image_width: int, image_height: int, logger) -> bool:
+    """
+    Quick validation of PAGE XML file.
+
+    Args:
+        xml_path: Path to PAGE XML file
+        image_width: Actual image width
+        image_height: Actual image height
+        logger: Logger for warnings
+
+    Returns:
+        True if valid, False if should fall back to segmentation
+    """
+    import xml.etree.ElementTree as ET
+
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+
+        NS = {'page': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15'}
+
+        # Check for Page element with dimensions
+        page = root.find('.//page:Page', NS)
+        if page is None:
+            logger.warning(f"  ⚠️  PAGE XML has no Page element, falling back to segmentation")
+            return False
+
+        # Validate dimensions (quick check, ~0.1ms)
+        xml_width = page.get('imageWidth')
+        xml_height = page.get('imageHeight')
+
+        if xml_width and xml_height:
+            xml_w, xml_h = int(xml_width), int(xml_height)
+            if abs(xml_w - image_width) > 10 or abs(xml_h - image_height) > 10:
+                logger.warning(f"  ⚠️  PAGE XML dimensions mismatch (XML: {xml_w}x{xml_h}, actual: {image_width}x{image_height})")
+                logger.warning(f"     Falling back to automatic segmentation")
+                return False
+
+        # Check for TextLines
+        text_lines = root.findall('.//page:TextLine', NS)
+        if len(text_lines) == 0:
+            logger.warning(f"  ⚠️  PAGE XML has no TextLines, falling back to segmentation")
+            return False
+
+        return True
+
+    except Exception as e:
+        logger.warning(f"  ⚠️  PAGE XML parsing error: {e}, falling back to segmentation")
+        return False
 
 
 def select_device(args, logger) -> str:
@@ -358,6 +471,11 @@ class BatchHTRProcessor:
         self.errors = []
         self._image_count = 0
 
+        # PAGE XML statistics
+        self.xml_used_count = 0  # Images processed with PAGE XML
+        self.xml_failed_count = 0  # PAGE XML found but invalid/failed
+        self.auto_seg_count = 0  # Images auto-segmented
+
     def _setup_logging(self) -> logging.Logger:
         """Setup logging to file and console."""
         logger = logging.getLogger('batch_htr')
@@ -470,18 +588,18 @@ class BatchHTRProcessor:
             self.segmenter = KrakenLineSegmenter()
             self.logger.info("✓ Kraken segmenter initialized")
 
-    def process_batch(self, image_paths: List[Path]):
-        """Process batch of images."""
-        self.logger.info(f"\nProcessing {len(image_paths)} images...")
+    def process_batch(self, image_xml_pairs: List[Tuple[Path, Optional[Path]]]):
+        """Process batch of images with optional PAGE XML."""
+        self.logger.info(f"\nProcessing {len(image_xml_pairs)} images...")
         self.logger.info("⚠️  Shared server: Please monitor resource usage")
 
         # Progress bar
-        pbar = tqdm(image_paths, desc="Processing", unit="image",
+        pbar = tqdm(image_xml_pairs, desc="Processing", unit="image",
                    disable=not self.args.verbose, ncols=80)
 
-        for image_path in pbar:
+        for image_path, xml_path in pbar:
             try:
-                result = self.process_image(image_path)
+                result = self.process_image(image_path, xml_path)
                 self.results.append(result)
 
                 if self.args.verbose:
@@ -504,8 +622,8 @@ class BatchHTRProcessor:
 
         pbar.close()
 
-    def process_image(self, image_path: Path) -> Dict[str, Any]:
-        """Process single image."""
+    def process_image(self, image_path: Path, xml_path: Optional[Path] = None) -> Dict[str, Any]:
+        """Process single image with optional PAGE XML."""
         self.logger.debug(f"Processing {image_path.name}...")
 
         # Check if already processed (resume mode)
@@ -518,30 +636,55 @@ class BatchHTRProcessor:
         image = Image.open(image_path).convert('RGB')
         image_np = np.array(image)
 
-        # Segment lines (if needed)
-        if self.engine.requires_line_segmentation():
-            if self.segmenter is None:
-                # No segmentation (--segmentation-method none)
-                # Treat whole image as pre-segmented single line
-                lines = [LineSegment(
-                    image=image,
-                    bbox=(0, 0, image.width, image.height),
-                    coords=None,
-                    text=None,
-                    confidence=None,
-                    char_confidences=None
-                )]
-                self.logger.debug(f"  No segmentation: treating image as single line")
-            else:
-                # Segment lines from full page
-                lines = self.segmenter.segment_lines(image)
-                self.logger.debug(f"  Segmented {len(lines)} lines")
+        # Segment lines (priority: PAGE XML > auto-segmentation)
+        used_pagexml = False
 
-                # Check for empty segmentation
-                if len(lines) == 0:
-                    self.logger.warning(f"  ⚠️  Segmentation found 0 lines! Image may be too small or blank.")
-                    self.logger.warning(f"     Try: --segmentation-method none (if pre-segmented lines)")
-                    self.logger.warning(f"     Or: adjust --segmentation-sensitivity (current: {self.args.segmentation_sensitivity})")
+        if self.engine.requires_line_segmentation():
+            # Try PAGE XML first (if available and enabled)
+            if xml_path is not None and self.args.use_pagexml:
+                # Validate PAGE XML
+                if validate_pagexml(xml_path, image.width, image.height, self.logger):
+                    try:
+                        self.logger.info(f"  Using PAGE XML: {xml_path.name}")
+                        xml_segmenter = PageXMLSegmenter(str(xml_path))
+                        lines = xml_segmenter.segment_lines(image)
+                        self.logger.debug(f"  PAGE XML: {len(lines)} lines")
+                        used_pagexml = True
+                        self.xml_used_count += 1
+                    except Exception as e:
+                        self.logger.warning(f"  ⚠️  PAGE XML segmentation failed: {e}, falling back to automatic segmentation")
+                        self.xml_failed_count += 1
+                        xml_path = None  # Force fallback
+                else:
+                    self.xml_failed_count += 1
+                    xml_path = None  # Force fallback
+
+            # Fallback to automatic segmentation if PAGE XML not used
+            if not used_pagexml:
+                self.auto_seg_count += 1
+
+                if self.segmenter is None:
+                    # No segmentation (--segmentation-method none)
+                    # Treat whole image as pre-segmented single line
+                    lines = [LineSegment(
+                        image=image,
+                        bbox=(0, 0, image.width, image.height),
+                        coords=None,
+                        text=None,
+                        confidence=None,
+                        char_confidences=None
+                    )]
+                    self.logger.debug(f"  No segmentation: treating image as single line")
+                else:
+                    # Segment lines from full page
+                    lines = self.segmenter.segment_lines(image)
+                    self.logger.debug(f"  Segmented {len(lines)} lines")
+
+                    # Check for empty segmentation
+                    if len(lines) == 0:
+                        self.logger.warning(f"  ⚠️  Segmentation found 0 lines! Image may be too small or blank.")
+                        self.logger.warning(f"     Try: --segmentation-method none (if pre-segmented lines)")
+                        self.logger.warning(f"     Or: adjust --segmentation-sensitivity (current: {self.args.segmentation_sensitivity})")
         else:
             # Page-based engine: treat whole image as single "line"
             lines = [LineSegment(
@@ -773,6 +916,14 @@ class BatchHTRProcessor:
         self.logger.info("BATCH PROCESSING SUMMARY")
         self.logger.info("="*60)
         self.logger.info(f"Total images processed: {total_images}")
+
+        # PAGE XML statistics (if enabled)
+        if self.args.use_pagexml:
+            self.logger.info(f"  - PAGE XML used: {self.xml_used_count}")
+            if self.xml_failed_count > 0:
+                self.logger.info(f"  - PAGE XML failed/invalid: {self.xml_failed_count}")
+            self.logger.info(f"  - Auto-segmented: {self.auto_seg_count}")
+
         self.logger.info(f"Total lines transcribed: {total_lines}")
         self.logger.info(f"Total characters: {total_chars}")
         if avg_confidence:
@@ -818,7 +969,7 @@ class BatchHTRProcessor:
             self.logger.info("✓ Model unloaded")
 
 
-def dry_run_validation(processor: BatchHTRProcessor, image_paths: List[Path]) -> bool:
+def dry_run_validation(processor: BatchHTRProcessor, image_xml_pairs: List[Tuple[Path, Optional[Path]]]) -> bool:
     """Validate setup with dry run + single image test."""
     logger = processor.logger
 
@@ -834,25 +985,26 @@ def dry_run_validation(processor: BatchHTRProcessor, image_paths: List[Path]) ->
     logger.info(f"Output folder: {processor.args.output_folder}")
     logger.info(f"Output formats: {', '.join(processor.args.output_format)}")
 
-    # Show image list
-    logger.info(f"\nFound {len(image_paths)} images:")
-    for img in image_paths[:10]:
-        logger.info(f"  - {img.name}")
-    if len(image_paths) > 10:
-        logger.info(f"  ... and {len(image_paths) - 10} more")
+    # Show image list (extract image paths from tuples)
+    logger.info(f"\nFound {len(image_xml_pairs)} images:")
+    for img, xml in image_xml_pairs[:10]:
+        xml_marker = " (with PAGE XML)" if xml else ""
+        logger.info(f"  - {img.name}{xml_marker}")
+    if len(image_xml_pairs) > 10:
+        logger.info(f"  ... and {len(image_xml_pairs) - 10} more")
 
     # Estimate time
     engine_config = ENGINE_CONFIG.get(processor.args.engine, {})
     images_per_min = engine_config.get('speed_estimate', 20)
-    estimated_minutes = len(image_paths) / images_per_min
+    estimated_minutes = len(image_xml_pairs) / images_per_min
     logger.info(f"\nEstimated time: {estimated_minutes:.1f} minutes ({estimated_minutes/60:.1f} hours)")
 
     # Test with first image
     logger.info("\nTesting with first image...")
     try:
-        test_image = image_paths[0]
+        test_image, test_xml = image_xml_pairs[0]
         start_time = time.time()
-        result = processor.process_image(test_image)
+        result = processor.process_image(test_image, test_xml)
         elapsed = time.time() - start_time
 
         logger.info(f"✓ Test successful!")
@@ -897,8 +1049,18 @@ def main():
     print("⚠️  Running on shared server - please be mindful of resources")
     print("="*60)
 
-    # Discover images
-    image_paths = discover_images(args.input_folder, verbose=args.verbose)
+    # Discover images (with PAGE XML if enabled)
+    if args.use_pagexml:
+        image_xml_pairs = discover_images_with_xml(
+            args.input_folder,
+            args.xml_folder,
+            args.xml_suffix,
+            verbose=args.verbose
+        )
+        image_paths = [img for img, xml in image_xml_pairs]
+    else:
+        image_paths = discover_images(args.input_folder, verbose=args.verbose)
+        image_xml_pairs = [(img, None) for img in image_paths]
 
     if not image_paths:
         print(f"ERROR: No images found in {args.input_folder}")
@@ -922,12 +1084,12 @@ def main():
         # Dry run
         if args.dry_run:
             print("\n[DRY RUN MODE]")
-            success = dry_run_validation(processor, image_paths)
+            success = dry_run_validation(processor, image_xml_pairs)
             processor.cleanup()
             return 0 if success else 1
 
         # Process batch
-        processor.process_batch(image_paths)
+        processor.process_batch(image_xml_pairs)
 
         # Write summary
         processor.write_summary()
