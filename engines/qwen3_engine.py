@@ -59,7 +59,7 @@ class Qwen3Engine(HTREngine):
         self._max_tokens_spin: Optional[QSpinBox] = None
 
     def get_name(self) -> str:
-        return "Qwen3 VLM"
+        return "Qwen3-VL"
 
     def get_description(self) -> str:
         return "Vision-language model with LoRA fine-tuning support"
@@ -424,7 +424,8 @@ class Qwen3Engine(HTREngine):
                 print("Cleaning up previous model before loading new one...")
                 self.unload_model()
 
-            base_model = config.get("base_model", "")
+            # Support both 'base_model' (GUI) and 'model_id' (CLI)
+            base_model = config.get("base_model") or config.get("model_id") or config.get("model_path")
             if not base_model:
                 return False
 
