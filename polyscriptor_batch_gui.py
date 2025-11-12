@@ -693,13 +693,15 @@ class PolyscriptorBatchGUI(QMainWindow):
 
     def _execute_command(self, cmd: List[str], title: str):
         """Execute command and show output in a dialog."""
+        from PyQt6.QtWidgets import QDialog
+
         cmd_str = " ".join(cmd)
 
-        # Create execution dialog
-        dialog = QWidget()
+        # Create execution dialog as child of main window
+        dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setMinimumSize(800, 600)
-        layout = QVBoxLayout(dialog)
+        layout = QVBoxLayout()
 
         # Command display
         layout.addWidget(QLabel("Command:"))
@@ -729,24 +731,28 @@ class PolyscriptorBatchGUI(QMainWindow):
         layout.addLayout(button_layout)
 
         dialog.setLayout(layout)
-        dialog.show()
 
-        # Execute command using QProcess
-        process = QProcess()
+        # Execute command using QProcess (as child of dialog)
+        process = QProcess(dialog)
 
         def append_output():
-            output = process.readAllStandardOutput().data().decode('utf-8', errors='ignore')
-            output_display.append(output)
+            if not output_display or output_display.isVisible():
+                output = process.readAllStandardOutput().data().decode('utf-8', errors='ignore')
+                if output:
+                    output_display.append(output)
 
         def append_error():
-            error = process.readAllStandardError().data().decode('utf-8', errors='ignore')
-            output_display.append(f"<span style='color: red;'>{error}</span>")
+            if not output_display or output_display.isVisible():
+                error = process.readAllStandardError().data().decode('utf-8', errors='ignore')
+                if error:
+                    output_display.append(f"<span style='color: red;'>{error}</span>")
 
         def process_finished(exit_code, exit_status):
-            if exit_code == 0:
-                output_display.append("\n<b>✓ Process completed successfully!</b>")
-            else:
-                output_display.append(f"\n<b>❌ Process failed with exit code {exit_code}</b>")
+            if not output_display or output_display.isVisible():
+                if exit_code == 0:
+                    output_display.append("\n<b>✓ Process completed successfully!</b>")
+                else:
+                    output_display.append(f"\n<b>❌ Process failed with exit code {exit_code}</b>")
 
         process.readyReadStandardOutput.connect(append_output)
         process.readyReadStandardError.connect(append_error)
@@ -756,8 +762,8 @@ class PolyscriptorBatchGUI(QMainWindow):
         output_display.append(f"<b>Starting {title}...</b>\n")
         process.start(cmd[0], cmd[1:])
 
-        # Keep dialog and process alive
-        dialog.process = process
+        # Show dialog (modal)
+        dialog.exec()
 
 
 def main():
