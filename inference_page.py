@@ -324,13 +324,23 @@ class PageXMLSegmenter:
         self.xml_path = Path(xml_path)
 
     def segment_lines(self, image: Image.Image) -> List[LineSegment]:
-        """Extract lines using PAGE XML coordinates."""
+        """Extract lines using PAGE XML coordinates with correct reading order."""
         tree = ET.parse(self.xml_path)
         root = tree.getroot()
 
-        segments = []
+        # Store regions with their reading order
+        regions_with_order = []
 
         for region in root.findall('.//page:TextRegion', self.NS):
+            # Extract region reading order from custom attribute
+            region_order = self._extract_reading_order(region.get('custom', ''))
+
+            # Get region Y coordinate as fallback (from first TextLine or Coords)
+            region_y = self._get_region_y_position(region)
+
+            # Store lines for this region with their reading order
+            lines_with_order = []
+
             for text_line in region.findall('.//page:TextLine', self.NS):
                 # Get coordinates
                 coords_elem = text_line.find('page:Coords', self.NS)
@@ -355,13 +365,82 @@ class PageXMLSegmenter:
                 bbox = (x1_pad, y1_pad, x2_pad, y2_pad)
                 line_img = image.crop(bbox)
 
-                segments.append(LineSegment(
+                segment = LineSegment(
                     image=line_img,
                     bbox=bbox,
                     coords=coords
-                ))
+                )
+
+                # Extract line reading order from custom attribute
+                line_order = self._extract_reading_order(text_line.get('custom', ''))
+
+                # Use line reading order if available, otherwise Y coordinate
+                sort_key = line_order if line_order is not None else y1
+                lines_with_order.append((sort_key, segment))
+
+            # Sort lines within this region
+            lines_with_order.sort(key=lambda x: x[0])
+            sorted_lines = [seg for _, seg in lines_with_order]
+
+            # Use region reading order if available, otherwise region Y position
+            region_sort_key = region_order if region_order is not None else region_y
+            regions_with_order.append((region_sort_key, sorted_lines))
+
+        # Sort regions by reading order (or Y position fallback)
+        regions_with_order.sort(key=lambda x: x[0])
+
+        # Flatten: concatenate all lines from all regions in order
+        segments = []
+        for _, region_lines in regions_with_order:
+            segments.extend(region_lines)
 
         return segments
+
+    @staticmethod
+    def _extract_reading_order(custom_attr: str) -> Optional[int]:
+        """Extract reading order index from custom attribute.
+
+        Format: custom="readingOrder {index:5;}"
+        Returns: 5 (or None if not found/parseable)
+        """
+        if not custom_attr or 'readingOrder' not in custom_attr:
+            return None
+
+        try:
+            # Find "index:X;" pattern
+            start = custom_attr.index('index:') + 6
+            end = custom_attr.index(';', start)
+            return int(custom_attr[start:end])
+        except (ValueError, IndexError):
+            return None
+
+    def _get_region_y_position(self, region) -> int:
+        """Get Y position of region for fallback sorting.
+
+        Uses the Y coordinate of the region's Coords or first TextLine.
+        """
+        # Try region Coords first
+        coords_elem = region.find('page:Coords', self.NS)
+        if coords_elem is not None:
+            coords_str = coords_elem.get('points')
+            if coords_str:
+                coords = self._parse_coords(coords_str)
+                _, y1, _, _ = self._get_bounding_box(coords)
+                return y1
+
+        # Fallback: use first TextLine Y position
+        text_line = region.find('.//page:TextLine', self.NS)
+        if text_line is not None:
+            coords_elem = text_line.find('page:Coords', self.NS)
+            if coords_elem is not None:
+                coords_str = coords_elem.get('points')
+                if coords_str:
+                    coords = self._parse_coords(coords_str)
+                    _, y1, _, _ = self._get_bounding_box(coords)
+                    return y1
+
+        # Default fallback
+        return 0
 
     @staticmethod
     def _parse_coords(coords_str: str) -> List[Tuple[int, int]]:
