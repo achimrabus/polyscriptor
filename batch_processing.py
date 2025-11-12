@@ -729,7 +729,9 @@ class BatchHTRProcessor:
                 self.logger.debug(f"  Skipping line with height {h}px (too small for CNN)")
                 continue
 
-            line_img = image_np[y:y+h, x:x+w]
+            # Use the already-cropped PIL image from LineSegment (better quality than re-cropping)
+            # Convert PIL to numpy if needed (engines handle both formats)
+            line_img = np.array(line.image) if hasattr(line.image, 'size') else line.image
             line_images.append(line_img)
             filtered_lines.append(line)
 
