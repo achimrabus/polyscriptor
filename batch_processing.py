@@ -603,6 +603,9 @@ class BatchHTRProcessor:
         self.logger.info(f"\nProcessing {len(image_xml_pairs)} images...")
         self.logger.info("⚠️  Shared server: Please monitor resource usage")
 
+        # Track start time
+        self.start_time = time.time()
+
         # Progress bar
         pbar = tqdm(image_xml_pairs, desc="Processing", unit="image",
                    disable=not self.args.verbose, ncols=80)
@@ -931,6 +934,10 @@ class BatchHTRProcessor:
 
         # JSON summary
         json_path = self.args.output_folder / 'batch_results.json'
+
+        # Calculate elapsed time
+        elapsed_time = time.time() - self.start_time if hasattr(self, 'start_time') else None
+
         summary = {
             'metadata': {
                 'engine': self.args.engine,
@@ -938,7 +945,8 @@ class BatchHTRProcessor:
                 'segmentation': self.args.segmentation_method,
                 'total_images': len(self.results),
                 'total_errors': len(self.errors),
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'elapsed_time_seconds': elapsed_time
             },
             'results': self._convert_numpy_types(self.results),
             'errors': self._convert_numpy_types(self.errors)
@@ -967,6 +975,9 @@ class BatchHTRProcessor:
                       if r.get('avg_confidence') is not None]
         avg_confidence = sum(confidences) / len(confidences) if confidences else None
 
+        # Calculate elapsed time
+        elapsed_time = time.time() - self.start_time if hasattr(self, 'start_time') else None
+
         self.logger.info("\n" + "="*60)
         self.logger.info("BATCH PROCESSING SUMMARY")
         self.logger.info("="*60)
@@ -983,6 +994,30 @@ class BatchHTRProcessor:
         self.logger.info(f"Total characters: {total_chars}")
         if avg_confidence:
             self.logger.info(f"Average confidence: {avg_confidence:.2%}")
+
+        # Elapsed time and speed
+        if elapsed_time:
+            minutes, seconds = divmod(int(elapsed_time), 60)
+            hours, minutes = divmod(minutes, 60)
+            if hours > 0:
+                time_str = f"{hours}h {minutes}m {seconds}s"
+            elif minutes > 0:
+                time_str = f"{minutes}m {seconds}s"
+            else:
+                time_str = f"{seconds}s"
+
+            self.logger.info(f"Elapsed time: {time_str} ({elapsed_time:.1f}s)")
+
+            # Speed metrics
+            if total_images > 0:
+                images_per_sec = total_images / elapsed_time
+                sec_per_image = elapsed_time / total_images
+                self.logger.info(f"Speed: {images_per_sec:.2f} images/sec ({sec_per_image:.1f}s/image)")
+
+            if total_lines > 0:
+                lines_per_sec = total_lines / elapsed_time
+                self.logger.info(f"       {lines_per_sec:.2f} lines/sec")
+
         self.logger.info(f"Errors: {len(self.errors)}")
         self.logger.info("="*60)
 
