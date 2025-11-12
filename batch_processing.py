@@ -145,8 +145,8 @@ Shared Server Notice:
     # Output
     parser.add_argument('--output-folder', type=Path, default=Path('./output'),
                        help='Output folder (default: ./output)')
-    parser.add_argument('--output-format', type=str, default='txt',
-                       help='Output formats: txt, csv, pagexml, json (comma-separated, default: txt)')
+    parser.add_argument('--output-format', type=str, action='append',
+                       help='Output format (can be specified multiple times): txt, csv, pagexml, json')
 
     # Segmentation
     parser.add_argument('--segmentation-method', type=str, default='hpp',
@@ -209,8 +209,18 @@ Shared Server Notice:
     if args.segmentation_method == 'kraken' and not KRAKEN_AVAILABLE:
         parser.error("Kraken not installed. Install with: pip install kraken")
 
-    # Parse output formats
-    args.output_format = [fmt.strip() for fmt in args.output_format.split(',')]
+    # Parse output formats (handle both comma-separated and multiple --output-format flags)
+    if args.output_format is None:
+        args.output_format = ['txt']  # Default
+    elif isinstance(args.output_format, str):
+        # Single value, might be comma-separated
+        args.output_format = [fmt.strip() for fmt in args.output_format.split(',')]
+    else:
+        # List from action='append', flatten any comma-separated values
+        formats = []
+        for fmt in args.output_format:
+            formats.extend([f.strip() for f in fmt.split(',')])
+        args.output_format = formats
 
     return args
 
@@ -812,12 +822,21 @@ class BatchHTRProcessor:
     def _write_pagexml(self, output_path: Path, image_path: Path, lines: List[LineSegment]):
         """Write PAGE XML output."""
         from page_xml_exporter import PageXMLExporter
+        from PIL import Image
 
-        exporter = PageXMLExporter()
-        exporter.export(
+        # Load image to get dimensions
+        with Image.open(image_path) as img:
+            image_width, image_height = img.size
+
+        # Create exporter with required parameters
+        exporter = PageXMLExporter(
             image_path=str(image_path),
-            output_path=str(output_path),
-            line_segments=lines
+            image_width=image_width,
+            image_height=image_height
+        )
+        exporter.export(
+            segments=lines,
+            output_path=str(output_path)
         )
 
     def _write_json(self, output_path: Path, image_path: Path,

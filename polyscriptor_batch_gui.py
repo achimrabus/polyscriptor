@@ -692,26 +692,72 @@ class PolyscriptorBatchGUI(QMainWindow):
             self._execute_command(cmd, "Batch Processing")
 
     def _execute_command(self, cmd: List[str], title: str):
-        """Execute command in external terminal."""
-        # For now, just show the command and let user run it
-        # Future: Could use QProcess for embedded execution
-
+        """Execute command and show output in a dialog."""
         cmd_str = " ".join(cmd)
 
-        msg = QMessageBox(self)
-        msg.setWindowTitle(title)
-        msg.setText("Execute the following command:")
-        msg.setDetailedText(cmd_str)
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        # Create execution dialog
+        dialog = QWidget()
+        dialog.setWindowTitle(title)
+        dialog.setMinimumSize(800, 600)
+        layout = QVBoxLayout(dialog)
 
-        # Add copy button
-        copy_btn = msg.addButton("Copy to Clipboard", QMessageBox.ButtonRole.ActionRole)
+        # Command display
+        layout.addWidget(QLabel("Command:"))
+        cmd_display = QTextEdit()
+        cmd_display.setPlainText(cmd_str)
+        cmd_display.setMaximumHeight(80)
+        cmd_display.setReadOnly(True)
+        cmd_display.setFont(QFont("Monospace", 9))
+        layout.addWidget(cmd_display)
 
-        msg.exec()
+        # Output display
+        layout.addWidget(QLabel("Output:"))
+        output_display = QTextEdit()
+        output_display.setFont(QFont("Monospace", 9))
+        output_display.setReadOnly(True)
+        layout.addWidget(output_display)
 
-        if msg.clickedButton() == copy_btn:
-            QApplication.clipboard().setText(cmd_str)
-            QMessageBox.information(self, "Copied", "Command copied to clipboard!")
+        # Buttons
+        button_layout = QHBoxLayout()
+        copy_btn = QPushButton("Copy Command")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(cmd_str))
+        button_layout.addWidget(copy_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.close)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+
+        dialog.setLayout(layout)
+        dialog.show()
+
+        # Execute command using QProcess
+        process = QProcess()
+
+        def append_output():
+            output = process.readAllStandardOutput().data().decode('utf-8', errors='ignore')
+            output_display.append(output)
+
+        def append_error():
+            error = process.readAllStandardError().data().decode('utf-8', errors='ignore')
+            output_display.append(f"<span style='color: red;'>{error}</span>")
+
+        def process_finished(exit_code, exit_status):
+            if exit_code == 0:
+                output_display.append("\n<b>✓ Process completed successfully!</b>")
+            else:
+                output_display.append(f"\n<b>❌ Process failed with exit code {exit_code}</b>")
+
+        process.readyReadStandardOutput.connect(append_output)
+        process.readyReadStandardError.connect(append_error)
+        process.finished.connect(process_finished)
+
+        # Start process
+        output_display.append(f"<b>Starting {title}...</b>\n")
+        process.start(cmd[0], cmd[1:])
+
+        # Keep dialog and process alive
+        dialog.process = process
 
 
 def main():
