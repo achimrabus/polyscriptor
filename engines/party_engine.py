@@ -93,7 +93,7 @@ class PartyEngine(HTREngine):
         return None
 
     def get_name(self) -> str:
-        return "Party OCR"
+        return "Party"
 
     def get_description(self) -> str:
         return "PyTorch Lightning HTR with PAGE XML workflow"
