@@ -897,6 +897,23 @@ class BatchHTRProcessor:
 
         self.logger.debug(f"Memory cleanup performed (after {self._image_count} images)")
 
+    def _convert_numpy_types(self, obj):
+        """Recursively convert numpy types to Python native types for JSON serialization."""
+        import numpy as np
+
+        if isinstance(obj, dict):
+            return {key: self._convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
+
     def write_summary(self):
         """Write summary CSV and JSON."""
         self.logger.info("\nWriting summary files...")
@@ -923,8 +940,8 @@ class BatchHTRProcessor:
                 'total_errors': len(self.errors),
                 'timestamp': datetime.now().isoformat()
             },
-            'results': self.results,
-            'errors': self.errors
+            'results': self._convert_numpy_types(self.results),
+            'errors': self._convert_numpy_types(self.errors)
         }
 
         with open(json_path, 'w', encoding='utf-8') as f:
