@@ -509,9 +509,18 @@ class TrOCRInference:
         else:
             # Load processor from base model, model from local checkpoint
             self.checkpoint_path = Path(model_path)
+
+            # If model_path points to a specific file (e.g., model.safetensors),
+            # use the parent directory for from_pretrained()
+            if self.checkpoint_path.is_file():
+                model_dir = self.checkpoint_path.parent
+                print(f"Model path is a file, using directory: {model_dir}")
+            else:
+                model_dir = self.checkpoint_path
+
             print(f"Loading processor from base model: {self.base_model}")
             self.processor = TrOCRProcessor.from_pretrained(self.base_model)
-            self.model = VisionEncoderDecoderModel.from_pretrained(self.checkpoint_path)
+            self.model = VisionEncoderDecoderModel.from_pretrained(model_dir)
 
         self.model.to(self.device)
         self.model.eval()
