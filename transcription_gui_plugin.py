@@ -23,6 +23,9 @@ from typing import List, Optional, Tuple, Dict, Any
 import numpy as np
 from PIL import Image
 
+# Disable PIL DecompressionBomb protection for large manuscript images
+Image.MAX_IMAGE_PIXELS = None
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QSplitter, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,

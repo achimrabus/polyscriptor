@@ -31,6 +31,10 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
+# Disable PIL DecompressionBomb protection for large manuscript images
+# Some high-resolution scans exceed the default 178MP limit
+Image.MAX_IMAGE_PIXELS = None
+
 # HTR Engine imports
 from htr_engine_base import HTREngine, TranscriptionResult, get_global_registry
 

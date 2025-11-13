@@ -26,6 +26,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 import cv2
 
+# Disable PIL DecompressionBomb protection for large manuscript images
+Image.MAX_IMAGE_PIXELS = None
+
 from transformers import VisionEncoderDecoderModel, TrOCRProcessor
 
 
