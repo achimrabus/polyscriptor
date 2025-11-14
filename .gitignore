@@ -34,6 +34,7 @@ Thumbs.db
 # Model checkpoints and outputs
 models/
 output/
+output_*/
 seq2seq_model_handwritten/
 seq2seq_*/
 cyrillic_seq2seq_*/
@@ -137,6 +138,7 @@ CLAUDE.md
 
 # Internal planning documents (not for public repo)
 *_PLAN.md
+*_PLAN_*.md
 IMPLEMENTATION_SUMMARY.md
 PARTY_FIX_TESTING.md
 PARTY_POC_VS_PLUGIN_COMPARISON.md
