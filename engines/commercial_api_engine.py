@@ -253,43 +253,59 @@ class CommercialAPIEngine(HTREngine):
         advanced_group = QGroupBox("Gemini Advanced")
         adv_layout = QVBoxLayout()
 
+        # Row 1: Checkboxes
         adv_row1 = QHBoxLayout()
         self._early_exit_check = QCheckBox("Early exit on first chunk")
         self._early_exit_check.setChecked(True)
         self._early_exit_check.setToolTip("If checked, streaming returns after first non-empty text chunk. Uncheck to collect full stream.")
         adv_row1.addWidget(self._early_exit_check)
+        
+        self._auto_continue_check = QCheckBox("Auto continuation")
+        self._auto_continue_check.setChecked(False)  # Default: off for speed
+        self._auto_continue_check.setToolTip("If checked, performs additional continuation calls to capture missed trailing text.")
+        adv_row1.addWidget(self._auto_continue_check)
+        adv_row1.addStretch()
         adv_layout.addLayout(adv_row1)
 
+        # Row 2: Continuation settings (symmetrical grid)
         adv_row2 = QHBoxLayout()
-        self._auto_continue_check = QCheckBox("Auto continuation passes")
-        self._auto_continue_check.setToolTip("If checked, performs additional continuation calls to capture missed trailing text.")
-        adv_row2.addWidget(self._auto_continue_check)
+        adv_row2.addWidget(QLabel("Max passes:"))
         self._max_continuations_edit = QLineEdit()
-        self._max_continuations_edit.setPlaceholderText("max passes (e.g. 2)")
-        self._max_continuations_edit.setMaximumWidth(90)
+        self._max_continuations_edit.setText("2")  # Default value
+        self._max_continuations_edit.setToolTip("Maximum number of continuation attempts (2-3 recommended)")
+        self._max_continuations_edit.setFixedWidth(60)
         adv_row2.addWidget(self._max_continuations_edit)
+        
+        adv_row2.addSpacing(20)
+        
+        adv_row2.addWidget(QLabel("Min new chars:"))
+        self._min_new_chars_edit = QLineEdit()
+        self._min_new_chars_edit.setText("50")  # Default value
+        self._min_new_chars_edit.setToolTip("Minimum number of new characters required to accept a continuation chunk.")
+        self._min_new_chars_edit.setFixedWidth(60)
+        adv_row2.addWidget(self._min_new_chars_edit)
+        adv_row2.addStretch()
         adv_layout.addLayout(adv_row2)
 
+        # Row 3: Token & fallback settings (symmetrical grid)
         adv_row3 = QHBoxLayout()
-        self._min_new_chars_edit = QLineEdit()
-        self._min_new_chars_edit.setPlaceholderText("min new chars (50)")
-        self._min_new_chars_edit.setToolTip("Minimum number of new characters required to accept a continuation chunk.")
-        self._min_new_chars_edit.setMaximumWidth(110)
-        adv_row3.addWidget(self._min_new_chars_edit)
+        adv_row3.addWidget(QLabel("Low-mode tokens:"))
         self._low_initial_tokens_edit = QLineEdit()
-        self._low_initial_tokens_edit.setPlaceholderText("low-mode tokens (6144)")
-        self._low_initial_tokens_edit.setToolTip("Initial max_output_tokens for LOW thinking before fallback escalation.")
-        self._low_initial_tokens_edit.setMaximumWidth(140)
+        self._low_initial_tokens_edit.setText("6144")  # Default value
+        self._low_initial_tokens_edit.setToolTip("Initial max_output_tokens for LOW thinking before fallback escalation (4096-8192).")
+        self._low_initial_tokens_edit.setFixedWidth(60)
         adv_row3.addWidget(self._low_initial_tokens_edit)
-        adv_layout.addLayout(adv_row3)
-
-        adv_row4 = QHBoxLayout()
+        
+        adv_row3.addSpacing(20)
+        
+        adv_row3.addWidget(QLabel("Fallback %:"))
         self._reasoning_fallback_edit = QLineEdit()
-        self._reasoning_fallback_edit.setPlaceholderText("fallback % (0.6)")
-        self._reasoning_fallback_edit.setToolTip("Fraction of token budget consumed internally (no output) that triggers early fallback.")
-        self._reasoning_fallback_edit.setMaximumWidth(130)
-        adv_row4.addWidget(self._reasoning_fallback_edit)
-        adv_layout.addLayout(adv_row4)
+        self._reasoning_fallback_edit.setText("0.6")  # Default value
+        self._reasoning_fallback_edit.setToolTip("Fraction of token budget consumed internally (no output) that triggers early fallback (0.5-0.8).")
+        self._reasoning_fallback_edit.setFixedWidth(60)
+        adv_row3.addWidget(self._reasoning_fallback_edit)
+        adv_row3.addStretch()
+        adv_layout.addLayout(adv_row3)
 
         advanced_group.setLayout(adv_layout)
         layout.addWidget(advanced_group)
@@ -583,8 +599,9 @@ class CommercialAPIEngine(HTREngine):
                 fast_direct_early_exit = True
                 if self._early_exit_check is not None and not self._early_exit_check.isChecked():
                     fast_direct_early_exit = False
+                # Extract continuation settings
                 auto_continue = False
-                max_auto_continuations = 0
+                max_auto_continuations = 2  # Default
                 if self._auto_continue_check is not None and self._auto_continue_check.isChecked():
                     auto_continue = True
                     if self._max_continuations_edit is not None:
@@ -593,10 +610,9 @@ class CommercialAPIEngine(HTREngine):
                             try:
                                 max_auto_continuations = int(mc_text)
                             except ValueError:
-                                max_auto_continuations = 2
-                        else:
-                            max_auto_continuations = 2
+                                pass  # Keep default of 2
                 
+                # Extract continuation settings with defaults
                 continuation_min_new_chars = 50
                 if hasattr(self, '_min_new_chars_edit') and self._min_new_chars_edit is not None:
                     mnc_text = self._min_new_chars_edit.text().strip()
@@ -604,7 +620,8 @@ class CommercialAPIEngine(HTREngine):
                         try:
                             continuation_min_new_chars = int(mnc_text)
                         except ValueError:
-                            continuation_min_new_chars = 50
+                            pass  # Keep default
+                
                 reasoning_fallback_threshold = 0.6
                 if hasattr(self, '_reasoning_fallback_edit') and self._reasoning_fallback_edit is not None:
                     rft_text = self._reasoning_fallback_edit.text().strip()
@@ -612,7 +629,9 @@ class CommercialAPIEngine(HTREngine):
                         try:
                             reasoning_fallback_threshold = float(rft_text)
                         except ValueError:
-                            reasoning_fallback_threshold = 0.6
+                            pass  # Keep default
+                
+                # Override max_tokens for LOW thinking mode if specified
                 if thinking_mode == 'low' and hasattr(self, '_low_initial_tokens_edit') and self._low_initial_tokens_edit is not None:
                     lit_text = self._low_initial_tokens_edit.text().strip()
                     if lit_text:
@@ -621,7 +640,7 @@ class CommercialAPIEngine(HTREngine):
                             if lit_val > 0:
                                 max_tokens = lit_val
                         except ValueError:
-                            pass
+                            pass  # Keep existing max_tokens
                 text = self.model.transcribe(
                     pil_image, 
                     prompt=custom_prompt,
