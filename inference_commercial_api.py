@@ -170,7 +170,7 @@ class OpenAIInference(BaseAPIInference):
         image: Image.Image,
         prompt: Optional[str] = None,
         max_tokens: int = 500,
-        temperature: float = 0.0,
+    temperature: float = 1.0,
         **kwargs
     ) -> str:
         """
@@ -180,7 +180,7 @@ class OpenAIInference(BaseAPIInference):
             image: PIL Image
             prompt: Custom prompt
             max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature (0.0 = deterministic)
+            temperature: Sampling temperature (web default ~1.0). Lower (0-0.3) = deterministic; higher = more variation.
             **kwargs: Additional OpenAI parameters
 
         Returns:
@@ -247,19 +247,117 @@ class GeminiInference(BaseAPIInference):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model)
 
+        # Detect availability of safety classes (version-dependent)
+        try:
+            from google.generativeai.types import SafetySetting, HarmCategory, HarmBlockThreshold  # type: ignore
+            self._safety_classes_available = True
+        except Exception:
+            # Newer versions expose only dict helpers
+            self._safety_classes_available = False
+
     def _get_default_prompt(self) -> str:
         return (
             "Transcribe all handwritten text in this manuscript image. "
             "Preserve the original language (Cyrillic, Latin, etc.) and layout. "
             "Output only the transcribed text without any additional commentary."
         )
+    
+    def _maybe_continue(
+        self,
+        current_text: str,
+        original_prompt: str,
+        image: Image.Image,
+        generation_config,
+        safety_settings,
+        auto_continue: bool,
+        max_auto_continuations: int,
+        continuation_min_new_chars: int,
+        verbose_block_logging: bool,
+    ) -> str:
+        """Optionally perform continuation calls to extend transcription.
+
+        Heuristic: if auto_continue is enabled, we ask for continuation until no new text
+        is added or we hit max_auto_continuations. We guard against the model re-sending
+        previous text by diffing appended length.
+        """
+        if not auto_continue:
+            return current_text
+
+        accumulated = current_text
+        last_len = len(accumulated)
+        for pass_idx in range(1, max_auto_continuations + 1):
+            continuation_prompt = (
+                f"{original_prompt}\n\nPartial transcription so far (DO NOT repeat it):\n"  # original base
+                f"{accumulated}\n\nContinue transcribing remaining, previously UNTRANSCRIBED text. "
+                "Output ONLY the new continuation without repeating prior characters."  # instruction
+            )
+            try:
+                cont_resp = self.model.generate_content([
+                    continuation_prompt,
+                    image,
+                ], generation_config=generation_config, safety_settings=safety_settings)
+            except Exception as e:
+                if verbose_block_logging:
+                    print(f"❌ Continuation attempt {pass_idx} failed: {e}")
+                break
+
+            new_chunk = ""
+            if hasattr(cont_resp, 'candidates') and cont_resp.candidates:
+                cand = cont_resp.candidates[0]
+                if hasattr(cand, 'content') and hasattr(cand.content, 'parts'):
+                    parts_text = [p.text for p in cand.content.parts if hasattr(p, 'text') and p.text]
+                    new_chunk = ''.join(parts_text).strip()
+
+            if not new_chunk:
+                if verbose_block_logging:
+                    print(f"ℹ️ Continuation attempt {pass_idx} produced no new text; stopping.")
+                break
+
+            # Remove any accidental repetition by trimming existing prefix
+            if accumulated and new_chunk.startswith(accumulated[:200]):  # crude repetition guard
+                # Attempt to find overlap
+                overlap_pos = new_chunk.find(accumulated[-50:])
+                if overlap_pos > 0:
+                    new_chunk = new_chunk[overlap_pos + len(accumulated[-50:]):]
+
+            # Only append if sufficiently new
+            delta = len(new_chunk)
+            if delta < continuation_min_new_chars:
+                if verbose_block_logging:
+                    print(f"ℹ️ Continuation attempt {pass_idx} yielded only {delta} chars (<{continuation_min_new_chars}); stopping.")
+                break
+
+            accumulated += ("\n" if not accumulated.endswith('\n') else "") + new_chunk
+            new_total = len(accumulated)
+            if verbose_block_logging:
+                print(f"➕ Continuation {pass_idx} appended {delta} chars (total {new_total})")
+
+            # If growth is minimal relative to previous length, stop
+            if new_total - last_len < continuation_min_new_chars:
+                if verbose_block_logging:
+                    print("ℹ️ Growth below threshold after append; stopping continuation loop.")
+                break
+            last_len = new_total
+
+        return accumulated
 
     def transcribe(
         self,
         image: Image.Image,
         prompt: Optional[str] = None,
         temperature: float = 0.0,
-        max_output_tokens: int = 500,
+        max_output_tokens: int = 2048,
+        auto_retry_on_block: bool = True,
+        safety_relax: bool = True,
+        verbose_block_logging: bool = True,
+        thinking_mode: Optional[str] = None,
+        fast_direct: bool = False,
+        fast_direct_early_exit: bool = True,
+        auto_continue: bool = False,
+        max_auto_continuations: int = 2,
+        continuation_min_new_chars: int = 50,
+        reasoning_fallback_threshold: float = 0.6,
+        record_stats_csv: Optional[str] = "gemini_runs.csv",
         **kwargs
     ) -> str:
         """
@@ -270,6 +368,7 @@ class GeminiInference(BaseAPIInference):
             prompt: Custom prompt
             temperature: Sampling temperature (0.0 = deterministic)
             max_output_tokens: Maximum tokens to generate
+            thinking_mode: Reasoning mode - "low", "high", or None (default: None for preview models uses low)
             **kwargs: Additional Gemini parameters
 
         Returns:
@@ -277,31 +376,361 @@ class GeminiInference(BaseAPIInference):
         """
         prompt = prompt or self.default_prompt
 
+        # Fast direct mode augments prompt to discourage internal reasoning
+        if fast_direct:
+            prompt = (
+                prompt
+                + "\n\nReturn the transcription immediately without extended internal reasoning. "
+                  "Do NOT spend tokens thinking; output only the raw transcribed text now."
+            )
+            if verbose_block_logging:
+                print("⚡ Fast-direct mode enabled: prompting for immediate output")
+
         # Resize if needed (Gemini supports up to 3072x3072)
         image = self.resize_image_if_needed(image, max_dimension=3072)
 
-        # Generate
-        generation_config = genai.GenerationConfig(
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            **kwargs
-        )
+        # Prepare generation config (remove unsupported response_modalities)
+        gen_config_params = {
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
+        }
 
-        response = self.model.generate_content(
-            [prompt, image],
-            generation_config=generation_config
-        )
+        is_preview_model = any(x in self.model_name.lower() for x in ['preview', 'exp', 'experimental'])
+
+        # Simulate thinking modes via token/temperature adjustments (API version lacks explicit reasoning switch)
+        if thinking_mode:
+            mode_str = thinking_mode.lower()
+            if mode_str == "low":
+                if verbose_block_logging:
+                    print("🧠 Using LOW thinking mode (direct decoding)")
+                # Keep deterministic low-temp unless user overrides
+                gen_config_params["temperature"] = temperature
+            elif mode_str == "high":
+                if verbose_block_logging:
+                    print("🧠 Using HIGH thinking mode (more tokens & slight exploration)")
+                # Increase token budget and mild temperature for more exploration
+                if max_output_tokens < 8192:
+                    gen_config_params["max_output_tokens"] = 8192
+                if temperature < 0.15:
+                    gen_config_params["temperature"] = 0.15
+        elif is_preview_model:
+            # Default to LOW style for preview to avoid wasted internal reasoning tokens
+            if verbose_block_logging:
+                print("🧠 Defaulting to LOW thinking mode for preview model (simulated)")
+
+        # Merge any additional kwargs after adjustments
+        gen_config_params.update(kwargs)
+
+        # Generate
+        generation_config = genai.GenerationConfig(**gen_config_params)
+
+        # For preview/experimental models, use relaxed safety from the start and higher token limit
+        initial_safety = None
+        
+        if safety_relax and is_preview_model:
+            if verbose_block_logging:
+                print(f"🔓 Using relaxed safety settings for preview model: {self.model_name}")
+            from google.generativeai.types import HarmCategory, HarmBlockThreshold  # type: ignore
+            initial_safety = [
+                {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+            ]
+            
+            # Preview models may use tokens for "thinking" - increase limit significantly
+            if max_output_tokens < 4096:
+                if verbose_block_logging:
+                    print(f"   Increasing max_output_tokens to 4096 for preview model")
+                max_output_tokens = 4096
+
+        # Attempt 1: generation (optionally streaming for fast_direct)
+        response = None
+        collected_stream_text: list[str] = []
+        if fast_direct:
+            try:
+                stream = self.model.generate_content(
+                    [prompt, image],
+                    generation_config=generation_config,
+                    safety_settings=initial_safety,
+                    stream=True,
+                )
+                reasoning_fallback_triggered = False
+                first_usage_meta = None
+                for event in stream:
+                    # Token usage introspection (if available)
+                    if verbose_block_logging and hasattr(event, 'usage_metadata'):
+                        meta = event.usage_metadata
+                        try:
+                            prompt_tok = getattr(meta,'prompt_token_count',None)
+                            cand_tok = getattr(meta,'candidates_token_count',None)
+                            total_tok = getattr(meta,'total_token_count',None)
+                            print(f"[tokens] prompt={prompt_tok} candidates={cand_tok} total={total_tok}")
+                            if first_usage_meta is None:
+                                first_usage_meta = (prompt_tok, cand_tok, total_tok)
+                            # Early reasoning fallback: if no emitted text yet and internal reasoning exceeded threshold
+                            if not collected_stream_text and prompt_tok is not None and total_tok is not None:
+                                internal_tok = max(0, (total_tok or 0) - (prompt_tok or 0) - (cand_tok or 0))
+                                budget = getattr(generation_config, 'max_output_tokens', max_output_tokens)
+                                if budget and internal_tok >= reasoning_fallback_threshold * budget:
+                                    if verbose_block_logging:
+                                        pct = internal_tok / budget
+                                        print(f"⏱️ Early reasoning fallback triggered: internal={internal_tok} ({pct:.0%} of budget) with no output; aborting stream.")
+                                    reasoning_fallback_triggered = True
+                                    break
+                        except Exception:
+                            pass
+                    elif verbose_block_logging and hasattr(event, 'candidates') and event.candidates:
+                        # Approximate progress by count of events
+                        print(f"[stream] event candidates={len(event.candidates)} parts={[len(getattr(c.content,'parts',[])) for c in event.candidates if hasattr(c,'content')]}")
+                    if hasattr(event, 'candidates') and event.candidates:
+                        for cand in event.candidates:
+                            if hasattr(cand, 'content') and hasattr(cand.content, 'parts'):
+                                for part in cand.content.parts:
+                                    if hasattr(part, 'text') and part.text:
+                                        collected_stream_text.append(part.text)
+                                        # Early exit once first non-empty aggregated text if enabled
+                                        if fast_direct_early_exit and ''.join(collected_stream_text).strip():
+                                            result = ''.join(collected_stream_text).strip()
+                                            if verbose_block_logging:
+                                                print(f"✅ Early streamed output ({len(result)} chars) [early-exit]")
+                                            if record_stats_csv:
+                                                try:
+                                                    from datetime import datetime
+                                                    with open(record_stats_csv,'a') as f:
+                                                        pt, ct, tt = first_usage_meta if first_usage_meta else (None,None,None)
+                                                        internal_tok = (tt - pt - ct) if (pt is not None and tt is not None and ct is not None) else None
+                                                        f.write(f"{datetime.utcnow().isoformat()},{self.model_name},{thinking_mode or 'default'},stream_early_exit,{pt},{ct},{tt},{internal_tok},{len(result)}\n")
+                                                except Exception as e:
+                                                    if verbose_block_logging:
+                                                        print(f"⚠️ Stats logging failed: {e}")
+                                            return self._maybe_continue(result, prompt, image, generation_config, initial_safety, auto_continue, max_auto_continuations, continuation_min_new_chars, verbose_block_logging)
+                # If we reach here, streaming produced no immediate text or was aborted; fall back to non-stream call
+                if verbose_block_logging:
+                    if reasoning_fallback_triggered:
+                        print("⚠️ Streaming aborted due to excessive internal reasoning; switching to standard generation.")
+                    elif collected_stream_text:
+                        print(f"ℹ️ Streaming completed. Collected {len(collected_stream_text)} fragments (total chars {len(''.join(collected_stream_text))}).")
+                    else:
+                        print("⚠️ Streaming produced no early text; falling back to standard generation")
+                if collected_stream_text and not fast_direct_early_exit:
+                    full_stream_text = ''.join(collected_stream_text).strip()
+                    if full_stream_text:
+                        if verbose_block_logging:
+                            print(f"✅ Stream finished ({len(full_stream_text)} chars) without early exit")
+                        if record_stats_csv:
+                            try:
+                                from datetime import datetime
+                                with open(record_stats_csv,'a') as f:
+                                    pt, ct, tt = first_usage_meta if first_usage_meta else (None,None,None)
+                                    internal_tok = (tt - pt - ct) if (pt is not None and tt is not None and ct is not None) else None
+                                    f.write(f"{datetime.utcnow().isoformat()},{self.model_name},{thinking_mode or 'default'},stream_full,{pt},{ct},{tt},{internal_tok},{len(full_stream_text)}\n")
+                            except Exception as e:
+                                if verbose_block_logging:
+                                    print(f"⚠️ Stats logging failed: {e}")
+                        return self._maybe_continue(full_stream_text, prompt, image, generation_config, initial_safety, auto_continue, max_auto_continuations, continuation_min_new_chars, verbose_block_logging)
+            except Exception as e:
+                if verbose_block_logging:
+                    print(f"⚠️ Streaming mode failed: {type(e).__name__}: {e}; reverting to standard generation")
+
+        # Standard (non-stream) generation path
+        try:
+            response = self.model.generate_content(
+                [prompt, image],
+                generation_config=generation_config,
+                safety_settings=initial_safety,
+            )
+            if verbose_block_logging and hasattr(response, 'candidates') and response.candidates:
+                finish_reason = getattr(response.candidates[0], 'finish_reason', None)
+                if finish_reason and finish_reason != 'STOP':
+                    print(f"⚠️  Initial attempt finish_reason: {finish_reason}")
+        except Exception as e:
+            if verbose_block_logging:
+                print(f"⚠️  Initial attempt raised exception: {type(e).__name__}: {e}")
+            if auto_retry_on_block and safety_relax:
+                response = None
+            else:
+                raise
 
         # Handle response with proper error checking
-        if not response.parts:
-            # Check for safety/block reasons
-            if hasattr(response, 'prompt_feedback'):
-                raise ValueError(f"Content generation blocked: {response.prompt_feedback}")
-            raise ValueError("No response generated. The response might have been blocked by safety filters.")
+        # Special case: if finish_reason is MAX_TOKENS (2), check if we have valid content
+        if response is not None and hasattr(response, 'candidates') and response.candidates:
+            candidate = response.candidates[0]
+            finish_reason = getattr(candidate, 'finish_reason', None)
+            if finish_reason == 2:  # MAX_TOKENS
+                if verbose_block_logging:
+                    print(f"⚠️  Hit MAX_TOKENS limit (finish_reason=2)")
+                
+                # Check if we actually got any output parts
+                has_output = False
+                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                    try:
+                        text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text')]
+                        if text_parts:
+                            result = ''.join(text_parts).strip()
+                            if result:
+                                if verbose_block_logging:
+                                    print(f"✓ Extracted partial response ({len(result)} chars)")
+                                return self._maybe_continue(result, prompt, image, generation_config, initial_safety, auto_continue, max_auto_continuations, continuation_min_new_chars, verbose_block_logging)
+                            has_output = True
+                    except Exception as e:
+                        if verbose_block_logging:
+                            print(f"   Error extracting parts: {e}")
+                
+                # No output generated - model consumed all tokens for "thinking"
+                if not has_output:
+                    if verbose_block_logging:
+                        print(f"⚠️  No output parts generated - model used all tokens for internal processing")
+                        print(f"   Attempting automatic fallback with HIGH thinking mode and expanded token budget...")
+
+                    # Automatic fallback attempt: escalate thinking mode and token budget
+                    try:
+                        fallback_tokens = max(8192, max_output_tokens * 2)
+                        if verbose_block_logging:
+                            print(f"   Fallback max_output_tokens={fallback_tokens}")
+                        fallback_config = genai.GenerationConfig(
+                            temperature=generation_config.temperature if hasattr(generation_config, 'temperature') else 1.0,
+                            max_output_tokens=fallback_tokens,
+                        )
+                        fallback_response = self.model.generate_content(
+                            [prompt, image],
+                            generation_config=fallback_config,
+                            safety_settings=initial_safety
+                        )
+                        if hasattr(fallback_response, 'candidates') and fallback_response.candidates:
+                            fb_candidate = fallback_response.candidates[0]
+                            fb_parts = []
+                            if hasattr(fb_candidate, 'content') and hasattr(fb_candidate.content, 'parts'):
+                                fb_parts = [part.text for part in fb_candidate.content.parts if hasattr(part, 'text')]
+                            if fb_parts:
+                                fb_text = ''.join(fb_parts).strip()
+                                if fb_text:
+                                    if verbose_block_logging:
+                                        print(f"✅ Fallback succeeded ({len(fb_text)} chars)")
+                                    if record_stats_csv:
+                                        try:
+                                            from datetime import datetime
+                                            with open(record_stats_csv,'a') as f:
+                                                f.write(f"{datetime.utcnow().isoformat()},{self.model_name},{thinking_mode or 'default'},fallback_success,,,,,{len(fb_text)}\n")
+                                        except Exception as e:
+                                            if verbose_block_logging:
+                                                print(f"⚠️ Stats logging failed: {e}")
+                                    return self._maybe_continue(fb_text, prompt, image, generation_config, initial_safety, auto_continue, max_auto_continuations, continuation_min_new_chars, verbose_block_logging)
+                            if verbose_block_logging:
+                                print("❌ Fallback also produced no text parts")
+                    except Exception as fb_e:
+                        if verbose_block_logging:
+                            print(f"❌ Fallback attempt failed: {fb_e}")
+
+                    if verbose_block_logging:
+                        print(f"   Giving up after fallback. Recommend switching to stable model (e.g., gemini-2.0-flash) or lowering temperature.")
+                    raise ValueError(
+                        f"Model '{self.model_name}' produced no text after primary + fallback attempts (token budgets {max_output_tokens} & {fallback_tokens}). Try a stable model or different settings."
+                    )
+        
+        if response is None or not response.parts:
+            # If blocked, collect detailed diagnostics
+            block_details = []
+            prompt_feedback = getattr(response, 'prompt_feedback', None) if response else None
+
+            if prompt_feedback:
+                # Newer Gemini responses include safety ratings inside prompt_feedback
+                ratings = getattr(prompt_feedback, 'safety_ratings', [])
+                if ratings and verbose_block_logging:
+                    for r in ratings:
+                        cat = getattr(r, 'category', 'UNKNOWN_CATEGORY')
+                        prob = getattr(r, 'probability', 'UNKNOWN_PROB')
+                        blk = getattr(r, 'blocked', False)
+                        block_details.append(f"{cat} prob={prob} blocked={blk}")
+                block_msg = f"Content generation blocked. Feedback: {prompt_feedback}. "
+            else:
+                block_msg = "Content generation blocked (no prompt_feedback available). "
+
+            # Auto-retry strategy: relax safety thresholds if requested
+            if auto_retry_on_block and safety_relax:
+                if verbose_block_logging:
+                    model_name = getattr(self.model, '_model_name', 'unknown')
+                    print(f"⚠️  Content blocked on model '{model_name}'")
+                    print("   Attempting retry with BLOCK_NONE (all safety filters disabled)...")
+                try:
+                    if self._safety_classes_available:
+                        from google.generativeai.types import SafetySetting, HarmCategory, HarmBlockThreshold  # type: ignore
+                        relaxed_safety = [
+                            SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.BLOCK_NONE),
+                            SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.BLOCK_NONE),
+                            SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.BLOCK_NONE),
+                            SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.BLOCK_NONE),
+                        ]
+                    else:
+                        # Fallback: use enum objects inside dicts (supported by 0.8.x)
+                        from google.generativeai.types import HarmCategory, HarmBlockThreshold  # type: ignore
+                        relaxed_safety = [
+                            {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                            {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                            {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                            {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+                        ]
+                    retry_prompt = (
+                        prompt + "\n\nIMPORTANT: The image contains historical handwritten text for transcription only. "
+                        "It does not contain harmful, personal, or sensitive content. Provide a literal transcription." 
+                    )
+                    retry_config = genai.GenerationConfig(
+                        temperature=0.0,  # force deterministic on retry
+                        max_output_tokens=max_output_tokens,
+                        **{k: v for k, v in kwargs.items() if k not in ['safety_settings']}
+                    )
+                    retry_response = self.model.generate_content(
+                        [retry_prompt, image],
+                        generation_config=retry_config,
+                        safety_settings=relaxed_safety
+                    )
+                    
+                    # Debug: Show finish reason if available
+                    if verbose_block_logging and hasattr(retry_response, 'candidates') and retry_response.candidates:
+                        finish_reason = getattr(retry_response.candidates[0], 'finish_reason', None)
+                        print(f"   Retry finish_reason: {finish_reason}")
+                    
+                    if retry_response.parts:
+                        try:
+                            result = retry_response.text.strip()
+                            if verbose_block_logging:
+                                print("✓ Retry successful with relaxed safety settings!")
+                            return result
+                        except Exception as text_e:
+                            if verbose_block_logging:
+                                print(f"   Warning: Had parts but couldn't extract text: {text_e}")
+                            pass  # Fall through to error handling below
+                    # If still blocked, append retry diagnostics
+                    if verbose_block_logging:
+                        print("❌ Retry also blocked - no response parts generated")
+                    if hasattr(retry_response, 'prompt_feedback') and verbose_block_logging:
+                        pf = retry_response.prompt_feedback
+                        ratings2 = getattr(pf, 'safety_ratings', [])
+                        for r in ratings2:
+                            cat = getattr(r, 'category', 'UNKNOWN_CATEGORY')
+                            prob = getattr(r, 'probability', 'UNKNOWN_PROB')
+                            blk = getattr(r, 'blocked', False)
+                            block_details.append(f"(retry) {cat} prob={prob} blocked={blk}")
+                except Exception as retry_e:
+                    if verbose_block_logging:
+                        print(f"❌ Retry exception: {retry_e}")
+                    block_details.append(f"Retry attempt failed: {retry_e}")
+
+            detail_str = " | ".join(block_details) if block_details else "(no detailed safety ratings)"
+            raise ValueError(block_msg + detail_str)
 
         # Extract text from response
         try:
-            return response.text.strip()
+            result_text = response.text.strip()
+            if record_stats_csv:
+                try:
+                    from datetime import datetime
+                    with open(record_stats_csv,'a') as f:
+                        f.write(f"{datetime.utcnow().isoformat()},{self.model_name},{thinking_mode or 'default'},final_success,,,,,{len(result_text)}\n")
+                except Exception as e:
+                    if verbose_block_logging:
+                        print(f"⚠️ Stats logging failed: {e}")
+            return result_text
         except ValueError as e:
             # Response might be blocked or incomplete
             if hasattr(response, 'candidates') and response.candidates:
@@ -437,6 +866,8 @@ GEMINI_MODELS_FALLBACK = [
     # Experimental (may not be available to all users)
     "gemini-exp-1206",
     "gemini-exp-1121",
+    # Gemini 3 preview models (latest, may have restrictions)
+    "gemini-3-pro-preview",
 ]
 
 CLAUDE_MODELS_FALLBACK = [

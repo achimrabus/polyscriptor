@@ -70,6 +70,12 @@ class CommercialAPIEngine(HTREngine):
         self._api_key_edit: Optional[QLineEdit] = None
         self._show_key_check: Optional[QCheckBox] = None
         self._prompt_edit: Optional[QTextEdit] = None
+        self._thinking_combo: Optional[QComboBox] = None
+        self._temperature_edit: Optional[QLineEdit] = None
+        self._max_tokens_edit: Optional[QLineEdit] = None
+        self._early_exit_check: Optional[QCheckBox] = None
+        self._auto_continue_check: Optional[QCheckBox] = None
+        self._max_continuations_edit: Optional[QLineEdit] = None
 
     def get_name(self) -> str:
         return "Commercial APIs"
@@ -89,7 +95,7 @@ class CommercialAPIEngine(HTREngine):
             return "No API libraries installed. Install at least one: openai, google-generativeai, or anthropic"
         return ""
 
-    def get_config_widget(self) -> QWidget:
+    def get_config_widget(self):
         """Create Commercial API configuration panel."""
         if self._config_widget is not None:
             return self._config_widget
@@ -159,7 +165,7 @@ class CommercialAPIEngine(HTREngine):
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
 
-            # API key
+        # API key
         key_group = QGroupBox("API Key")
         key_layout = QVBoxLayout()
 
@@ -183,8 +189,8 @@ class CommercialAPIEngine(HTREngine):
         key_group.setLayout(key_layout)
         layout.addWidget(key_group)
 
-        # Prompt section (custom prompt)
-        prompt_group = QGroupBox("Custom Prompt (Optional)")
+        # Prompt & Sampling section
+        prompt_group = QGroupBox("Prompt & Sampling (Optional)")
         prompt_layout = QVBoxLayout()
 
         self._prompt_edit = QTextEdit()
@@ -192,8 +198,101 @@ class CommercialAPIEngine(HTREngine):
         self._prompt_edit.setMaximumHeight(100)
         prompt_layout.addWidget(self._prompt_edit)
 
+        # Temperature control
+        temp_row = QHBoxLayout()
+        temp_row.addWidget(QLabel("Temperature:"))
+        self._temperature_edit = QLineEdit()
+        self._temperature_edit.setPlaceholderText("1.0 (default)")
+        self._temperature_edit.setToolTip(
+            "Sampling temperature (web default ~1.0).\n"
+            "Use 0-0.3 for deterministic; >1 can increase variability."
+        )
+        self._temperature_edit.setMaximumWidth(90)
+        temp_row.addWidget(self._temperature_edit)
+        temp_row.addStretch()
+        prompt_layout.addLayout(temp_row)
+
+        # Max output tokens control
+        tokens_row = QHBoxLayout()
+        tokens_row.addWidget(QLabel("Max output tokens:"))
+        self._max_tokens_edit = QLineEdit()
+        self._max_tokens_edit.setPlaceholderText("4096 preview / 2048 default")
+        self._max_tokens_edit.setToolTip(
+            "Upper limit on generated tokens. Lowering may force earlier output.\n"
+            "Raising (e.g. 8192) may help high reasoning but risks long 'thinking'."
+        )
+        self._max_tokens_edit.setMaximumWidth(130)
+        tokens_row.addWidget(self._max_tokens_edit)
+        tokens_row.addStretch()
+        prompt_layout.addLayout(tokens_row)
+
         prompt_group.setLayout(prompt_layout)
         layout.addWidget(prompt_group)
+
+        # Thinking Mode section (for Gemini models)
+        thinking_group = QGroupBox("Thinking Mode (Gemini only)")
+        thinking_layout = QVBoxLayout()
+        
+        thinking_row = QHBoxLayout()
+        thinking_row.addWidget(QLabel("Reasoning:"))
+        self._thinking_combo = QComboBox()
+        self._thinking_combo.addItems(["Auto (Low for preview)", "Low (Fast)", "High (More reasoning)"])
+        self._thinking_combo.setToolTip(
+            "Low: Fast, direct output\n"
+            "High: Slower, uses more tokens for reasoning\n"
+            "Auto: Uses Low for preview models to avoid token waste"
+        )
+        thinking_row.addWidget(self._thinking_combo)
+        thinking_row.addStretch()
+        thinking_layout.addLayout(thinking_row)
+        
+        thinking_group.setLayout(thinking_layout)
+        layout.addWidget(thinking_group)
+
+        # Advanced Gemini controls
+        advanced_group = QGroupBox("Gemini Advanced")
+        adv_layout = QVBoxLayout()
+
+        adv_row1 = QHBoxLayout()
+        self._early_exit_check = QCheckBox("Early exit on first chunk")
+        self._early_exit_check.setChecked(True)
+        self._early_exit_check.setToolTip("If checked, streaming returns after first non-empty text chunk. Uncheck to collect full stream.")
+        adv_row1.addWidget(self._early_exit_check)
+        adv_layout.addLayout(adv_row1)
+
+        adv_row2 = QHBoxLayout()
+        self._auto_continue_check = QCheckBox("Auto continuation passes")
+        self._auto_continue_check.setToolTip("If checked, performs additional continuation calls to capture missed trailing text.")
+        adv_row2.addWidget(self._auto_continue_check)
+        self._max_continuations_edit = QLineEdit()
+        self._max_continuations_edit.setPlaceholderText("max passes (e.g. 2)")
+        self._max_continuations_edit.setMaximumWidth(90)
+        adv_row2.addWidget(self._max_continuations_edit)
+        adv_layout.addLayout(adv_row2)
+
+        adv_row3 = QHBoxLayout()
+        self._min_new_chars_edit = QLineEdit()
+        self._min_new_chars_edit.setPlaceholderText("min new chars (50)")
+        self._min_new_chars_edit.setToolTip("Minimum number of new characters required to accept a continuation chunk.")
+        self._min_new_chars_edit.setMaximumWidth(110)
+        adv_row3.addWidget(self._min_new_chars_edit)
+        self._low_initial_tokens_edit = QLineEdit()
+        self._low_initial_tokens_edit.setPlaceholderText("low-mode tokens (6144)")
+        self._low_initial_tokens_edit.setToolTip("Initial max_output_tokens for LOW thinking before fallback escalation.")
+        self._low_initial_tokens_edit.setMaximumWidth(140)
+        adv_row3.addWidget(self._low_initial_tokens_edit)
+        adv_layout.addLayout(adv_row3)
+
+        adv_row4 = QHBoxLayout()
+        self._reasoning_fallback_edit = QLineEdit()
+        self._reasoning_fallback_edit.setPlaceholderText("fallback % (0.6)")
+        self._reasoning_fallback_edit.setToolTip("Fraction of token budget consumed internally (no output) that triggers early fallback.")
+        self._reasoning_fallback_edit.setMaximumWidth(130)
+        adv_row4.addWidget(self._reasoning_fallback_edit)
+        adv_layout.addLayout(adv_row4)
+
+        advanced_group.setLayout(adv_layout)
+        layout.addWidget(advanced_group)
 
         layout.addStretch()
         widget.setLayout(layout)
@@ -453,7 +552,116 @@ class CommercialAPIEngine(HTREngine):
 
             # All API clients have transcribe() method
             # It returns a string directly, not a dict
-            text = self.model.transcribe(pil_image, prompt=custom_prompt)
+            # Enable retry logic for Gemini to handle content blocking
+            if self._current_provider == "gemini":
+                # Get thinking mode setting
+                thinking_mode = None
+                temperature = None
+                if self._thinking_combo is not None:
+                    thinking_text = self._thinking_combo.currentText()
+                    if "Low" in thinking_text:
+                        thinking_mode = "low"
+                        fast_direct = True  # low mode: request immediate output
+                    elif "High" in thinking_text:
+                        thinking_mode = "high"
+                    # else: Auto = None (default)
+                if self._temperature_edit is not None:
+                    t_text = self._temperature_edit.text().strip()
+                    if t_text:
+                        try:
+                            temperature = float(t_text)
+                        except ValueError:
+                            temperature = None
+                max_tokens = None
+                if self._max_tokens_edit is not None:
+                    mt_text = self._max_tokens_edit.text().strip()
+                    if mt_text:
+                        try:
+                            max_tokens = int(mt_text)
+                        except ValueError:
+                            max_tokens = None
+                fast_direct_early_exit = True
+                if self._early_exit_check is not None and not self._early_exit_check.isChecked():
+                    fast_direct_early_exit = False
+                auto_continue = False
+                max_auto_continuations = 0
+                if self._auto_continue_check is not None and self._auto_continue_check.isChecked():
+                    auto_continue = True
+                    if self._max_continuations_edit is not None:
+                        mc_text = self._max_continuations_edit.text().strip()
+                        if mc_text:
+                            try:
+                                max_auto_continuations = int(mc_text)
+                            except ValueError:
+                                max_auto_continuations = 2
+                        else:
+                            max_auto_continuations = 2
+                
+                continuation_min_new_chars = 50
+                if hasattr(self, '_min_new_chars_edit') and self._min_new_chars_edit is not None:
+                    mnc_text = self._min_new_chars_edit.text().strip()
+                    if mnc_text:
+                        try:
+                            continuation_min_new_chars = int(mnc_text)
+                        except ValueError:
+                            continuation_min_new_chars = 50
+                reasoning_fallback_threshold = 0.6
+                if hasattr(self, '_reasoning_fallback_edit') and self._reasoning_fallback_edit is not None:
+                    rft_text = self._reasoning_fallback_edit.text().strip()
+                    if rft_text:
+                        try:
+                            reasoning_fallback_threshold = float(rft_text)
+                        except ValueError:
+                            reasoning_fallback_threshold = 0.6
+                if thinking_mode == 'low' and hasattr(self, '_low_initial_tokens_edit') and self._low_initial_tokens_edit is not None:
+                    lit_text = self._low_initial_tokens_edit.text().strip()
+                    if lit_text:
+                        try:
+                            lit_val = int(lit_text)
+                            if lit_val > 0:
+                                max_tokens = lit_val
+                        except ValueError:
+                            pass
+                text = self.model.transcribe(
+                    pil_image, 
+                    prompt=custom_prompt,
+                    temperature=temperature if temperature is not None else 1.0,
+                    max_output_tokens=max_tokens if max_tokens is not None else 2048,
+                    auto_retry_on_block=True,
+                    safety_relax=True,
+                    verbose_block_logging=True,
+                    thinking_mode=thinking_mode,
+                    fast_direct=fast_direct if 'fast_direct' in locals() else False,
+                    fast_direct_early_exit=fast_direct_early_exit,
+                    auto_continue=auto_continue,
+                    max_auto_continuations=max_auto_continuations,
+                    continuation_min_new_chars=continuation_min_new_chars,
+                    reasoning_fallback_threshold=reasoning_fallback_threshold,
+                    record_stats_csv="gemini_runs.csv"
+                )
+            else:
+                temperature = None
+                if self._temperature_edit is not None:
+                    t_text = self._temperature_edit.text().strip()
+                    if t_text:
+                        try:
+                            temperature = float(t_text)
+                        except ValueError:
+                            temperature = None
+                max_tokens = None
+                if self._max_tokens_edit is not None:
+                    mt_text = self._max_tokens_edit.text().strip()
+                    if mt_text:
+                        try:
+                            max_tokens = int(mt_text)
+                        except ValueError:
+                            max_tokens = None
+                text = self.model.transcribe(
+                    pil_image,
+                    prompt=custom_prompt,
+                    temperature=temperature if temperature is not None else 1.0,
+                    max_output_tokens=max_tokens if max_tokens is not None else 2048,
+                )
 
             return TranscriptionResult(
                 text=text if text else "",
