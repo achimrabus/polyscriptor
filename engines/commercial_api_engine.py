@@ -233,6 +233,13 @@ class CommercialAPIEngine(HTREngine):
         thinking_group = QGroupBox("Thinking Mode (Gemini only)")
         thinking_layout = QVBoxLayout()
         
+        # Warning label for preview models
+        warning_label = QLabel("⚠️ Preview models (gemini-3-pro-preview) are experimental and can be slow/expensive.\n"
+                              "💡 For production use, select gemini-2.0-flash or gemini-1.5-pro instead.")
+        warning_label.setWordWrap(True)
+        warning_label.setStyleSheet("color: #cc6600; font-size: 9pt; padding: 5px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 3px;")
+        thinking_layout.addWidget(warning_label)
+        
         thinking_row = QHBoxLayout()
         thinking_row.addWidget(QLabel("Reasoning:"))
         self._thinking_combo = QComboBox()
@@ -639,8 +646,14 @@ class CommercialAPIEngine(HTREngine):
                             lit_val = int(lit_text)
                             if lit_val > 0:
                                 max_tokens = lit_val
+                                print(f"🔧 LOW thinking mode: overriding max_output_tokens to {max_tokens}")
                         except ValueError:
                             pass  # Keep existing max_tokens
+                
+                # Debug: show final token budget
+                final_max_tokens = max_tokens if max_tokens is not None else 2048
+                print(f"📊 Final settings: thinking_mode={thinking_mode}, max_output_tokens={final_max_tokens}, temp={temperature if temperature is not None else 1.0}")
+                
                 text = self.model.transcribe(
                     pil_image, 
                     prompt=custom_prompt,

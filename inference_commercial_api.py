@@ -441,8 +441,10 @@ class GeminiInference(BaseAPIInference):
             # Preview models may use tokens for "thinking" - increase limit significantly
             if max_output_tokens < 4096:
                 if verbose_block_logging:
-                    print(f"   Increasing max_output_tokens to 4096 for preview model")
+                    print(f"   Increasing max_output_tokens from {max_output_tokens} to 4096 for preview model")
                 max_output_tokens = 4096
+            elif verbose_block_logging:
+                print(f"   Using max_output_tokens={max_output_tokens} (from config)")
 
         # Attempt 1: generation (optionally streaming for fast_direct)
         response = None
@@ -584,10 +586,11 @@ class GeminiInference(BaseAPIInference):
                         print(f"   Attempting automatic fallback with HIGH thinking mode and expanded token budget...")
 
                     # Automatic fallback attempt: escalate thinking mode and token budget
+                    # Cap fallback at 8192 to avoid excessive costs (was: max(8192, max_output_tokens * 2))
                     try:
-                        fallback_tokens = max(8192, max_output_tokens * 2)
+                        fallback_tokens = 8192
                         if verbose_block_logging:
-                            print(f"   Fallback max_output_tokens={fallback_tokens}")
+                            print(f"   Fallback max_output_tokens={fallback_tokens} (capped for cost control)")
                         fallback_config = genai.GenerationConfig(
                             temperature=generation_config.temperature if hasattr(generation_config, 'temperature') else 1.0,
                             max_output_tokens=fallback_tokens,
