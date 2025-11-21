@@ -51,15 +51,25 @@ class PyLaiaDataset(Dataset):
             augment: Apply data augmentation
         """
         self.data_dir = Path(data_dir)
-        self.images_dir = self.data_dir / "images"
-        self.gt_dir = self.data_dir / "gt"
         self.img_height = img_height
         self.augment = augment
-        
-        # Load list of samples
+
+        # Load list of samples (new format: "image_path.png text")
         list_path = self.data_dir / list_file
+        self.samples = []  # List of (image_path, text) tuples
         with open(list_path, 'r', encoding='utf-8') as f:
-            self.sample_ids = [line.strip() for line in f if line.strip()]
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # CRITICAL: Filenames can contain spaces! Split on ".png " not first space
+                # Example: "line_images/0210_apo_2023-06-20 11_09_01_line.png кꙋскѝ жꙋючѝ"
+                if '.png ' in line:
+                    img_path, text = line.split('.png ', 1)
+                    img_path = img_path + '.png'  # Add back the extension
+                    self.samples.append((img_path, text))
+                else:
+                    logger.warning(f"Skipping malformed line (no '.png '): {line[:100]}")
         
         # Load vocabulary (handle both list and KALDI formats)
         symbols_path = self.data_dir / symbols_file
@@ -98,8 +108,8 @@ class PyLaiaDataset(Dataset):
         elif '<space>' in self.char2idx:
             space_idx = self.char2idx['<space>']
             self.idx2char[space_idx] = ' '
-        
-        logger.info(f"Loaded {len(self.sample_ids)} samples from {list_path}")
+
+        logger.info(f"Loaded {len(self.samples)} samples from {list_path}")
         logger.info(f"Vocabulary size: {len(self.symbols)} characters")
         
         # Transkribus-like preprocessing: Deslope, Deslant, Stretch, Enhance
@@ -108,24 +118,24 @@ class PyLaiaDataset(Dataset):
                 transforms.RandomAffine(degrees=2, translate=(0.02, 0.02), scale=(0.98, 1.02), shear=2),
                 transforms.ColorJitter(brightness=0.3, contrast=0.3),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5])
+                transforms.Normalize(mean=[0.5], std=[0.5])  # Grayscale
             ])
         else:
             self.transform = transforms.Compose([
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5], std=[0.5])
+                transforms.Normalize(mean=[0.5], std=[0.5])  # Grayscale
             ])
     
     def __len__(self):
-        return len(self.sample_ids)
-    
+        return len(self.samples)
+
     def __getitem__(self, idx):
-        sample_id = self.sample_ids[idx]
-        
-        # Load image
-        img_path = self.images_dir / f"{sample_id}.png"
-        image = Image.open(img_path).convert('L')  # Grayscale
-        
+        img_rel_path, text = self.samples[idx]
+
+        # Load image (relative to data_dir)
+        img_path = self.data_dir / img_rel_path
+        image = Image.open(img_path).convert('L')  # Grayscale (matches Church Slavonic 2.89% CER)
+
         # Normalize height while preserving aspect ratio
         width, height = image.size
         if height > 0:
@@ -134,16 +144,11 @@ class PyLaiaDataset(Dataset):
             new_width = min(new_width, 10000)
         else:
             new_width = width
-        
+
         image = image.resize((new_width, self.img_height), Image.Resampling.LANCZOS)
-        
+
         # Apply transforms
         image = self.transform(image)
-        
-        # Load ground truth
-        gt_path = self.gt_dir / f"{sample_id}.txt"
-        with open(gt_path, 'r', encoding='utf-8') as f:
-            text = f.read().strip()
         
         # Convert text to indices
         target = []
@@ -156,8 +161,8 @@ class PyLaiaDataset(Dataset):
                 target.append(space_idx)
             else:
                 target.append(self.char2idx.get(char, 0))
-        
-        return image, torch.LongTensor(target), text, sample_id
+
+        return image, torch.LongTensor(target), text, img_rel_path
 
 
 def collate_fn(batch):
@@ -355,6 +360,7 @@ class PyLaiaTrainer:
         # Training history
         self.history = {
             'train_loss': [],
+            'train_cer': [],  # NEW: Track training CER to detect overfitting
             'val_loss': [],
             'val_cer': [],
             'learning_rate': []
@@ -393,17 +399,13 @@ class PyLaiaTrainer:
         num_batches = 0
 
         pbar = tqdm(self.train_loader, desc="Training")
-        logger.info("Starting training loop iteration")
         for batch_idx, (images, targets, input_lengths, target_lengths, _, _) in enumerate(pbar):
-            logger.info(f"Batch {batch_idx}: Loading data to device")
             images = images.to(self.device)
             targets = targets.to(self.device)
             target_lengths = target_lengths.to(self.device)
 
-            logger.info(f"Batch {batch_idx}: Running forward pass")
             # Forward pass
             log_probs = self.model(images)
-            logger.info(f"Batch {batch_idx}: Forward pass complete")
             
             # Use actual output sequence length from model
             batch_size = images.size(0)
@@ -461,9 +463,46 @@ class PyLaiaTrainer:
         
         # Calculate CER
         cer = compute_cer(all_refs, all_preds)
-        
+
         return avg_loss, cer
-    
+
+    def calculate_train_cer(self):
+        """Calculate CER on training set (without augmentation, for overfitting detection)."""
+        self.model.eval()
+        all_preds = []
+        all_refs = []
+
+        # Sample a subset of training data for speed (e.g., 10% or max 1000 samples)
+        num_samples = min(1000, len(self.train_loader.dataset) // 10)
+        indices = torch.randperm(len(self.train_loader.dataset))[:num_samples]
+
+        # Temporarily disable augmentation
+        original_augment = self.train_loader.dataset.augment if hasattr(self.train_loader.dataset, 'augment') else False
+        if hasattr(self.train_loader.dataset, 'augment'):
+            self.train_loader.dataset.augment = False
+
+        with torch.no_grad():
+            for idx in tqdm(indices, desc="Train CER", leave=False):
+                # Get sample: dataset returns (image, target, text, img_path)
+                img, target, text, img_path = self.train_loader.dataset[idx.item()]
+
+                # Run inference
+                img = img.unsqueeze(0).to(self.device)
+                log_probs = self.model(img)
+
+                # Decode
+                pred = self.decode_predictions(log_probs)[0]
+                all_preds.append(pred)
+                all_refs.append(text)
+
+        # Restore augmentation
+        if hasattr(self.train_loader.dataset, 'augment'):
+            self.train_loader.dataset.augment = original_augment
+
+        # Calculate CER
+        cer = compute_cer(all_refs, all_preds)
+        return cer
+
     def train(self):
         """Main training loop."""
         logger.info("Starting training...")
@@ -478,22 +517,32 @@ class PyLaiaTrainer:
             
             # Train
             train_loss = self.train_epoch()
-            
+
+            # Calculate training CER (on subset, without augmentation)
+            train_cer = self.calculate_train_cer()
+
             # Validate
             val_loss, val_cer = self.validate()
-            
+
             # Update learning rate
             self.scheduler.step(val_loss)
             current_lr = self.optimizer.param_groups[0]['lr']
-            
+
             # Log metrics
             logger.info(f"Train loss: {train_loss:.4f}")
+            logger.info(f"Train CER:  {train_cer*100:.2f}%")
             logger.info(f"Val loss:   {val_loss:.4f}")
             logger.info(f"Val CER:    {val_cer*100:.2f}%")
             logger.info(f"LR:         {current_lr:.6f}")
-            
+
+            # Log overfitting indicator
+            if train_cer < val_cer:
+                gap = (val_cer - train_cer) * 100
+                logger.info(f"⚠️  Overfitting gap: {gap:.2f}% (Val CER > Train CER)")
+
             # Update history
             self.history['train_loss'].append(train_loss)
+            self.history['train_cer'].append(train_cer)
             self.history['val_loss'].append(val_loss)
             self.history['val_cer'].append(val_cer)
             self.history['learning_rate'].append(current_lr)

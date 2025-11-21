@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 import argparse
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 import numpy as np
 from tqdm import tqdm
 import json
@@ -209,7 +209,29 @@ class TranskribusParser:
         # Increase PIL size limit for high-resolution scans
         Image.MAX_IMAGE_PIXELS = None
         try:
-            page_image = Image.open(image_path).convert('RGB')
+            page_image = Image.open(image_path)
+
+            # ⚠️ CRITICAL FIX (2025-11-21): Apply EXIF orientation
+            # ============================================================
+            # JPEG files may have EXIF orientation tags (6=90°CW, 8=90°CCW)
+            # indicating they're stored rotated. Image.open() does NOT
+            # auto-rotate, so PAGE XML coordinates (which assume correct
+            # orientation) will be misaligned.
+            #
+            # Impact: In Prosta Mova V2/V3, 32% of training data had EXIF
+            # rotation tags, resulting in vertical text in line images.
+            # This caused training to plateau at 19% CER.
+            #
+            # Fix: ImageOps.exif_transpose() reads EXIF tag and rotates
+            # the image to correct orientation before we apply PAGE XML
+            # coordinates.
+            #
+            # DO NOT REMOVE THIS LINE - it prevents data quality bugs.
+            # See: PREPROCESSING_CHECKLIST.md, INVESTIGATION_SUMMARY.md
+            # ============================================================
+            page_image = ImageOps.exif_transpose(page_image)
+
+            page_image = page_image.convert('RGB')
         except Exception as e:
             print(f"Error opening image {image_path}: {e}")
             return lines_data
