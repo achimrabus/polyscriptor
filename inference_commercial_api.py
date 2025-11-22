@@ -358,6 +358,8 @@ class GeminiInference(BaseAPIInference):
         continuation_min_new_chars: int = 50,
         reasoning_fallback_threshold: float = 0.6,
         record_stats_csv: Optional[str] = "gemini_runs.csv",
+        apply_restriction_prompt: bool = True,
+        fallback_max_output_tokens: int = 8192,
         **kwargs
     ) -> str:
         """
@@ -375,6 +377,21 @@ class GeminiInference(BaseAPIInference):
             Transcribed text
         """
         prompt = prompt or self.default_prompt
+
+        # Determine if this is a preview/experimental model early (needed for restriction injection)
+        is_preview_model = any(x in self.model_name.lower() for x in ['preview', 'exp', 'experimental'])
+
+        # Restriction prompt injection to minimize hidden reasoning token burn on preview models
+        # Added by request: enforce direct transcription only; avoid internal planning verbosity.
+        if apply_restriction_prompt and is_preview_model and "INSTRUCTION:" not in prompt:
+            restriction = (
+                "INSTRUCTION: Provide ONLY the direct diplomatic transcription of the Church Slavonic handwritten text. "
+                "Output the raw transcription characters with no explanations, commentary, translation, metadata, or reasoning steps. "
+                "Do not describe the image. Do not plan. Do not restate these instructions."
+            )
+            prompt = restriction + "\n\n" + prompt
+            if verbose_block_logging:
+                print("🛡️ Applied restriction prompt to reduce internal reasoning usage for preview model.")
 
         # Fast direct mode augments prompt to discourage internal reasoning
         if fast_direct:
@@ -395,7 +412,7 @@ class GeminiInference(BaseAPIInference):
             "max_output_tokens": max_output_tokens,
         }
 
-        is_preview_model = any(x in self.model_name.lower() for x in ['preview', 'exp', 'experimental'])
+    # is_preview_model already computed above
 
         # Simulate thinking modes via token/temperature adjustments (API version lacks explicit reasoning switch)
         if thinking_mode:
@@ -586,11 +603,11 @@ class GeminiInference(BaseAPIInference):
                         print(f"   Attempting automatic fallback with HIGH thinking mode and expanded token budget...")
 
                     # Automatic fallback attempt: escalate thinking mode and token budget
-                    # Cap fallback at 8192 to avoid excessive costs (was: max(8192, max_output_tokens * 2))
+                    # Allow configurable fallback cap (page-wise recognition may require >8192)
                     try:
-                        fallback_tokens = 8192
+                        fallback_tokens = fallback_max_output_tokens if fallback_max_output_tokens and fallback_max_output_tokens > 0 else 8192
                         if verbose_block_logging:
-                            print(f"   Fallback max_output_tokens={fallback_tokens} (capped for cost control)")
+                            print(f"   Fallback max_output_tokens={fallback_tokens} (configurable cap)")
                         fallback_config = genai.GenerationConfig(
                             temperature=generation_config.temperature if hasattr(generation_config, 'temperature') else 1.0,
                             max_output_tokens=fallback_tokens,

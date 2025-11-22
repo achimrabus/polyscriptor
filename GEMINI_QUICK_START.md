@@ -19,7 +19,7 @@
 1. Launch GUI: `python transcription_gui_party.py` (or your preferred GUI entry point)
 2. Select **Commercial APIs** engine
 3. Choose provider: **Gemini**
-4. Select model: **gemini-3-pro-preview** (or `gemini-2.0-flash` for stable)
+4. Select model: **gemini-3-pro-preview** (restriction prompt auto-injected)
 5. Thinking mode: **Auto (Low for preview)** ← Recommended
 6. Click **Transcribe**
 
@@ -69,7 +69,7 @@
 **Solution**: Model consumed tokens internally. System will auto-fallback. If persistent:
 - Increase **Low-mode tokens** to 7168 or 8192.
 - Switch to **High (More reasoning)** thinking mode.
-- Try stable model `gemini-2.0-flash` instead of preview.
+   (Model switching to flash/pro not recommended for Church Slavonic fidelity.)
 
 ### Problem: Continuation adding duplicate text
 **Solution**: Increase **Min new chars** threshold to 75 or 100.
@@ -85,16 +85,8 @@
 
 ## Recommended Workflows
 
-### 1. Fast Batch Processing
-```
-Model: gemini-2.0-flash
-Thinking: Auto
-Temperature: 1.0
-Max tokens: 2048
-Early exit: ✓
-Auto continuation: ✗
-```
-**Use when**: Processing hundreds of clear, short lines; need speed over perfection.
+### Restriction Prompt Behavior
+Preview model calls automatically prepend a concise instruction limiting internal reasoning and enforcing direct transcription output.
 
 ### 2. Church Slavonic Manuscripts (Default)
 ```
@@ -110,7 +102,7 @@ Fallback %: 0.6
 ```
 **Use when**: Transcribing Cyrillic manuscripts; balance speed and accuracy.
 
-### 3. Maximum Accuracy
+### 3. Maximum Accuracy (Fallback Path)
 ```
 Model: gemini-3-pro-preview
 Thinking: High (More reasoning)
@@ -121,7 +113,7 @@ Auto continuation: ✓ (passes=3)
 Min new chars: 50
 Fallback %: 0.7
 ```
-**Use when**: Complex, heavily abbreviated manuscripts; willing to wait 10-20s per line.
+**Use when**: Complex, heavily abbreviated manuscripts; willing to trade speed for completeness. Restriction prompt still applied.
 
 ## Testing Your Setup
 

@@ -35,86 +35,33 @@ Now shows:
 ```
 This confirms your LOW-mode token setting is being applied.
 
-### 3. **Added Warning Banner in GUI**
+### 3. **Restriction Prompt Injection (Replacing Prior Banner)**
+Automatic injection for preview models:
 ```
-⚠️ Preview models (gemini-3-pro-preview) are experimental and can be slow/expensive.
-💡 For production use, select gemini-2.0-flash or gemini-1.5-pro instead.
+INSTRUCTION: Provide ONLY the direct diplomatic transcription ... (see code)
 ```
-Appears at top of "Thinking Mode (Gemini only)" section.
+This replaces the prior GUI warning banner and focuses on reducing hidden reasoning token burn without forcing model switches that are unsuitable for Church Slavonic.
 
 ## Recommended Solutions
 
-### 🎯 **Option 1: Switch to Stable Model (RECOMMENDED)**
+### 🎯 **Primary Strategy: Preview Model + Restriction Prompt**
+Church Slavonic manuscripts require `gemini-3-pro-preview` for acceptable accuracy. Instead of switching models, we now:
+1. Inject a restriction instruction to reduce internal reasoning token consumption.
+2. Use LOW thinking + fast-direct for early emission.
+3. Trigger early fallback if internal reasoning reaches threshold with no output.
 
-**Use**: `gemini-2.0-flash` or `gemini-1.5-pro-002`
-
-**Settings**:
-```
-Model: gemini-2.0-flash
-Thinking: Auto (Low for preview)
-Temperature: 1.0
-Max tokens: 2048
-Early exit: ✓ Checked
-Auto continuation: ✗ Unchecked
-```
-
-**Expected results**:
-- ⚡ **10-30 seconds** per page (vs 290s)
-- 💰 **~2000 tokens** total (vs 12,288)
-- ✅ **Reliable output** without internal reasoning burn
-
-**Why it works**:
-- Stable models don't waste tokens on hidden "thinking"
-- Flash model optimized for speed
-- Lower cost per token
-
----
-
-### 🔬 **Option 2: Keep Preview but Optimize**
-
-If you must use `gemini-3-pro-preview` (e.g., for maximum accuracy on complex scripts):
-
-**Settings**:
-```
-Model: gemini-3-pro-preview
-Thinking: High (More reasoning)  ← Paradoxically better
-Temperature: 1.0
-Max tokens: 8192  ← Start high, skip LOW mode
-Early exit: ✗ Unchecked
-Auto continuation: ✗ Unchecked
-Low-mode tokens: (leave empty)
-Fallback %: 0.5  ← More aggressive
-```
-
-**Rationale**:
-- **HIGH mode from start** → model expects more budget, may plan better
-- **Skip LOW → fallback dance** → go straight to full budget
-- **Lower fallback %** → trigger earlier before full burn
-
-**Expected**:
-- ⏱️ **60-120 seconds** per page
-- 💰 **~8000 tokens** per attempt
-- Still expensive but more predictable
-
----
-
-### 💡 **Option 3: Hybrid Approach**
-
-**Batch processing**: Use `gemini-2.0-flash` for clear, simple manuscripts
-
-**Complex cases only**: Switch to `gemini-1.5-pro-002` (not preview) for heavily abbreviated/damaged text
-
-**Never use**: gemini-3-pro-preview for production batches
+### � **Alternate Strategy: High Reasoning Pass (If Low Underproduces)**
+If LOW mode still burns tokens without output, switch to HIGH thinking with an 8192 cap and keep restriction prompt. This can yield better completeness at the cost of time.
 
 ---
 
 ## Cost Comparison
 
-| Model | Time/Page | Tokens/Page | Cost/1000 Pages* |
-|-------|-----------|-------------|------------------|
-| **gemini-2.0-flash** | 15s | ~2,000 | $10-20 |
-| **gemini-1.5-pro-002** | 30s | ~3,000 | $30-50 |
-| **gemini-3-pro-preview** | 290s | ~12,000 | $300-500 |
+| Model | Time/Page | Tokens/Page | Notes |
+|-------|-----------|-------------|-------|
+| **gemini-3-pro-preview (LOW + restriction)** | 40-120s | ~4,000–8,000 | Balanced; early fallback + restriction reduce waste |
+| **gemini-3-pro-preview (HIGH)** | 90-180s | ~6,000–8,192 | Use if LOW fails to emit; higher completeness |
+| *(Other models)* | — | — | Not used (insufficient Church Slavonic fidelity) |
 
 *Approximate, varies by content & API pricing
 
@@ -151,20 +98,14 @@ Your log: `internal=6143` out of 6143 budget = **100% wasted**
 ## Action Plan
 
 ### Immediate (Next Transcription)
-1. ✅ **Switch model** to `gemini-2.0-flash` in dropdown
-2. ✅ **Keep all other settings** as-is
-3. ✅ **Test one page** → should see <30s, ~2000 tokens
-4. ✅ **Compare quality** to preview output
+1. Ensure restriction prompt injection message appears in console.
+2. Use LOW thinking + fast-direct early exit.
+3. If MAX_TOKENS hit with no parts → fallback auto-escalates to 8192.
+4. If still empty, rerun with HIGH thinking (restriction stays).
 
-### If Quality Suffers
-- Try `gemini-1.5-pro-002` (stable pro, not preview)
-- Raise temperature to 1.2-1.5 for more variation
-- Enable auto continuation (2 passes) for completeness
-
-### If Still Need Preview Model
-- Use **Option 2** settings above
-- Only for most complex 10-20% of documents
-- Budget 5-10x cost vs flash model
+### If Output Truncated
+- Disable early exit; enable auto continuation (2 passes)
+- Raise low-mode tokens (e.g., 7168) within 8192 cap
 
 ---
 
@@ -196,7 +137,7 @@ Could add **model auto-switching**:
 
 ✅ **Fallback capped** at 8192 (was 12,288)
 ✅ **Debug logging** added for transparency
-✅ **Warning banner** in GUI about preview costs
-✅ **Recommendation**: Switch to `gemini-2.0-flash` for 10-20x speedup
+✅ **Restriction prompt** active for preview models
+✅ **Removed banner recommending alternative models (not suitable for Church Slavonic)**
 
-**Bottom line**: Preview models are experimental research tools, not production workhorses. Use stable models unless you have a specific need for cutting-edge reasoning.
+**Bottom line**: For Church Slavonic, preview model + restriction prompt + early fallback is the current best-performing path; alternative models underperform in fidelity.

@@ -57,25 +57,26 @@ class CommercialAPIEngine(HTREngine):
     """Commercial API HTR engine plugin."""
 
     def __init__(self):
-        self.model: Optional[object] = None  # Can be OpenAI, Gemini, or Claude
-        self._config_widget: Optional[QWidget] = None
-        self._current_provider: Optional[str] = None
+        # Instance attributes (avoid type annotations here for broader runtime compatibility in some environments)
+        self.model = None  # Can be OpenAI, Gemini, or Claude
+        self._config_widget = None
+        self._current_provider = None
 
         # Widget references
-        self._provider_combo: Optional[QComboBox] = None
-        self._model_combo: Optional[QComboBox] = None
-        self._custom_model_edit: Optional[QLineEdit] = None
-        self._use_custom_model_check: Optional[QCheckBox] = None
-        self._refresh_models_btn: Optional[QPushButton] = None
-        self._api_key_edit: Optional[QLineEdit] = None
-        self._show_key_check: Optional[QCheckBox] = None
-        self._prompt_edit: Optional[QTextEdit] = None
-        self._thinking_combo: Optional[QComboBox] = None
-        self._temperature_edit: Optional[QLineEdit] = None
-        self._max_tokens_edit: Optional[QLineEdit] = None
-        self._early_exit_check: Optional[QCheckBox] = None
-        self._auto_continue_check: Optional[QCheckBox] = None
-        self._max_continuations_edit: Optional[QLineEdit] = None
+        self._provider_combo = None
+        self._model_combo = None
+        self._custom_model_edit = None
+        self._use_custom_model_check = None
+        self._refresh_models_btn = None
+        self._api_key_edit = None
+        self._show_key_check = None
+        self._prompt_edit = None
+        self._thinking_combo = None
+        self._temperature_edit = None
+        self._max_tokens_edit = None
+        self._early_exit_check = None
+        self._auto_continue_check = None
+        self._max_continuations_edit = None
 
     def get_name(self) -> str:
         return "Commercial APIs"
@@ -233,12 +234,7 @@ class CommercialAPIEngine(HTREngine):
         thinking_group = QGroupBox("Thinking Mode (Gemini only)")
         thinking_layout = QVBoxLayout()
         
-        # Warning label for preview models
-        warning_label = QLabel("⚠️ Preview models (gemini-3-pro-preview) are experimental and can be slow/expensive.\n"
-                              "💡 For production use, select gemini-2.0-flash or gemini-1.5-pro instead.")
-        warning_label.setWordWrap(True)
-        warning_label.setStyleSheet("color: #cc6600; font-size: 9pt; padding: 5px; background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 3px;")
-        thinking_layout.addWidget(warning_label)
+    # (Removed warning banner recommending alternative models; preview model retained for Church Slavonic use)
         
         thinking_row = QHBoxLayout()
         thinking_row.addWidget(QLabel("Reasoning:"))
@@ -311,6 +307,14 @@ class CommercialAPIEngine(HTREngine):
         self._reasoning_fallback_edit.setToolTip("Fraction of token budget consumed internally (no output) that triggers early fallback (0.5-0.8).")
         self._reasoning_fallback_edit.setFixedWidth(60)
         adv_row3.addWidget(self._reasoning_fallback_edit)
+
+        adv_row3.addSpacing(20)
+        adv_row3.addWidget(QLabel("Fallback cap:"))
+        self._fallback_cap_edit = QLineEdit()
+        self._fallback_cap_edit.setText("8192")  # Default configurable cap
+        self._fallback_cap_edit.setToolTip("Maximum tokens for fallback attempt. Increase for page-wise recognition (e.g. 12288 or 16384).")
+        self._fallback_cap_edit.setFixedWidth(70)
+        adv_row3.addWidget(self._fallback_cap_edit)
         adv_row3.addStretch()
         adv_layout.addLayout(adv_row3)
 
@@ -637,6 +641,15 @@ class CommercialAPIEngine(HTREngine):
                             reasoning_fallback_threshold = float(rft_text)
                         except ValueError:
                             pass  # Keep default
+
+                fallback_cap = 8192
+                if hasattr(self, '_fallback_cap_edit') and self._fallback_cap_edit is not None:
+                    fc_text = self._fallback_cap_edit.text().strip()
+                    if fc_text:
+                        try:
+                            fallback_cap = int(fc_text)
+                        except ValueError:
+                            pass
                 
                 # Override max_tokens for LOW thinking mode if specified
                 if thinking_mode == 'low' and hasattr(self, '_low_initial_tokens_edit') and self._low_initial_tokens_edit is not None:
@@ -669,6 +682,7 @@ class CommercialAPIEngine(HTREngine):
                     max_auto_continuations=max_auto_continuations,
                     continuation_min_new_chars=continuation_min_new_chars,
                     reasoning_fallback_threshold=reasoning_fallback_threshold,
+                    fallback_max_output_tokens=fallback_cap,
                     record_stats_csv="gemini_runs.csv"
                 )
             else:

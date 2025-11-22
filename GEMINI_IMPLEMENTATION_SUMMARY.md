@@ -101,15 +101,8 @@ Min new chars: 50
 Fallback %: 0.7
 ```
 
-### Profile: Stable Low-Latency
-```yaml
-Model: gemini-2.0-flash
-Thinking: Auto
-Temperature: 1.0
-Max tokens: 2048
-Early exit: ✓
-Auto continuation: ✗
-```
+### Restriction Prompt Injection
+Automatically prepends an instruction for preview/experimental models to minimize hidden reasoning and force direct output (see code in `GeminiInference.transcribe`).
 
 ---
 
@@ -274,4 +267,4 @@ git cherry-pick 9fded11  # Documentation
 - Confirmed 331-char transcription after automatic escalation
 - Continuation logic prevented duplicate retrieval
 
-**Ready for production use and integration into main branch.**
+**Ready for integration; Church Slavonic workflow standardized on preview model + restriction prompt (stable/flash models insufficient for script fidelity).**
