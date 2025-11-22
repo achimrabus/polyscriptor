@@ -299,6 +299,7 @@ def process_image_neural(
             
             # Group by region (use tags/region info if available)
             region_id = 'r_1'  # default
+            region_obj = None  # Track the actual blla region object
             
             if hasattr(line, 'tags') and isinstance(line.tags, dict):
                 region_type = line.tags.get('type')
@@ -306,24 +307,33 @@ def process_image_neural(
                     region_id = region_type
             elif hasattr(baseline_seg, 'regions') and baseline_seg.regions:
                 # Try to find which region contains this line
-                for reg_idx, region in enumerate(baseline_seg.regions):
-                    if hasattr(region, 'bbox'):
-                        rbbox = region.bbox
-                        # Ensure bbox is iterable and has 4 values
-                        if hasattr(rbbox, '__iter__') and len(list(rbbox)) == 4:
-                            rx1, ry1, rx2, ry2 = rbbox
+                # baseline_seg.regions is a dict like {'text': [Region, Region, ...]}
+                for region_type, region_list in baseline_seg.regions.items():
+                    for reg_idx, region in enumerate(region_list):
+                        # Check if region has boundary polygon
+                        if hasattr(region, 'boundary') and region.boundary:
+                            # Point-in-polygon check using line center
                             lx1, ly1, lx2, ly2 = bbox
-                            # Check if line center is inside region
                             cx, cy = (lx1 + lx2) // 2, (ly1 + ly2) // 2
-                            if rx1 <= cx <= rx2 and ry1 <= cy <= ry2:
-                                region_id = f"r_{reg_idx+1}"
+                            # Simple bbox containment check (could use full polygon test)
+                            boundary_xs = [p[0] for p in region.boundary]
+                            boundary_ys = [p[1] for p in region.boundary]
+                            if (min(boundary_xs) <= cx <= max(boundary_xs) and 
+                                min(boundary_ys) <= cy <= max(boundary_ys)):
+                                region_id = f"{region_type}_{reg_idx}"
+                                region_obj = region
                                 break
+                    if region_obj:
+                        break
             
             # Ensure region_id is always a string
             if not isinstance(region_id, str):
                 region_id = 'r_1'
             
-            regions_dict.setdefault(region_id, []).append(seg_line)
+            # Store both line and associated region object
+            if region_id not in regions_dict:
+                regions_dict[region_id] = {'lines': [], 'blla_region': region_obj}
+            regions_dict[region_id]['lines'].append(seg_line)
         
         # Build regions
         regions = []
@@ -340,20 +350,35 @@ def process_image_neural(
             regions_dict = {}
             for idx, ln in enumerate(seg_lines):
                 col_id = col_assignments[idx] if idx < len(col_assignments) else 0
-                regions_dict.setdefault(f"col_{col_id}", []).append(ln)
+                if f"col_{col_id}" not in regions_dict:
+                    regions_dict[f"col_{col_id}"] = {'lines': [], 'blla_region': None}
+                regions_dict[f"col_{col_id}"]['lines'].append(ln)
         
-        for ri, (region_id, lines_in_region) in enumerate(sorted(regions_dict.items()), start=1):
+        for ri, (region_id, region_data) in enumerate(sorted(regions_dict.items()), start=1):
+            lines_in_region = region_data['lines']
+            blla_region = region_data['blla_region']
+            
             lines_in_region.sort(key=lambda l: _line_top_y(l.bbox))
             final_id = f"r_{ri}"
             for ln in lines_in_region:
                 ln.region_id = final_id
             rbbox = _bbox_union([l.bbox for l in lines_in_region])
-            hull = _region_convex_hull(lines_in_region)
+            
+            # Use blla's actual region polygon if available, otherwise compute convex hull
+            polygon = None
+            if blla_region and hasattr(blla_region, 'boundary') and blla_region.boundary:
+                # Convert blla boundary to polygon format
+                polygon = [(int(p[0]), int(p[1])) for p in blla_region.boundary]
+            else:
+                # Fallback: compute convex hull from line bboxes
+                hull = _region_convex_hull(lines_in_region)
+                polygon = hull if len(hull) >= 3 else None
+            
             regions.append(Region(
                 id=final_id,
                 bbox=rbbox,
                 line_ids=[l.id for l in lines_in_region],
-                polygon=hull if len(hull) >= 3 else None,
+                polygon=polygon,
                 mode="neural"
             ))
         
