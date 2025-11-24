@@ -737,7 +737,10 @@ def main():
     # Load image
     print("\nLoading image...")
     Image.MAX_IMAGE_PIXELS = None  # Allow large images
-    image = Image.open(args.image).convert('RGB')
+    from PIL import ImageOps
+    image = Image.open(args.image)
+    image = ImageOps.exif_transpose(image)  # Fix EXIF orientation
+    image = image.convert('RGB')
     print(f"Image size: {image.width}x{image.height}")
 
     # Segment lines

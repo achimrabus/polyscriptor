@@ -649,8 +649,11 @@ class BatchHTRProcessor:
             self.logger.debug(f"Skipping {image_path.name} (already processed)")
             return self._load_cached_result(output_txt, image_path)
 
-        # Load image
-        image = Image.open(image_path).convert('RGB')
+        # Load image with EXIF rotation correction
+        from PIL import ImageOps
+        image = Image.open(image_path)
+        image = ImageOps.exif_transpose(image)  # Fix EXIF orientation
+        image = image.convert('RGB')
         image_np = np.array(image)
 
         # Segment lines (priority: PAGE XML > auto-segmentation)
@@ -829,10 +832,11 @@ class BatchHTRProcessor:
     def _write_pagexml(self, output_path: Path, image_path: Path, lines: List[LineSegment]):
         """Write PAGE XML output."""
         from page_xml_exporter import PageXMLExporter
-        from PIL import Image
+        from PIL import Image, ImageOps
 
-        # Load image to get dimensions
+        # Load image to get dimensions with EXIF correction
         with Image.open(image_path) as img:
+            img = ImageOps.exif_transpose(img)  # Fix EXIF orientation
             image_width, image_height = img.size
 
         # Create exporter with required parameters
