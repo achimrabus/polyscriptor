@@ -199,3 +199,14 @@ debug_*.py
 SERVER_ENV.md
 
 htr_gui/
+
+# Training logs
+training_ukrainian_v2c.log
+nohup.out
+
+# Diagnostic and inspection scripts (temporary)
+diagnose_exif_mismatch.py
+inspect_*.ipynb
+
+# Gabelsberger shorthand preparation (work in progress)
+prepare_gabelsberger_shorthand.py

@@ -341,7 +341,8 @@ class TranskribusParser:
         temp_parser.images_dir = images_dir
 
         # Find corresponding image
-        image_extensions = ['.jpg', '.jpeg', '.png', '.tif', '.tiff']
+        # Include both lowercase and uppercase extensions (Linux is case-sensitive!)
+        image_extensions = ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.tif', '.TIF', '.tiff', '.TIFF']
         image_path = None
 
         # First try in same directory as XML
