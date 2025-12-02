@@ -7,10 +7,21 @@ Design philosophy: CLI wrapper, not reimplementation.
 """
 
 import sys
+import os
 import json
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    # Look for .env in the project root
+    env_path = Path(__file__).parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # dotenv not installed, will fall back to environment variables
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -36,11 +47,14 @@ ENGINES = {
         "supports_beams": True,
     },
     "Qwen3-VL": {
-        "needs_model_path": False,
-        "needs_model_id": True,
+        "needs_model_path": True,  # Local model path OR HF model ID
+        "needs_model_id": True,    # Both available for flexibility
+        "needs_adapter": True,     # For local LoRA adapters (with HF base)
+        "supports_line_mode": True,  # For line-trained models
         "default_segmentation": "none",
         "supports_beams": False,
         "warning": "VERY SLOW: ~1-2 min/page. Use only for small batches!",
+        "model_path_tooltip": "Local Qwen model folder (use this OR Model ID, not both)",
     },
     "Party": {
         "needs_model_path": True,
@@ -60,6 +74,14 @@ ENGINES = {
         "needs_model_id": True,
         "default_segmentation": "kraken",
         "supports_beams": False,
+    },
+    "OpenWebUI": {
+        "needs_model_path": False,
+        "needs_model_id": True,  # Model name from server
+        "needs_api_key": True,   # Requires API key
+        "default_segmentation": "none",  # VLM processes full pages
+        "supports_beams": False,
+        "warning": "API-based: Requires API key from openwebui.uni-freiburg.de",
     },
 }
 
@@ -97,6 +119,41 @@ BUILTIN_PRESETS = {
         "device": "cuda:0",
         "output_formats": ["txt"],
         "num_beams": 4,
+    },
+    "Church Slavonic (Qwen3-VL Pages)": {
+        "engine": "Qwen3-VL",
+        "model_id": "wjbmattingly/Qwen3-VL-8B-old-church-slavonic",
+        "segmentation_method": "none",
+        "use_pagexml": False,
+        "device": "cuda:0",
+        "output_formats": ["txt"],
+    },
+    "Ukrainian (Qwen3-VL + LoRA Adapter)": {
+        "engine": "Qwen3-VL",
+        "model_id": "Qwen/Qwen3-VL-8B-Instruct",
+        "adapter": "models/Qwen3-VL-8B-ukrainian/final_model",
+        "segmentation_method": "none",
+        "use_pagexml": False,
+        "device": "cuda:0",
+        "output_formats": ["txt"],
+    },
+    "Glagolitic (Qwen3-VL + LoRA Adapter)": {
+        "engine": "Qwen3-VL",
+        "model_id": "Qwen/Qwen3-VL-8B-Instruct",
+        "adapter": "models/Qwen3-VL-8B-glagolitic/final_model",
+        "segmentation_method": "none",
+        "use_pagexml": False,
+        "device": "cuda:0",
+        "output_formats": ["txt"],
+    },
+    "Church Slavonic (Qwen3-VL Lines + PAGE XML)": {
+        "engine": "Qwen3-VL",
+        "model_id": "wjbmattingly/Qwen3-VL-8B-old-church-slavonic-line-3-epochs",
+        "segmentation_method": "kraken",
+        "use_pagexml": True,
+        "line_mode": True,  # Force line segmentation for line-trained model
+        "device": "cuda:0",
+        "output_formats": ["txt"],
     },
 }
 
@@ -209,6 +266,72 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.model_id_edit.setPlaceholderText("username/model-name")
         model_id_layout.addWidget(self.model_id_edit)
         layout.addLayout(model_id_layout)
+
+        # Adapter path (for Qwen3 LoRA models)
+        adapter_layout = QHBoxLayout()
+        adapter_layout.addWidget(QLabel("Adapter Path:"))
+        self.adapter_edit = QLineEdit()
+        self.adapter_edit.setPlaceholderText("Optional: path to LoRA adapter folder")
+        adapter_layout.addWidget(self.adapter_edit)
+        self.adapter_browse_btn = QPushButton("Browse...")
+        self.adapter_browse_btn.clicked.connect(self._browse_adapter_path)
+        adapter_layout.addWidget(self.adapter_browse_btn)
+        layout.addLayout(adapter_layout)
+        # Initially hidden, shown only for Qwen3-VL
+        self.adapter_edit.setVisible(False)
+        self.adapter_browse_btn.setVisible(False)
+        # Store the label for visibility toggle
+        self.adapter_label = adapter_layout.itemAt(0).widget()
+        self.adapter_label.setVisible(False)
+
+        # Line mode checkbox (for line-trained Qwen3 models)
+        self.line_mode_check = QCheckBox("Line Mode (for line-trained models)")
+        self.line_mode_check.setToolTip(
+            "Enable for Qwen3 models trained on line images.\n"
+            "Forces segmentation so each line is processed separately.\n"
+            "Leave unchecked for page-trained models that output line breaks."
+        )
+        self.line_mode_check.setVisible(False)  # Hidden by default, shown for Qwen3-VL
+        layout.addWidget(self.line_mode_check)
+
+        # API Key (for OpenWebUI)
+        api_key_layout = QHBoxLayout()
+        self.api_key_label = QLabel("API Key:")
+        api_key_layout.addWidget(self.api_key_label)
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setPlaceholderText("OpenWebUI API key (or set OPENWEBUI_API_KEY env var)")
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        api_key_layout.addWidget(self.api_key_edit)
+        self.api_key_show_check = QCheckBox("Show")
+        self.api_key_show_check.toggled.connect(
+            lambda checked: self.api_key_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        )
+        api_key_layout.addWidget(self.api_key_show_check)
+        layout.addLayout(api_key_layout)
+        # Initially hidden, shown only for OpenWebUI
+        self.api_key_label.setVisible(False)
+        self.api_key_edit.setVisible(False)
+        self.api_key_show_check.setVisible(False)
+
+        # OpenWebUI Model selection (dropdown with refresh)
+        openwebui_model_layout = QHBoxLayout()
+        self.openwebui_model_label = QLabel("Model:")
+        openwebui_model_layout.addWidget(self.openwebui_model_label)
+        self.openwebui_model_combo = QComboBox()
+        self.openwebui_model_combo.setMinimumWidth(250)
+        self.openwebui_model_combo.addItem("Click 'Refresh' to load models")
+        openwebui_model_layout.addWidget(self.openwebui_model_combo)
+        self.openwebui_refresh_btn = QPushButton("Refresh")
+        self.openwebui_refresh_btn.setToolTip("Fetch available models from OpenWebUI server")
+        self.openwebui_refresh_btn.clicked.connect(self._refresh_openwebui_models)
+        openwebui_model_layout.addWidget(self.openwebui_refresh_btn)
+        layout.addLayout(openwebui_model_layout)
+        # Initially hidden, shown only for OpenWebUI
+        self.openwebui_model_label.setVisible(False)
+        self.openwebui_model_combo.setVisible(False)
+        self.openwebui_refresh_btn.setVisible(False)
 
         # Device selection
         device_layout = QHBoxLayout()
@@ -378,6 +501,57 @@ class PolyscriptorBatchGUI(QMainWindow):
         if file_path:
             self.model_path_edit.setText(file_path)
 
+    def _browse_adapter_path(self):
+        """Browse for adapter directory (Qwen3 LoRA)."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Adapter Directory", "models"
+        )
+        if folder:
+            self.adapter_edit.setText(folder)
+
+    def _refresh_openwebui_models(self):
+        """Fetch available models from OpenWebUI API."""
+        api_key = self.api_key_edit.text().strip()
+
+        if not api_key:
+            self.openwebui_model_combo.clear()
+            self.openwebui_model_combo.addItem("Enter API key first")
+            return
+
+        try:
+            from openai import OpenAI
+
+            # Create temporary client to fetch models
+            client = OpenAI(
+                base_url="https://openwebui.uni-freiburg.de/api",
+                api_key=api_key
+            )
+
+            # Fetch models
+            models = client.models.list()
+
+            available_models = []
+            for model in models.data:
+                available_models.append(model.id)
+
+            # Update combo box
+            self.openwebui_model_combo.clear()
+            if available_models:
+                self.openwebui_model_combo.addItems(sorted(available_models))
+                print(f"[OpenWebUI] Loaded {len(available_models)} models")
+            else:
+                self.openwebui_model_combo.addItem("No models found")
+
+            self._update_command_preview()
+
+        except ImportError:
+            self.openwebui_model_combo.clear()
+            self.openwebui_model_combo.addItem("Error: openai package not installed")
+        except Exception as e:
+            print(f"Error fetching models: {e}")
+            self.openwebui_model_combo.clear()
+            self.openwebui_model_combo.addItem(f"Error: {str(e)[:40]}")
+
     def _on_engine_changed(self, engine_name: str):
         """Handle engine selection change."""
         if engine_name not in ENGINES:
@@ -389,6 +563,43 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.model_path_edit.setEnabled(config.get("needs_model_path", True))
         self.model_browse_btn.setEnabled(config.get("needs_model_path", True))
         self.model_id_edit.setEnabled(config.get("needs_model_id", False))
+
+        # Update tooltip for model path (Qwen3 has special instructions)
+        if "model_path_tooltip" in config:
+            self.model_path_edit.setToolTip(config["model_path_tooltip"])
+        else:
+            self.model_path_edit.setToolTip("")
+
+        # Show/hide adapter path for Qwen3-VL
+        needs_adapter = config.get("needs_adapter", False)
+        self.adapter_label.setVisible(needs_adapter)
+        self.adapter_edit.setVisible(needs_adapter)
+        self.adapter_browse_btn.setVisible(needs_adapter)
+
+        # Show/hide line mode checkbox for Qwen3-VL
+        supports_line_mode = config.get("supports_line_mode", False)
+        self.line_mode_check.setVisible(supports_line_mode)
+        if not supports_line_mode:
+            self.line_mode_check.setChecked(False)  # Reset when switching away
+
+        # Show/hide API key and model dropdown for OpenWebUI
+        needs_api_key = config.get("needs_api_key", False)
+        is_openwebui = (engine_name == "OpenWebUI")
+        self.api_key_label.setVisible(needs_api_key)
+        self.api_key_edit.setVisible(needs_api_key)
+        self.api_key_show_check.setVisible(needs_api_key)
+        self.openwebui_model_label.setVisible(is_openwebui)
+        self.openwebui_model_combo.setVisible(is_openwebui)
+        self.openwebui_refresh_btn.setVisible(is_openwebui)
+
+        # Auto-populate API key from environment if empty
+        if needs_api_key and not self.api_key_edit.text():
+            env_key = os.environ.get("OPENWEBUI_API_KEY", "")
+            if env_key:
+                self.api_key_edit.setText(env_key)
+                # Auto-refresh models if API key is available
+                if is_openwebui:
+                    self._refresh_openwebui_models()
 
         # Show/hide num_beams for TrOCR
         self.beams_layout_widget.setVisible(config.get("supports_beams", False))
@@ -424,8 +635,16 @@ class PolyscriptorBatchGUI(QMainWindow):
         # Model
         if "model_path" in preset:
             self.model_path_edit.setText(preset["model_path"])
+        else:
+            self.model_path_edit.clear()
         if "model_id" in preset:
             self.model_id_edit.setText(preset["model_id"])
+        else:
+            self.model_id_edit.clear()
+        if "adapter" in preset:
+            self.adapter_edit.setText(preset["adapter"])
+        else:
+            self.adapter_edit.clear()
 
         # Device
         if "device" in preset:
@@ -452,6 +671,12 @@ class PolyscriptorBatchGUI(QMainWindow):
         # Num beams
         if "num_beams" in preset:
             self.num_beams_spin.setValue(preset["num_beams"])
+
+        # Line mode
+        if "line_mode" in preset:
+            self.line_mode_check.setChecked(preset["line_mode"])
+        else:
+            self.line_mode_check.setChecked(False)
 
         self._update_command_preview()
 
@@ -529,8 +754,24 @@ class PolyscriptorBatchGUI(QMainWindow):
         # Model
         if self.model_path_edit.text():
             config["model_path"] = self.model_path_edit.text()
-        if self.model_id_edit.text():
+        # For OpenWebUI, use the model dropdown instead of model_id_edit
+        if config["engine"] == "OpenWebUI":
+            model_text = self.openwebui_model_combo.currentText()
+            # Only use if it's a valid model (not placeholder text)
+            if model_text and not model_text.startswith(("Click", "Enter", "Error", "No models")):
+                config["model_id"] = model_text
+        elif self.model_id_edit.text():
             config["model_id"] = self.model_id_edit.text()
+        if self.adapter_edit.text():
+            config["adapter"] = self.adapter_edit.text()
+
+        # API key (for OpenWebUI)
+        if self.api_key_edit.text():
+            config["api_key"] = self.api_key_edit.text()
+
+        # Line mode (for line-trained Qwen3 models)
+        if self.line_mode_check.isChecked():
+            config["line_mode"] = True
 
         # Output formats
         formats = []
@@ -575,6 +816,14 @@ class PolyscriptorBatchGUI(QMainWindow):
         elif config.get("model_id"):
             cmd += ["--model-id", config["model_id"]]
 
+        # Adapter (for Qwen3 LoRA)
+        if config.get("adapter"):
+            cmd += ["--adapter", config["adapter"]]
+
+        # API key (for OpenWebUI)
+        if config.get("api_key"):
+            cmd += ["--api-key", config["api_key"]]
+
         # Device
         cmd += ["--device", config["device"]]
 
@@ -605,6 +854,8 @@ class PolyscriptorBatchGUI(QMainWindow):
             cmd += ["--num-beams", str(config["num_beams"])]
         if config.get("sensitivity"):
             cmd += ["--segmentation-sensitivity", str(config["sensitivity"])]
+        if config.get("line_mode"):
+            cmd += ["--line-mode"]
 
         return cmd
 
@@ -621,11 +872,14 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.output_folder_edit.textChanged.connect(self._update_command_preview)
         self.model_path_edit.textChanged.connect(self._update_command_preview)
         self.model_id_edit.textChanged.connect(self._update_command_preview)
+        self.adapter_edit.textChanged.connect(self._update_command_preview)
+        self.api_key_edit.textChanged.connect(self._update_command_preview)
 
         # Combos
         self.engine_combo.currentTextChanged.connect(self._update_command_preview)
         self.device_combo.currentTextChanged.connect(self._update_command_preview)
         self.seg_method_combo.currentTextChanged.connect(self._update_command_preview)
+        self.openwebui_model_combo.currentTextChanged.connect(self._update_command_preview)
 
         # Checkboxes
         self.pagexml_check.stateChanged.connect(self._update_command_preview)
@@ -634,6 +888,7 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.pagexml_out_check.stateChanged.connect(self._update_command_preview)
         self.resume_check.stateChanged.connect(self._update_command_preview)
         self.verbose_check.stateChanged.connect(self._update_command_preview)
+        self.line_mode_check.stateChanged.connect(self._update_command_preview)
 
         # Spinners
         self.batch_spin.valueChanged.connect(self._update_command_preview)
@@ -652,10 +907,67 @@ class PolyscriptorBatchGUI(QMainWindow):
         if not config.get("model_path") and not config.get("model_id"):
             return "Please specify a model path or HuggingFace model ID"
 
+        # Qwen3-VL: model_path and model_id are mutually exclusive
+        # model_path = fully local model
+        # model_id + optional adapter = HuggingFace base + LoRA
+        if config["engine"] == "Qwen3-VL":
+            if config.get("model_path") and config.get("model_id"):
+                return ("Qwen3-VL: Use EITHER Model Path (fully local model) OR "
+                        "Model ID (HuggingFace base + optional Adapter), not both.\n\n"
+                        "For local model: fill Model Path, clear Model ID\n"
+                        "For HF + adapter: fill Model ID, optionally Adapter Path")
+
+            # Detect if user accidentally put adapter path in model_path
+            model_path = config.get("model_path", "")
+            if model_path:
+                model_path_lower = model_path.lower()
+                # Check for adapter indicators
+                if "adapter" in model_path_lower or model_path_lower.endswith(".safetensors"):
+                    return ("Qwen3-VL: Model Path appears to be an adapter, not a base model.\n\n"
+                            "For LoRA adapters, use:\n"
+                            "  - Model ID: Qwen/Qwen3-VL-8B-Instruct (or other HF base)\n"
+                            "  - Adapter Path: your adapter folder\n\n"
+                            "Clear Model Path and set Model ID + Adapter Path instead.")
+
+            # Validate Qwen3-VL model ID includes "-VL-"
+            model_id = config.get("model_id", "")
+            if model_id and "qwen" in model_id.lower() and "-vl" not in model_id.lower():
+                return (f"Qwen3-VL: Model ID '{model_id}' appears to be a text-only Qwen model.\n\n"
+                        "For Qwen3-VL (vision-language), use:\n"
+                        "  - Qwen/Qwen3-VL-8B-Instruct (base)\n"
+                        "  - Or a finetuned VL model like wjbmattingly/Qwen3-VL-8B-...\n\n"
+                        "The model name must contain '-VL-' for vision-language support.")
+
+            # Check adapter path is a folder, not a file
+            adapter = config.get("adapter", "")
+            if adapter and adapter.endswith(".safetensors"):
+                return ("Qwen3-VL: Adapter Path should be a folder, not a .safetensors file.\n\n"
+                        "Use the adapter folder, e.g.:\n"
+                        "  models/Qwen3-VL-8B-glagolitic/final_model\n\n"
+                        "Not the safetensors file inside it.")
+
+        # OpenWebUI: requires API key and model_id
+        if config["engine"] == "OpenWebUI":
+            if not config.get("api_key"):
+                return ("OpenWebUI: API key is required.\n\n"
+                        "Get your API key from https://openwebui.uni-freiburg.de\n"
+                        "Or set the OPENWEBUI_API_KEY environment variable.")
+            if not config.get("model_id"):
+                return ("OpenWebUI: Please select a model.\n\n"
+                        "Click 'Refresh' to load available models from the server.")
+
         # Check model path exists (if specified)
         if config.get("model_path"):
             if not Path(config["model_path"]).exists():
                 return f"Model file does not exist: {config['model_path']}"
+
+        # Check adapter path exists (if specified)
+        if config.get("adapter"):
+            adapter_path = Path(config["adapter"])
+            if not adapter_path.exists():
+                return f"Adapter folder does not exist: {config['adapter']}"
+            if not adapter_path.is_dir():
+                return f"Adapter path must be a folder, not a file: {config['adapter']}"
 
         # Check at least one output format
         if not config["output_formats"]:
@@ -736,23 +1048,38 @@ class PolyscriptorBatchGUI(QMainWindow):
         process = QProcess(dialog)
 
         def append_output():
-            if not output_display or output_display.isVisible():
-                output = process.readAllStandardOutput().data().decode('utf-8', errors='ignore')
-                if output:
-                    output_display.append(output)
+            # Check widget exists AND is visible (not deleted)
+            try:
+                if output_display and output_display.isVisible():
+                    output = process.readAllStandardOutput().data().decode('utf-8', errors='ignore')
+                    if output:
+                        output_display.append(output)
+            except RuntimeError:
+                # Widget was deleted - ignore
+                pass
 
         def append_error():
-            if not output_display or output_display.isVisible():
-                error = process.readAllStandardError().data().decode('utf-8', errors='ignore')
-                if error:
-                    output_display.append(f"<span style='color: red;'>{error}</span>")
+            # Check widget exists AND is visible (not deleted)
+            try:
+                if output_display and output_display.isVisible():
+                    error = process.readAllStandardError().data().decode('utf-8', errors='ignore')
+                    if error:
+                        output_display.append(f"<span style='color: red;'>{error}</span>")
+            except RuntimeError:
+                # Widget was deleted - ignore
+                pass
 
         def process_finished(exit_code, exit_status):
-            if not output_display or output_display.isVisible():
-                if exit_code == 0:
-                    output_display.append("\n<b>✓ Process completed successfully!</b>")
-                else:
-                    output_display.append(f"\n<b>❌ Process failed with exit code {exit_code}</b>")
+            # Check widget exists AND is visible (not deleted)
+            try:
+                if output_display and output_display.isVisible():
+                    if exit_code == 0:
+                        output_display.append("\n<b>✓ Process completed successfully!</b>")
+                    else:
+                        output_display.append(f"\n<b>❌ Process failed with exit code {exit_code}</b>")
+            except RuntimeError:
+                # Widget was deleted - ignore
+                pass
 
         process.readyReadStandardOutput.connect(append_output)
         process.readyReadStandardError.connect(append_error)

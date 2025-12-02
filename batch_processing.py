@@ -100,6 +100,13 @@ ENGINE_CONFIG = {
         'batch_size_range': (8, 32),
         'speed_estimate': 18,
         'warning': None
+    },
+    'OpenWebUI': {
+        'min_device': 'cpu',  # API-based, no local GPU needed
+        'default_batch_size': 1,  # API calls are sequential
+        'batch_size_range': (1, 1),
+        'speed_estimate': 2,  # API latency dependent
+        'warning': 'API-based: Requires API key from openwebui.uni-freiburg.de. Rate limits may apply.'
     }
 }
 
@@ -137,7 +144,7 @@ Shared Server Notice:
     parser.add_argument('--input-folder', type=Path, required=True,
                        help='Folder containing input images')
     parser.add_argument('--engine', type=str, required=True,
-                       help='HTR engine (PyLaia, TrOCR, Churro, Qwen3-VL, Party, Kraken)')
+                       help='HTR engine (PyLaia, TrOCR, Churro, Qwen3-VL, Party, Kraken, OpenWebUI)')
 
     # Model selection
     model_group = parser.add_mutually_exclusive_group()
@@ -196,6 +203,16 @@ Shared Server Notice:
                        help='Custom prompt (Qwen3)')
     parser.add_argument('--language', type=str,
                        help='Language code (Party: chu, rus, ukr)')
+    parser.add_argument('--adapter', type=Path,
+                       help='Path to LoRA adapter (Qwen3: use with --model-id for base model)')
+    parser.add_argument('--line-mode', action='store_true',
+                       help='Force line segmentation for page-based engines (Qwen3 line-trained models)')
+
+    # API-based engines (OpenWebUI)
+    parser.add_argument('--api-key', type=str,
+                       help='API key for OpenWebUI (or set OPENWEBUI_API_KEY env var)')
+    parser.add_argument('--max-tokens', type=int, default=500,
+                       help='Max tokens for API response (OpenWebUI, default: 500)')
 
     # Safety flags
     parser.add_argument('--i-understand-this-is-slow', action='store_true',
@@ -209,6 +226,16 @@ Shared Server Notice:
 
     if args.engine in ['PyLaia', 'TrOCR', 'Churro'] and not (args.model_path or args.model_id):
         parser.error(f"{args.engine} requires --model-path or --model-id")
+
+    # OpenWebUI requires API key (from arg or environment)
+    if args.engine == 'OpenWebUI':
+        import os
+        if not args.api_key:
+            args.api_key = os.environ.get('OPENWEBUI_API_KEY', '')
+        if not args.api_key:
+            parser.error("OpenWebUI requires --api-key or OPENWEBUI_API_KEY environment variable")
+        if not args.model_id:
+            parser.error("OpenWebUI requires --model-id (e.g., 'gpt-4-vision-preview' or model from server)")
 
     if args.segmentation_method == 'kraken' and not KRAKEN_AVAILABLE:
         parser.error("Kraken not installed. Install with: pip install kraken")
@@ -554,8 +581,12 @@ class BatchHTRProcessor:
         self.logger.info(f"✓ {self.args.engine} model loaded")
 
         # Initialize segmenter (if needed)
-        if self.engine.requires_line_segmentation() and self.args.segmentation_method != 'none':
+        # --line-mode forces segmentation for page-based engines (e.g., line-trained Qwen3 models)
+        needs_segmentation = self.engine.requires_line_segmentation() or self.args.line_mode
+        if needs_segmentation and self.args.segmentation_method != 'none':
             self._initialize_segmenter()
+            if self.args.line_mode and not self.engine.requires_line_segmentation():
+                self.logger.info("ℹ️  Line mode enabled: forcing segmentation for page-based engine")
         else:
             self.logger.info("ℹ️  No line segmentation required (page-based engine)")
 
@@ -573,6 +604,10 @@ class BatchHTRProcessor:
         elif self.args.model_id:
             config['model_id'] = self.args.model_id
 
+        # Adapter path (for Qwen3 LoRA models)
+        if self.args.adapter:
+            config['adapter'] = str(self.args.adapter)
+
         # Engine-specific
         if self.args.num_beams > 1:
             config['num_beams'] = self.args.num_beams
@@ -582,9 +617,19 @@ class BatchHTRProcessor:
 
         if self.args.prompt:
             config['prompt'] = self.args.prompt
+            config['custom_prompt'] = self.args.prompt  # OpenWebUI uses 'custom_prompt'
 
         if self.args.language:
             config['language'] = self.args.language
+
+        # OpenWebUI-specific
+        if self.args.api_key:
+            config['api_key'] = self.args.api_key
+        if self.args.max_tokens != 500:  # Non-default
+            config['max_tokens'] = self.args.max_tokens
+        # OpenWebUI uses model_id as 'model'
+        if self.args.engine == 'OpenWebUI' and self.args.model_id:
+            config['model'] = self.args.model_id
 
         return config
 
@@ -657,9 +702,11 @@ class BatchHTRProcessor:
         image_np = np.array(image)
 
         # Segment lines (priority: PAGE XML > auto-segmentation)
+        # --line-mode forces segmentation for page-based engines (e.g., line-trained Qwen3 models)
         used_pagexml = False
+        needs_segmentation = self.engine.requires_line_segmentation() or self.args.line_mode
 
-        if self.engine.requires_line_segmentation():
+        if needs_segmentation:
             # Try PAGE XML first (if available and enabled)
             if xml_path is not None and self.args.use_pagexml:
                 # Validate PAGE XML
