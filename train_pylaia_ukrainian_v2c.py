@@ -146,6 +146,12 @@ def main():
     # Parse command-line arguments
     args = parse_args()
     
+    # Validate data directory path
+    data_dir_path = Path(args.data_dir)
+    if not data_dir_path.is_absolute() and not (Path.cwd() / data_dir_path).exists():
+        # Relative path that doesn't exist yet - this is okay, check_data_directory will handle it
+        pass
+    
     # Check data directory
     data_dir = check_data_directory(args.data_dir)
     
@@ -172,6 +178,12 @@ def main():
         output_dir_path = args.output_dir
     else:
         output_dir_path = f'models/pylaia_ukrainian_v2c_{timestamp}'
+    
+    # Ensure parent directory exists for output directory
+    output_parent = Path(output_dir_path).parent
+    if output_parent != Path('.'):
+        output_parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Ensured parent directory exists: {output_parent}")
 
     config = {
         'data_dir': str(data_dir),

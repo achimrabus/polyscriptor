@@ -28,14 +28,14 @@ If you need to re-extract the original data:
 # Use default paths
 python3 reextract_ukrainian_v2c.py
 
-# Or specify custom directories
+# Or specify custom directories (use line continuation for readability)
 python3 reextract_ukrainian_v2c.py \
-  --train-dir /path/to/training_set \
-  --val-dir /path/to/validation_set
+    --train-dir /path/to/training_set \
+    --val-dir /path/to/validation_set
 
 # Or specify custom Python interpreter
 python3 reextract_ukrainian_v2c.py \
-  --python /path/to/venv/bin/python
+    --python /path/to/venv/bin/python
 ```
 
 **Note:** This step is only needed if you're working with the original Transkribus data and haven't already extracted it with the EXIF fix.
@@ -75,10 +75,10 @@ Vocabulary size:  187
 # Use default paths
 python3 train_pylaia_ukrainian_v2c.py
 
-# Or specify custom directories
+# Or specify custom directories (use line continuation for readability)
 python3 train_pylaia_ukrainian_v2c.py \
-  --data-dir data/pylaia_ukrainian_v2c_combined \
-  --output-dir models/my_custom_model
+    --data-dir data/pylaia_ukrainian_v2c_combined \
+    --output-dir models/my_custom_model
 ```
 
 **Pros:** See training progress in real-time
@@ -98,8 +98,8 @@ tail -f training_ukrainian_v2c.log
 
 # Option 3: Manual nohup command with custom paths
 nohup python3 train_pylaia_ukrainian_v2c.py \
-  --data-dir /path/to/data \
-  --output-dir /path/to/models > training.log 2>&1 &
+    --data-dir /path/to/data \
+    --output-dir /path/to/models > training.log 2>&1 &
 ```
 
 **Pros:** Training continues even if terminal closes

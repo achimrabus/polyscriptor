@@ -37,6 +37,28 @@ def run_extraction(input_dir: str, output_dir: str, description: str, python_int
     print(f"Workers: 24 (limited for system stability)")
     print("="*70)
     
+    # Validate Python interpreter if provided
+    if python_interpreter:
+        python_path = Path(python_interpreter)
+        if not python_path.exists():
+            print(f"❌ ERROR: Python interpreter not found: {python_interpreter}")
+            sys.exit(1)
+        if not python_path.is_file():
+            print(f"❌ ERROR: Python interpreter is not a file: {python_interpreter}")
+            sys.exit(1)
+        # Try to verify it's executable
+        try:
+            result = subprocess.run([python_interpreter, '--version'], 
+                                   capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                print(f"❌ ERROR: Python interpreter failed to run: {python_interpreter}")
+                sys.exit(1)
+            print(f"✅ Using Python interpreter: {python_interpreter} ({result.stdout.strip()})")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"❌ ERROR: Cannot execute Python interpreter: {python_interpreter}")
+            print(f"   {e}")
+            sys.exit(1)
+    
     # Check if output directory already exists
     output_path = Path(output_dir)
     if output_path.exists():
