@@ -11,9 +11,9 @@ This script ensures:
 Critical: This fixes the V2b bug where Лист files were excluded due to
 missing EXIF rotation, causing coordinate misalignment.
 
-Input:
-- /home/achimrabus/htr_gui/Ukrainian_Data/training_set/ (773 images)
-- /home/achimrabus/htr_gui/Ukrainian_Data/validation_set/ (28 images)
+Input (configurable via command-line arguments):
+- Ukrainian_Data/training_set/ (773 images)
+- Ukrainian_Data/validation_set/ (28 images)
 
 Output:
 - data/pylaia_ukrainian_v2c_train/ (expected: ~23,000+ lines from 773 pages)
@@ -24,8 +24,9 @@ import subprocess
 import sys
 from pathlib import Path
 from multiprocessing import cpu_count
+import argparse
 
-def run_extraction(input_dir: str, output_dir: str, description: str):
+def run_extraction(input_dir: str, output_dir: str, description: str, python_interpreter: str = None):
     """Run transkribus_parser.py with full parallelism."""
     
     print("\n" + "="*70)
@@ -71,9 +72,12 @@ def run_extraction(input_dir: str, output_dir: str, description: str):
     if list_files:
         print(f"✅ Found {len(list_files)} Лист files (will be included!)")
     
+    # Use specified Python interpreter or fall back to sys.executable
+    python_cmd = python_interpreter if python_interpreter else sys.executable
+    
     # Run extraction with polygon masking and aspect ratio preservation
     cmd = [
-        '/home/achimrabus/htr_gui/dhlab-slavistik/htr_gui/bin/python',
+        python_cmd,
         'transkribus_parser.py',
         '--input_dir', input_dir,
         '--output_dir', output_dir,
@@ -133,7 +137,52 @@ def run_extraction(input_dir: str, output_dir: str, description: str):
     
     return num_lines, len(pages)
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Re-extract Ukrainian V2c training data with EXIF fix',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Use default paths
+  python3 reextract_ukrainian_v2c.py
+
+  # Specify custom input directories
+  python3 reextract_ukrainian_v2c.py \\
+      --train-dir /path/to/training_set \\
+      --val-dir /path/to/validation_set
+
+  # Specify custom Python interpreter
+  python3 reextract_ukrainian_v2c.py --python /path/to/python
+        """
+    )
+    
+    parser.add_argument(
+        '--train-dir',
+        type=str,
+        default='Ukrainian_Data/training_set',
+        help='Path to training set directory (default: Ukrainian_Data/training_set)'
+    )
+    
+    parser.add_argument(
+        '--val-dir',
+        type=str,
+        default='Ukrainian_Data/validation_set',
+        help='Path to validation set directory (default: Ukrainian_Data/validation_set)'
+    )
+    
+    parser.add_argument(
+        '--python',
+        type=str,
+        default=None,
+        help='Path to Python interpreter (default: current Python interpreter)'
+    )
+    
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
+    
     print("╔" + "="*68 + "╗")
     print("║" + " "*15 + "Ukrainian V2c Data Re-extraction" + " "*21 + "║")
     print("║" + " "*15 + "WITH EXIF FIX + Лист FILES" + " "*27 + "║")
@@ -141,16 +190,18 @@ def main():
     
     # Extract training set - use NEW directory name to avoid conflict
     train_lines, train_pages = run_extraction(
-        input_dir='/home/achimrabus/htr_gui/Ukrainian_Data/training_set',
+        input_dir=args.train_dir,
         output_dir='data/pylaia_ukrainian_v2c_train_fresh',
-        description='Training Set (773 pages expected)'
+        description='Training Set (773 pages expected)',
+        python_interpreter=args.python
     )
     
     # Extract validation set - use NEW directory name to avoid conflict
     val_lines, val_pages = run_extraction(
-        input_dir='/home/achimrabus/htr_gui/Ukrainian_Data/validation_set',
+        input_dir=args.val_dir,
         output_dir='data/pylaia_ukrainian_v2c_val_fresh',
-        description='Validation Set (28 pages expected)'
+        description='Validation Set (28 pages expected)',
+        python_interpreter=args.python
     )
     
     print("\n" + "╔" + "="*68 + "╗")

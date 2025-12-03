@@ -30,8 +30,11 @@ Usage:
     # Convert data first (if not done):
     python3 convert_ukrainian_v2c_to_pylaia.py
     
-    # Start training:
+    # Start training with default paths:
     python3 train_pylaia_ukrainian_v2c.py
+    
+    # Or specify custom directories:
+    python3 train_pylaia_ukrainian_v2c.py --data-dir /path/to/data --output-dir /path/to/models
     
     # Or with nohup (recommended for long training):
     nohup python3 train_pylaia_ukrainian_v2c.py > training_ukrainian_v2c.log 2>&1 &
@@ -54,6 +57,7 @@ import logging
 from datetime import datetime
 import shutil
 import sys
+import argparse
 
 # Import from train_pylaia.py
 from train_pylaia import (
@@ -74,9 +78,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def check_data_directory():
+def check_data_directory(data_dir_path):
     """Verify that the data directory exists and has been converted to PyLaia format."""
-    data_dir = Path('/home/achimrabus/htr_gui/dhlab-slavistik/data/pylaia_ukrainian_v2c_combined')
+    data_dir = Path(data_dir_path)
     
     if not data_dir.exists():
         logger.error(f"Data directory not found: {data_dir}")
@@ -101,9 +105,49 @@ def check_data_directory():
     
     return data_dir
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Train PyLaia CRNN model on Ukrainian V2c dataset',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Use default paths
+  python3 train_pylaia_ukrainian_v2c.py
+
+  # Specify custom data directory
+  python3 train_pylaia_ukrainian_v2c.py --data-dir /path/to/data
+
+  # Specify custom output directory
+  python3 train_pylaia_ukrainian_v2c.py --output-dir /path/to/models
+
+  # With nohup (recommended for long training)
+  nohup python3 train_pylaia_ukrainian_v2c.py > training.log 2>&1 &
+        """
+    )
+    
+    parser.add_argument(
+        '--data-dir',
+        type=str,
+        default='data/pylaia_ukrainian_v2c_combined',
+        help='Path to the PyLaia format data directory (default: data/pylaia_ukrainian_v2c_combined)'
+    )
+    
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default=None,
+        help='Path to output directory for model checkpoints. If not specified, uses models/pylaia_ukrainian_v2c_<timestamp>'
+    )
+    
+    return parser.parse_args()
+
 def main():
+    # Parse command-line arguments
+    args = parse_args()
+    
     # Check data directory
-    data_dir = check_data_directory()
+    data_dir = check_data_directory(args.data_dir)
     
     # Load dataset info
     with open(data_dir / 'dataset_info.json', 'r') as f:
@@ -122,10 +166,16 @@ def main():
     
     # Configuration
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Determine output directory
+    if args.output_dir:
+        output_dir_path = args.output_dir
+    else:
+        output_dir_path = f'models/pylaia_ukrainian_v2c_{timestamp}'
 
     config = {
         'data_dir': str(data_dir),
-        'output_dir': f'/home/achimrabus/htr_gui/dhlab-slavistik/models/pylaia_ukrainian_v2c_{timestamp}',
+        'output_dir': output_dir_path,
         'img_height': 128,
         'batch_size': 64,  # Optimized for NVIDIA L40S 46GB (was 32)
         'num_workers': 8,  # Optimized for AMD EPYC 9124
