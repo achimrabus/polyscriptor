@@ -62,6 +62,22 @@ class OpenWebUIEngine(HTREngine):
 
         # Default API configuration
         self.base_url = "https://openwebui.uni-freiburg.de/api"
+        
+        # Load environment variables from .env file (only once when instantiated)
+        self._load_env_variables()
+
+    def _load_env_variables(self):
+        """Load environment variables from .env file if available."""
+        try:
+            from dotenv import load_dotenv
+            # Look for .env in the project root (parent of engines/)
+            env_path = Path(__file__).parent.parent / ".env"
+            if env_path.exists():
+                load_dotenv(env_path)
+        except ImportError:
+            # Silently skip if python-dotenv is not installed
+            # Environment variables can still be set via OS
+            pass
 
         # Load environment variables from .env file (if available)
         self._load_env_file()
