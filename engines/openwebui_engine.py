@@ -62,7 +62,7 @@ class OpenWebUIEngine(HTREngine):
 
         # Default API configuration
         self.base_url = "https://openwebui.uni-freiburg.de/api"
-        
+
         # Load environment variables from .env file (if available)
         self._load_env_file()
 
