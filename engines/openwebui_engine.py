@@ -33,6 +33,12 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+
 
 class OpenWebUIEngine(HTREngine):
     """OpenWebUI API HTR engine plugin (OpenAI-compatible)."""
@@ -61,16 +67,19 @@ class OpenWebUIEngine(HTREngine):
         self._load_env_file()
 
     def _load_env_file(self):
-        """Load environment variables from .env file if available."""
-        try:
-            from dotenv import load_dotenv
-            # Look for .env in the project root (parent of engines/)
-            env_path = Path(__file__).parent.parent / ".env"
-            if env_path.exists():
-                load_dotenv(env_path)
-        except ImportError:
-            # python-dotenv not installed, environment variables won't be loaded from .env
-            pass
+        """Load environment variables from project root's .env file.
+        
+        Looks for .env in the project root directory (parent of engines/).
+        Silently skips loading if python-dotenv is not installed or if .env doesn't exist.
+        This allows API keys and other config to be loaded from .env without requiring
+        the dotenv package to be installed.
+        """
+        if not DOTENV_AVAILABLE:
+            return
+            
+        env_path = Path(__file__).parent.parent / ".env"
+        if env_path.exists():
+            load_dotenv(env_path)
 
     def get_name(self) -> str:
         return "OpenWebUI"
