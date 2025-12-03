@@ -15,17 +15,6 @@ import base64
 
 from htr_engine_base import HTREngine, TranscriptionResult
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    # Look for .env in the project root (parent of engines/)
-    env_path = Path(__file__).parent.parent / ".env"
-    if env_path.exists():
-        load_dotenv(env_path)
-        print(f"[OpenWebUIEngine] Loaded environment variables from {env_path}")
-except ImportError:
-    print("[OpenWebUIEngine] Warning: python-dotenv not installed. API keys will not be loaded from .env file.")
-
 try:
     from PyQt6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -43,6 +32,12 @@ try:
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
+
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
 
 
 class OpenWebUIEngine(HTREngine):
@@ -67,6 +62,28 @@ class OpenWebUIEngine(HTREngine):
 
         # Default API configuration
         self.base_url = "https://openwebui.uni-freiburg.de/api"
+
+        # Load environment variables from .env file (if available)
+        self._load_env_file()
+
+    def _load_env_file(self):
+        """Load environment variables from project root's .env file.
+        
+        Looks for .env in the project root directory (parent of engines/).
+        Silently skips loading if python-dotenv is not installed or if .env doesn't exist.
+        
+        Environment variables loaded (if present):
+            - OPENWEBUI_API_KEY: Used as fallback when API key not in config
+        
+        If .env loading fails or is skipped, the engine will still work if API keys
+        are provided through other means (config, OS environment variables).
+        """
+        if not DOTENV_AVAILABLE:
+            return
+            
+        env_path = Path(__file__).parent.parent / ".env"
+        if env_path.exists():
+            load_dotenv(env_path)
 
     def get_name(self) -> str:
         return "OpenWebUI"
