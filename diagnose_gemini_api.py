@@ -20,7 +20,6 @@ import os
 import sys
 from pathlib import Path
 from PIL import Image
-import json
 
 try:
     import google.generativeai as genai
@@ -90,7 +89,6 @@ def test_list_models(api_key):
         for model in models:
             if 'generateContent' in model.supported_generation_methods:
                 model_name = model.name.replace("models/", "")
-                supports_vision = hasattr(model, 'supported_generation_methods')
                 vision_models.append(model_name)
                 
                 # Show key models

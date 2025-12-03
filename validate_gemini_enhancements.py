@@ -99,9 +99,8 @@ def test_gui_controls():
         from PyQt6.QtWidgets import QApplication, QLineEdit
         
         # Minimal QApplication for widget creation
-        app = QApplication.instance()
-        if app is None:
-            app = QApplication(sys.argv)
+        if QApplication.instance() is None:
+            QApplication(sys.argv)
         
         # Test new controls
         min_chars = QLineEdit()
