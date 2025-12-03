@@ -719,7 +719,7 @@ class GeminiInference(BaseAPIInference):
                         except Exception as text_e:
                             if verbose_block_logging:
                                 print(f"   Warning: Had parts but couldn't extract text: {text_e}")
-                            pass  # Fall through to error handling below
+                            # Fall through to error handling below
                     # If still blocked, append retry diagnostics
                     if verbose_block_logging:
                         print("❌ Retry also blocked - no response parts generated")
