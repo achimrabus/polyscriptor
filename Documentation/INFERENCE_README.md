@@ -44,9 +44,11 @@ python inference_page.py \
 ```bash
 python inference_page.py \
     --image page.jpg \
-    --xml page.xml \
+    --xml page/page.xml \
     --checkpoint models/ukrainian_model/checkpoint-3000
 ```
+
+**Note:** Transkribus exports PAGE XML files to a `page/` subdirectory by default. If processing a folder exported from Transkribus, your XML files will be in `<export_folder>/page/*.xml` while images are in `<export_folder>/*.jpg`.
 
 **Command-line arguments:**
 - `--image`: Path to input page image (required)
@@ -105,11 +107,23 @@ If you have Transkribus PAGE XML annotations, you can use them for more accurate
 ```bash
 python inference_page.py \
     --image page.jpg \
-    --xml page.xml \
+    --xml page/page.xml \
     --checkpoint checkpoint-3000
 ```
 
 This uses the exact line coordinates from your Transkribus export.
+
+**Transkribus Export Structure:**
+```
+transkribus_export/
+├── image1.jpg
+├── image2.jpg
+└── page/
+    ├── image1.xml
+    └── image2.xml
+```
+
+Transkribus always exports PAGE XML files to a `page/` subdirectory. The batch processor automatically looks for XML files in this location.
 
 ## Choosing a Checkpoint
 
@@ -153,16 +167,28 @@ python inference_page.py \
     --device cuda
 ```
 
-**Batch processing multiple pages:**
+**Batch processing with Transkribus XML:**
 ```bash
-# Process all pages in a directory
-for img in pages/*.jpg; do
+# Process Transkribus export with PAGE XML
+for img in transkribus_export/*.jpg; do
+    base=$(basename "$img" .jpg)
     python inference_page.py \
         --image "$img" \
+        --xml "transkribus_export/page/${base}.xml" \
         --checkpoint models/ukrainian_model/checkpoint-3000 \
         --num_beams 4
 done
 ```
+
+**Or use the dedicated batch processor (recommended):**
+```bash
+python batch_processing.py \
+    --input transkribus_export \
+    --output results \
+    --checkpoint models/ukrainian_model/checkpoint-3000 \
+    --use_pagexml
+```
+The batch processor automatically finds PAGE XML files in the `page/` subdirectory.
 
 ### GPU Acceleration
 The script automatically uses CUDA if available. To force CPU:
@@ -172,44 +198,51 @@ python inference_page.py --image page.jpg --checkpoint checkpoint-3000 --device 
 
 ## Example Workflow
 
-**1. Prepare your data:**
+**1. Prepare your data (Transkribus export):**
 ```
 project/
-├── pages/
+├── transkribus_export/
 │   ├── page001.jpg
 │   ├── page002.jpg
-│   └── page003.jpg
+│   ├── page003.jpg
+│   └── page/              ← XML files in subdirectory
+│       ├── page001.xml
+│       ├── page002.xml
+│       └── page003.xml
 └── models/
     └── ukrainian_model/
         └── checkpoint-3000/
 ```
 
-**2. Process a single page:**
+**2. Process with batch processor (recommended):**
 ```bash
-python inference_page.py \
-    --image pages/page001.jpg \
+python batch_processing.py \
+    --input transkribus_export \
+    --output results \
     --checkpoint models/ukrainian_model/checkpoint-3000 \
-    --output transcriptions/page001.txt
+    --use_pagexml
 ```
+
+The batch processor will:
+- Automatically find PAGE XML files in `transkribus_export/page/`
+- Use XML coordinates for accurate line extraction
+- Fall back to auto-segmentation if XML is invalid/missing
+- Handle EXIF rotation automatically
+- Generate transcriptions and optionally PAGE XML output
 
 **3. Check results:**
 ```bash
-cat transcriptions/page001.txt
-```
-
-**4. Process all pages:**
-```bash
-mkdir -p transcriptions
-for img in pages/*.jpg; do
-    base=$(basename "$img" .jpg)
-    python inference_page.py \
-        --image "$img" \
-        --checkpoint models/ukrainian_model/checkpoint-3000 \
-        --output "transcriptions/${base}.txt"
-done
+ls results/transcriptions/
+cat results/transcriptions/page001.txt
 ```
 
 ## Troubleshooting
+
+### "PAGE XML dimensions mismatch" warnings
+If you see dimension mismatch errors like `XML: 2848x4272, actual: 4272x2848`, this is caused by EXIF rotation metadata in your images. The batch processor automatically handles this using `ImageOps.exif_transpose()`. If you encounter this:
+- **Update to latest version** (EXIF fix added Nov 2025)
+- The processor will automatically rotate images to match PAGE XML
+- About 18% of images may have EXIF rotation tags
 
 ### "No lines detected"
 - Try adjusting `--min_line_height` (default: 20)

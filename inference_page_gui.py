@@ -178,8 +178,11 @@ class TrOCRGUI:
             return
 
         try:
+            from PIL import ImageOps
             Image.MAX_IMAGE_PIXELS = None
-            self.current_image = Image.open(self.image_path).convert('RGB')
+            self.current_image = Image.open(self.image_path)
+            self.current_image = ImageOps.exif_transpose(self.current_image)  # Fix EXIF orientation
+            self.current_image = self.current_image.convert('RGB')
 
             # Create thumbnail for preview
             thumb = self.current_image.copy()

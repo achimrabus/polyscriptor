@@ -6,6 +6,8 @@ Supports multiple models available on the OpenWebUI platform.
 """
 
 from typing import Dict, Any, Optional, List
+from pathlib import Path
+import os
 import numpy as np
 from PIL import Image
 import io
@@ -31,6 +33,12 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+
 
 class OpenWebUIEngine(HTREngine):
     """OpenWebUI API HTR engine plugin (OpenAI-compatible)."""
@@ -39,6 +47,9 @@ class OpenWebUIEngine(HTREngine):
         self.client: Optional[OpenAI] = None
         self._config_widget: Optional[QWidget] = None
         self._available_models: List[str] = []
+
+        # Store config from load_model for batch processing
+        self._loaded_config: Dict[str, Any] = {}
 
         # Widget references
         self._model_combo: Optional[QComboBox] = None
@@ -51,12 +62,50 @@ class OpenWebUIEngine(HTREngine):
 
         # Default API configuration
         self.base_url = "https://openwebui.uni-freiburg.de/api"
+        
+        # Load environment variables from .env file (only once when instantiated)
+        self._load_env_variables()
+
+    def _load_env_variables(self):
+        """Load environment variables from .env file if available."""
+        try:
+            from dotenv import load_dotenv
+            # Look for .env in the project root (parent of engines/)
+            env_path = Path(__file__).parent.parent / ".env"
+            if env_path.exists():
+                load_dotenv(env_path)
+        except ImportError:
+            # Silently skip if python-dotenv is not installed
+            # Environment variables can still be set via OS
+            pass
+
+        # Load environment variables from .env file (if available)
+        self._load_env_file()
+
+    def _load_env_file(self):
+        """Load environment variables from project root's .env file.
+        
+        Looks for .env in the project root directory (parent of engines/).
+        Silently skips loading if python-dotenv is not installed or if .env doesn't exist.
+        
+        Environment variables loaded (if present):
+            - OPENWEBUI_API_KEY: Used as fallback when API key not in config
+        
+        If .env loading fails or is skipped, the engine will still work if API keys
+        are provided through other means (config, OS environment variables).
+        """
+        if not DOTENV_AVAILABLE:
+            return
+            
+        env_path = Path(__file__).parent.parent / ".env"
+        if env_path.exists():
+            load_dotenv(env_path)
 
     def get_name(self) -> str:
-        return "OpenWebUI (Uni Freiburg)"
+        return "OpenWebUI"
 
     def get_description(self) -> str:
-        return "OpenWebUI API from uni-freiburg.de (OpenAI-compatible, multiple models)"
+        return "OpenWebUI API from openwebui.uni-freiburg.de (OpenAI-compatible, multiple models)"
 
     def is_available(self) -> bool:
         return OPENAI_AVAILABLE and PYQT_AVAILABLE
@@ -304,9 +353,16 @@ class OpenWebUIEngine(HTREngine):
         try:
             api_key = config.get("api_key", "")
 
+            # Fall back to environment variable if no API key provided
             if not api_key:
-                print("Error: No API key provided")
+                api_key = os.environ.get("OPENWEBUI_API_KEY", "")
+
+            if not api_key:
+                print("Error: No API key provided. Set via config or OPENWEBUI_API_KEY env var.")
                 return False
+
+            # Store config for batch processing (model, temperature, etc.)
+            self._loaded_config = config.copy()
 
             # Save API key for future use
             if self._api_key_edit and self._api_key_edit.text().strip():
@@ -318,7 +374,8 @@ class OpenWebUIEngine(HTREngine):
                 api_key=api_key
             )
 
-            print(f"[OpenWebUI] Client initialized with base URL: {self.base_url}")
+            model = config.get("model", config.get("model_id", "unknown"))
+            print(f"[OpenWebUI] Client initialized with base URL: {self.base_url}, model: {model}")
             return True
 
         except Exception as e:
@@ -330,6 +387,7 @@ class OpenWebUIEngine(HTREngine):
         """Unload OpenWebUI client."""
         if self.client is not None:
             self.client = None
+        self._loaded_config = {}
 
     def is_model_loaded(self) -> bool:
         """Check if client is initialized."""
@@ -341,7 +399,11 @@ class OpenWebUIEngine(HTREngine):
             return TranscriptionResult(text="[OpenWebUI client not initialized]", confidence=0.0)
 
         if config is None:
-            config = self.get_config()
+            # First try loaded config (from batch processing), then GUI config
+            if self._loaded_config:
+                config = self._loaded_config
+            else:
+                config = self.get_config()
 
         try:
             # Convert numpy array to PIL Image
