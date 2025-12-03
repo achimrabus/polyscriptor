@@ -164,6 +164,18 @@ See `models/README.md` for links to downloadable pre-trained models.
 
 ---
 
+## ✅ Preparing for Public Releases
+
+To keep the repository safe for publication, use the sanitation checklist in `docs/PUBLICATION_CHECKLIST.md` and rely on the sanitized template in `examples/example_training_config.yaml`. When working with private data:
+
+- Keep private configs and notes outside the repo (or in an ignored `internal/` folder) and use environment variables for paths/keys.
+- Replace dataset-specific file names with placeholders before sharing configs.
+- Strip notebook outputs and double-check that screenshots or assets are redistributable.
+
+These steps will simplify history scrubbing and reduce the risk of leaking credentials or proprietary datasets.
+
+---
+
 ## 🛠️ Command-Line Inference
 
 ### PyLaia (Single Line)

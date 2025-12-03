@@ -198,6 +198,10 @@ debug_*.py
 # Server environment config (private)
 SERVER_ENV.md
 
+# Private/staging workspace for internal notes
+internal/
+private_docs/
+
 htr_gui/
 
 # Training logs
@@ -210,3 +214,7 @@ inspect_*.ipynb
 
 # Gabelsberger shorthand preparation (work in progress)
 prepare_gabelsberger_shorthand.py
+
+# Public release planning docs (explicitly tracked)
+!docs/DOCUMENT_CLASSIFICATION_STATUS.md
+!docs/NOTEBOOK_CLEANUP_PLAN.md
