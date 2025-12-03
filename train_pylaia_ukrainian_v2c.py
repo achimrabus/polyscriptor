@@ -146,13 +146,7 @@ def main():
     # Parse command-line arguments
     args = parse_args()
     
-    # Validate data directory path
-    data_dir_path = Path(args.data_dir)
-    if not data_dir_path.is_absolute() and not (Path.cwd() / data_dir_path).exists():
-        # Relative path that doesn't exist yet - this is okay, check_data_directory will handle it
-        pass
-    
-    # Check data directory
+    # Check data directory (validates existence and required files)
     data_dir = check_data_directory(args.data_dir)
     
     # Load dataset info

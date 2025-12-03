@@ -40,13 +40,22 @@ def run_extraction(input_dir: str, output_dir: str, description: str, python_int
     # Validate Python interpreter if provided
     if python_interpreter:
         python_path = Path(python_interpreter)
+        
+        # Security check: Warn about using custom interpreter paths
+        print(f"⚠️  WARNING: Using custom Python interpreter: {python_interpreter}")
+        print(f"   Ensure this is from a trusted source!")
+        
         if not python_path.exists():
             print(f"❌ ERROR: Python interpreter not found: {python_interpreter}")
             sys.exit(1)
         if not python_path.is_file():
             print(f"❌ ERROR: Python interpreter is not a file: {python_interpreter}")
             sys.exit(1)
-        # Try to verify it's executable
+        
+        # Resolve to absolute path for safety
+        python_interpreter = str(python_path.resolve())
+        
+        # Try to verify it's a valid Python executable
         try:
             result = subprocess.run([python_interpreter, '--version'], 
                                    capture_output=True, text=True, timeout=5)
@@ -197,7 +206,7 @@ Examples:
         '--python',
         type=str,
         default=None,
-        help='Path to Python interpreter (default: current Python interpreter)'
+        help='Path to Python interpreter (default: current Python interpreter). WARNING: Only use trusted interpreters.'
     )
     
     return parser.parse_args()
