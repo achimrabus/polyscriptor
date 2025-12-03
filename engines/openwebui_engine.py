@@ -71,8 +71,12 @@ class OpenWebUIEngine(HTREngine):
         
         Looks for .env in the project root directory (parent of engines/).
         Silently skips loading if python-dotenv is not installed or if .env doesn't exist.
-        This allows API keys and other config to be loaded from .env without requiring
-        the dotenv package to be installed.
+        
+        Environment variables loaded (if present):
+            - OPENWEBUI_API_KEY: Used as fallback when API key not in config
+        
+        If .env loading fails or is skipped, the engine will still work if API keys
+        are provided through other means (config, OS environment variables).
         """
         if not DOTENV_AVAILABLE:
             return
