@@ -94,8 +94,7 @@ def analyze_extracted_line_image(image_path: Path) -> Dict:
         img = Image.open(image_path).convert('L')
         img_array = np.array(img)
 
-        # Calculate histogram of pixel values
-        hist, bins = np.histogram(img_array, bins=256, range=(0, 256))
+        # Histogram calculation removed - was unused
 
         # Detect whitespace (threshold at 200)
         whitespace_threshold = 200

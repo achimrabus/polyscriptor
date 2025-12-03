@@ -498,7 +498,7 @@ class GeminiInference(BaseAPIInference):
                                     reasoning_fallback_triggered = True
                                     break
                         except Exception:
-                            pass
+                            pass  # Ignore errors in token usage introspection; not critical to main inference flow
                     elif verbose_block_logging and hasattr(event, 'candidates') and event.candidates:
                         # Approximate progress by count of events
                         print(f"[stream] event candidates={len(event.candidates)} parts={[len(getattr(c.content,'parts',[])) for c in event.candidates if hasattr(c,'content')]}")

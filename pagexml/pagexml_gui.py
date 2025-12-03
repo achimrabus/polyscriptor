@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread
+from PyQt6.QtCore import pyqtSignal, QObject, QThread
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFileDialog, QLineEdit, QPushButton,
     QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QSpinBox, QCheckBox,
@@ -56,22 +56,22 @@ class BatchWorker(QObject):
                 if not self._stop_event.is_set():
                     try:
                         self.log.emit(msg)
-                    except:
-                        pass
+                    except Exception:
+                        pass  # Ignore signal emission errors during shutdown
 
             def _on_progress(cur: int, total: int):
                 if not self._stop_event.is_set():
                     try:
                         self.progress.emit(cur, total)
-                    except:
-                        pass
+                    except Exception:
+                        pass  # Ignore signal emission errors during shutdown
 
             def _on_file(name: str, regions: int, lines: int):
                 if not self._stop_event.is_set():
                     try:
                         self.file_done.emit(name, regions, lines)
-                    except:
-                        pass
+                    except Exception:
+                        pass  # Ignore signal emission errors during shutdown
 
             run_batch(
                 input_dir=self.params.input_dir,
@@ -95,8 +95,8 @@ class BatchWorker(QObject):
                 error_msg = f"Batch processing error: {e}\n{traceback.format_exc()}"
                 try:
                     self.error.emit(error_msg)
-                except:
-                    print(error_msg)
+                except Exception:
+                    print(error_msg)  # Fallback to print if signal fails
         finally:
             try:
                 self.finished.emit()
@@ -476,8 +476,8 @@ class MainWindow(QMainWindow):
                     self.worker.log.disconnect()
                     self.worker.error.disconnect()
                     self.worker.finished.disconnect()
-                except:
-                    pass
+                except Exception:
+                    pass  # Signals may already be disconnected or worker deleted
                 
                 # Wait longer for thread to finish naturally (10 seconds)
                 if not self.thread.wait(10000):

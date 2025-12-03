@@ -4,7 +4,7 @@ Visualize line image comparison between Church Slavonic and Prosta Mova.
 """
 
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import numpy as np
 
 def analyze_and_visualize_line(image_path: Path):

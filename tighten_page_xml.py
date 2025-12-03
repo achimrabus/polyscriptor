@@ -31,7 +31,6 @@ import numpy as np
 from PIL import Image
 import argparse
 import shutil
-import random
 
 
 class PageXMLTightener:
@@ -116,7 +115,6 @@ class PageXMLTightener:
         new_bottom_y = bottom_y + self.padding
 
         # Get original bbox
-        x_coords = [x for x, y in coords]
         y_coords = [y for x, y in coords]
         old_top_y = min(y_coords)
         old_bottom_y = max(y_coords)

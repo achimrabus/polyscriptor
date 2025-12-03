@@ -649,7 +649,7 @@ class CommercialAPIEngine(HTREngine):
                         try:
                             fallback_cap = int(fc_text)
                         except ValueError:
-                            pass
+                            pass  # Keep default if invalid value
                 
                 # Override max_tokens for LOW thinking mode if specified
                 if thinking_mode == 'low' and hasattr(self, '_low_initial_tokens_edit') and self._low_initial_tokens_edit is not None:

@@ -24,7 +24,7 @@ import time
 
 try:
     # Local module
-    from kraken_segmenter import KrakenLineSegmenter, LineSegment
+    from kraken_segmenter import KrakenLineSegmenter
 except Exception as e:
     raise ImportError("kraken_segmenter.py not found or Kraken is not installed. Install with: pip install kraken")
 
