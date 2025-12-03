@@ -20,6 +20,28 @@
 
 ## 🚀 Step-by-Step Workflow
 
+### Step 0: (Optional) Re-extract Data with EXIF Fix
+
+If you need to re-extract the original data:
+
+```bash
+# Use default paths
+python3 reextract_ukrainian_v2c.py
+
+# Or specify custom directories
+python3 reextract_ukrainian_v2c.py \
+  --train-dir /path/to/training_set \
+  --val-dir /path/to/validation_set
+
+# Or specify custom Python interpreter
+python3 reextract_ukrainian_v2c.py \
+  --python /path/to/venv/bin/python
+```
+
+**Note:** This step is only needed if you're working with the original Transkribus data and haven't already extracted it with the EXIF fix.
+
+---
+
 ### Step 1: Convert Data to PyLaia Format
 
 ```bash
@@ -50,7 +72,13 @@ Vocabulary size:  187
 ### Step 2: Start Training (Option A - Interactive)
 
 ```bash
+# Use default paths
 python3 train_pylaia_ukrainian_v2c.py
+
+# Or specify custom directories
+python3 train_pylaia_ukrainian_v2c.py \
+  --data-dir data/pylaia_ukrainian_v2c_combined \
+  --output-dir models/my_custom_model
 ```
 
 **Pros:** See training progress in real-time
@@ -64,9 +92,14 @@ python3 train_pylaia_ukrainian_v2c.py
 # Option 1: Use the shell script (easiest)
 bash start_ukrainian_v2c_training.sh
 
-# Option 2: Manual nohup command
+# Option 2: Manual nohup command with default paths
 nohup python3 train_pylaia_ukrainian_v2c.py > training_ukrainian_v2c.log 2>&1 &
 tail -f training_ukrainian_v2c.log
+
+# Option 3: Manual nohup command with custom paths
+nohup python3 train_pylaia_ukrainian_v2c.py \
+  --data-dir /path/to/data \
+  --output-dir /path/to/models > training.log 2>&1 &
 ```
 
 **Pros:** Training continues even if terminal closes
@@ -120,6 +153,22 @@ pkill -f train_pylaia_ukrainian_v2c.py
 ---
 
 ## 📊 Training Configuration
+
+### Command-Line Options
+
+The training script now supports configurable paths:
+
+```bash
+python3 train_pylaia_ukrainian_v2c.py --help
+
+# Available options:
+#   --data-dir PATH     Path to PyLaia format data directory
+#                       (default: data/pylaia_ukrainian_v2c_combined)
+#   --output-dir PATH   Path to output directory for model checkpoints
+#                       (default: models/pylaia_ukrainian_v2c_<timestamp>)
+```
+
+### Model Configuration
 
 ```json
 {
@@ -193,7 +242,7 @@ models/pylaia_ukrainian_v2c_<timestamp>/
 # Run batch processing on Лист validation files
 python3 batch_processing.py \
   --model models/pylaia_ukrainian_v2c_<timestamp>/best_model.pt \
-  --input /home/achimrabus/htr_gui/Ukrainian_Data/validation_set/ \
+  --input Ukrainian_Data/validation_set/ \
   --output results_v2c_list/
 
 # Compare with V2b results
@@ -201,6 +250,8 @@ python3 compare_cer.py \
   --v2b batch_results.json \
   --v2c results_v2c_list/batch_results.json
 ```
+
+**Note:** Replace `Ukrainian_Data/validation_set/` with your actual validation data path.
 
 ### Expected Improvements:
 - **Лист 021**: 90%+ CER (V2b) → <5% CER (V2c)
