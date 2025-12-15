@@ -38,6 +38,7 @@ class LineSegment:
     image: Image.Image
     bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
     coords: Optional[List[Tuple[int, int]]] = None  # polygon coordinates if available
+    baseline: Optional[List[Tuple[int, int]]] = None  # baseline coordinates (curved line)
     text: Optional[str] = None  # transcription result
     confidence: Optional[float] = None  # average confidence score (0-1)
     char_confidences: Optional[List[float]] = None  # per-character confidence scores
@@ -358,6 +359,14 @@ class PageXMLSegmenter:
                 coords = self._parse_coords(coords_str)
                 x1, y1, x2, y2 = self._get_bounding_box(coords)
 
+                # Extract baseline (if available)
+                baseline = None
+                baseline_elem = text_line.find('page:Baseline', self.NS)
+                if baseline_elem is not None:
+                    baseline_str = baseline_elem.get('points')
+                    if baseline_str:
+                        baseline = self._parse_coords(baseline_str)
+
                 # Crop line with padding
                 padding = 5
                 x1_pad = max(0, x1 - padding)
@@ -371,7 +380,8 @@ class PageXMLSegmenter:
                 segment = LineSegment(
                     image=line_img,
                     bbox=bbox,
-                    coords=coords
+                    coords=coords,
+                    baseline=baseline
                 )
 
                 # Extract line reading order from custom attribute

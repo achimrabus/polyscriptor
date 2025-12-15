@@ -749,7 +749,7 @@ class BatchHTRProcessor:
 
                     # Normalize Kraken LineSegments to inference_page format
                     # Kraken: bbox=(x1,y1,x2,y2), baseline attribute
-                    # inference_page: bbox=(x,y,w,h), coords attribute
+                    # inference_page: bbox=(x,y,w,h), baseline attribute
                     if self.args.segmentation_method == 'kraken' and len(lines) > 0:
                         normalized_lines = []
                         for line in lines:
@@ -757,7 +757,8 @@ class BatchHTRProcessor:
                             normalized_lines.append(LineSegment(
                                 image=line.image,
                                 bbox=(x1, y1, x2-x1, y2-y1),  # Convert to (x, y, w, h)
-                                coords=line.baseline if hasattr(line, 'baseline') else None,
+                                coords=None,  # Kraken doesn't provide polygon coords
+                                baseline=line.baseline if hasattr(line, 'baseline') else None,
                                 text=None,
                                 confidence=None,
                                 char_confidences=None

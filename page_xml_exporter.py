@@ -118,11 +118,17 @@ class PageXMLExporter:
                 points_str = f'{x1},{y1} {x2},{y1} {x2},{y2} {x1},{y2}'
             coords.set('points', points_str)
 
-            # Baseline (approximate from bbox)
-            baseline = ET.SubElement(line, 'Baseline')
-            x1, y1, x2, y2 = segment.bbox
-            baseline_y = y2 - 5  # Approximate baseline near bottom
-            baseline.set('points', f'{x1},{baseline_y} {x2},{baseline_y}')
+            # Baseline (use real baseline if available, otherwise approximate from bbox)
+            baseline_elem = ET.SubElement(line, 'Baseline')
+            if hasattr(segment, 'baseline') and segment.baseline:
+                # Use real baseline coordinates (curved)
+                baseline_points_str = ' '.join(f'{x},{y}' for x, y in segment.baseline)
+                baseline_elem.set('points', baseline_points_str)
+            else:
+                # Fallback: approximate baseline from bbox (straight line)
+                x1, y1, x2, y2 = segment.bbox
+                baseline_y = y2 - 5  # Approximate baseline near bottom
+                baseline_elem.set('points', f'{x1},{baseline_y} {x2},{baseline_y}')
 
             # Text content (only if text attribute exists and is not empty)
             if hasattr(segment, 'text') and segment.text:

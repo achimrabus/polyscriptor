@@ -123,8 +123,7 @@ python3 train_pylaia.py \
 │   └── README.md                    # Links to downloadable models
 │
 └── docs/
-    ├── PYLAIA_TRAINING_STATUS.md    # PyLaia training results & bug fixes
-    └── LINUX_SERVER_MIGRATION.md    # Linux setup guide
+    └── PUBLICATION_CHECKLIST.md      # Public release sanitation checklist
 ```
 
 ---
@@ -159,8 +158,6 @@ Trained models can be loaded in the GUI:
 - PyLaia models: Select from dropdown or browse to model directory
 - TrOCR models: Specify HuggingFace Hub ID or local checkpoint path
 - Commercial APIs: Enter API keys in engine configuration
-
-See `models/README.md` for links to downloadable pre-trained models.
 
 ---
 

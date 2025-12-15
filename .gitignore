@@ -101,8 +101,11 @@ run_ddp_manual.py
 run_ddp_test.py
 train_minimal_example.py
 test_segmenter_comparison.py
-config_test_ddp.yaml
-config_ukrainian.yaml
+
+# Dataset-specific configs (use examples/ for templates)
+config_*.yaml
+!example_config.yaml
+pylaia_*_config.yaml
 
 # Platform-specific build scripts
 run_training_ddp.bat
@@ -183,7 +186,13 @@ party_env/
 *_UPDATE.md
 *_IMPLEMENTATION.md
 *_BUGFIX_*.md
+*_ANALYSIS.md
+*_SUMMARY.md
 TRAINING_STATUS_*.md
+
+# Secret scan reports (temporary)
+gitleaks*.json
+gitleaks*.log
 
 # Experimental scripts (Churro)
 convert_pylaia_to_churro_*.py
@@ -218,3 +227,4 @@ prepare_gabelsberger_shorthand.py
 # Public release planning docs (explicitly tracked)
 !docs/DOCUMENT_CLASSIFICATION_STATUS.md
 !docs/NOTEBOOK_CLEANUP_PLAN.md
+PRIVATE_PRESERVATION_GUIDE.md
