@@ -9,11 +9,12 @@ A comprehensive toolkit for training and comparing different Handwritten Text Re
 ## 🎯 Features
 
 ### Multiple HTR Engines
-- **TrOCR**: Transformer-based OCR (line-level, English/Cyrillic)
-- **PyLaia**: CTC-based CRNN (line-level, excellent for manuscripts)
-- **Qwen3-VL**: Vision-Language Model (line/page-level, multilingual, custom prompts)
-- **Party**: Transformer-based HTR (page-level, multilingual)
-- **Kraken**: Traditional segmentation & recognition
+- **TrOCR**: Transformer-based OCR (line-level)
+- **PyLaia**: CTC-based CRNN (line-level)
+- **Qwen3-VL**: Vision-Language Model (line/page-level, custom prompts)
+- **Churro**: Qwen fork, experimental (line/page-level, custom prompts)
+- **Party**: Transformer-based HTR (line-level, multilingual)
+- **Kraken**: Segmentation & recognition
 
 ### Commercial & Local Vision Models
 - **Commercial APIs**: Google Gemini, Anthropic Claude Vision (via API keys)
@@ -25,14 +26,13 @@ A comprehensive toolkit for training and comparing different Handwritten Text Re
 - **Model management**: Easy switching between trained models and API providers
 - **Export formats**: TXT, CSV, PAGE XML
 
-### Training Pipelines
+### Training Pipelines (GPU required)
 - **PyLaia**: Custom CRNN training with PAGE XML support
 - **TrOCR**: Fine-tuning pipeline with image caching (10-50x faster)
 - **Data preparation**: Transkribus PAGE XML parser
 
 ### Key Capabilities
 - Line segmentation (automatic or PAGE XML-based)
-- Confidence scoring and statistics
 - Custom prompt support (Qwen3-VL)
 - Batch processing
 - PAGE XML import/export
@@ -60,14 +60,14 @@ pip install -r requirements.txt
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
 
-### 2. Launch GUI
+### 2. Launch GUI for inference
 
 ```bash
 source htr_env/bin/activate
 python3 transcription_gui_plugin.py
 ```
 
-### 3. Train a Model (PyLaia Example)
+### 3. Train a Model (CLI, PyLaia Example)
 
 ```bash
 # Prepare data from Transkribus PAGE XML export
@@ -97,16 +97,18 @@ python3 train_pylaia.py \
 ├── inference_pylaia_native.py       # PyLaia inference (native Linux)
 ├── inference_page.py                # Line segmentation + OCR pipeline
 ├── transcription_gui_plugin.py      # Main GUI application
+├── polyscriptor_batch_gui.py        # Batch processing GUI
+├── batch_processing.py              # Batch processing CLI
 ├── htr_engine_base.py              # HTR engine interface
 │
 ├── engines/                         # HTR engine plugins
 │   ├── trocr_engine.py             # TrOCR transformer
 │   ├── pylaia_engine.py            # PyLaia CRNN
 │   ├── qwen3_engine.py             # Qwen3-VL (local)
+│   ├── churro_engine.py            # Churro (Qwen fork)
 │   ├── party_engine.py             # Party multilingual HTR
 │   ├── kraken_engine.py            # Kraken segmentation
-│   ├── gemini_engine.py            # Google Gemini API
-│   ├── claude_engine.py            # Anthropic Claude API
+│   ├── commercial_api_engine.py    # Google Gemini, OpenAI GPT & Anthropic Claude APIs
 │   └── openwebui_engine.py         # OpenWebUI local LLMs
 │
 ├── optimized_training.py            # TrOCR fine-tuning script
@@ -114,17 +116,11 @@ python3 train_pylaia.py \
 ├── page_xml_exporter.py             # Export results to PAGE XML
 ├── qwen3_prompts.py                 # Custom prompts for Qwen3-VL
 │
-├── example_config.yaml              # TrOCR training config template
 ├── requirements.txt                 # Python dependencies
 │
-├── models/                          # Trained models (excluded from git)
-│   ├── pylaia_*/                    # PyLaia model checkpoints
-│   ├── trocr_*/                     # TrOCR fine-tuned models
-│   └── README.md                    # Links to downloadable models
-│
-└── docs/
-    ├── PYLAIA_TRAINING_STATUS.md    # PyLaia training results & bug fixes
-    └── LINUX_SERVER_MIGRATION.md    # Linux setup guide
+└── models/                          # Trained models (excluded from git)
+    ├── pylaia_*/                    # PyLaia model checkpoints
+    └── trocr_*/                     # TrOCR fine-tuned models
 ```
 
 ---
@@ -160,8 +156,6 @@ Trained models can be loaded in the GUI:
 - TrOCR models: Specify HuggingFace Hub ID or local checkpoint path
 - Commercial APIs: Enter API keys in engine configuration
 
-See `models/README.md` for links to downloadable pre-trained models.
-
 ---
 
 ## 🛠️ Command-Line Inference
@@ -186,6 +180,46 @@ python3 inference_page.py \
 
 ---
 
+## 📦 Batch Processing
+
+### Batch Processing GUI
+
+For processing multiple images or folders, use the batch processing GUI:
+
+```bash
+python3 polyscriptor_batch_gui.py
+```
+
+**Features:**
+- Process entire folders of images
+- Automatic PAGE XML detection (uses existing segmentation if available)
+- Progress tracking with live output
+- Export results to TXT, CSV, or PAGE XML
+- Resume interrupted processing
+
+### Batch Processing CLI
+
+For scripted/automated workflows:
+
+```bash
+python3 batch_processing.py \
+    --input-folder ./images \
+    --engine PyLaia \
+    --model-path models/my_model/best_model.pt \
+    --segmentation-method kraken \
+    --output-folder ./output \
+    --use-pagexml
+```
+
+**Key options:**
+- `--engine`: PyLaia, TrOCR, Qwen3-VL, Party, Kraken
+- `--segmentation-method`: kraken (recommended), hpp (fast), none (pre-segmented)
+- `--use-pagexml`: Auto-detect and use existing PAGE XML segmentation
+- `--resume`: Skip already-processed files
+- `--dry-run`: Test without writing output
+
+---
+
 ## ⚙️ Configuration
 
 ### PyLaia Training Parameters
@@ -204,7 +238,7 @@ Key hyperparameters for optimal performance:
 }
 ```
 
-### TrOCR Training (example_config.yaml)
+### TrOCR Training Configuration
 
 ```yaml
 model_name: "kazars24/trocr-base-handwritten-ru"
@@ -214,13 +248,6 @@ epochs: 10
 cache_images: true             # 10-50x faster data loading
 fp16: true                     # Mixed precision training
 ```
-
----
-
-## 📖 Documentation
-
-- **[PYLAIA_TRAINING_STATUS.md](PYLAIA_TRAINING_STATUS.md)**: Training results, bug fixes, and insights
-- **[LINUX_SERVER_MIGRATION.md](LINUX_SERVER_MIGRATION.md)**: Server setup guide
 
 ---
 
@@ -299,5 +326,3 @@ Without this, TrOCR's ViT encoder brutally resizes to 384×384, causing 10.6x wi
 1. **KALDI Format Vocabulary**: Train/inference scripts now auto-detect format
 2. **`<space>` vs `<SPACE>`**: Both cases handled correctly
 3. **Vocabulary File Mismatch**: Training scripts auto-copy vocabulary to model directory
-
-See [PYLAIA_TRAINING_STATUS.md](PYLAIA_TRAINING_STATUS.md) for detailed bug analysis.
