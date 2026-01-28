@@ -62,29 +62,60 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 ### 2. Launch GUI for inference
 
+**Local usage:**
 ```bash
 source htr_env/bin/activate
 python3 transcription_gui_plugin.py
 ```
 
+**Remote server usage (GUI over X11):**
+```bash
+# See REMOTE_GUI_GUIDE.md for detailed setup
+# Quick test: X11 forwarding with MobaXterm
+ssh -X user@server
+cd ~/htr_gui/dhlab-slavistik
+source htr_env/bin/activate
+python3 transcription_gui_plugin.py
+```
+
+**Recommended for remote: CLI batch processing**
+```bash
+# More efficient than GUI for server workflows
+python3 batch_processing.py \
+    --input-folder HTR_Images/my_folder \
+    --engine PyLaia \
+    --model-path models/pylaia_model/best_model.pt \
+    --use-pagexml
+```
+
+📖 **See [REMOTE_GUI_GUIDE.md](REMOTE_GUI_GUIDE.md)** for comprehensive remote access options (X11, VNC, CLI workflows)
+
 ### 3. Train a Model (CLI, PyLaia Example)
 
 ```bash
-# Prepare data from Transkribus PAGE XML export
+# Step 1: Parse Transkribus PAGE XML export → CSV format
 python3 transkribus_parser.py \
     --input_dir /path/to/transkribus_export \
     --output_dir ./data/my_dataset \
     --preserve-aspect-ratio \
     --target-height 128
 
-# Train PyLaia model
+# Step 2: Convert CSV → PyLaia format (required!)
+python3 convert_to_pylaia.py \
+    --input_csv ./data/my_dataset/train.csv \
+    --output_dir ./data/pylaia_train
+
+python3 convert_to_pylaia.py \
+    --input_csv ./data/my_dataset/val.csv \
+    --output_dir ./data/pylaia_val
+
+# Step 3: Train PyLaia model
 python3 train_pylaia.py \
-    --train-dir ./data/my_dataset/train \
-    --val-dir ./data/my_dataset/val \
-    --output-dir ./models/my_model \
-    --batch-size 32 \
-    --num-epochs 250 \
-    --device cuda:0
+    --train_dir ./data/pylaia_train \
+    --val_dir ./data/pylaia_val \
+    --output_dir ./models/my_model \
+    --batch_size 32 \
+    --epochs 250
 ```
 
 ---
@@ -138,16 +169,25 @@ python3 train_pylaia.py \
        --preserve-aspect-ratio \
        --target-height 128
    ```
-3. **Train model**:
+3. **Convert to PyLaia format**:
+   ```bash
+   python3 convert_to_pylaia.py \
+       --input_csv ./data/my_dataset/train.csv \
+       --output_dir ./data/pylaia_train
+   python3 convert_to_pylaia.py \
+       --input_csv ./data/my_dataset/val.csv \
+       --output_dir ./data/pylaia_val
+   ```
+4. **Train model**:
    ```bash
    python3 train_pylaia.py \
-       --train-dir ./data/my_dataset/train \
-       --val-dir ./data/my_dataset/val \
-       --output-dir ./models/my_model \
-       --batch-size 32 \
-       --device cuda:0
+       --train_dir ./data/pylaia_train \
+       --val_dir ./data/pylaia_val \
+       --output_dir ./models/my_model \
+       --batch_size 32 \
+       --epochs 250
    ```
-4. **Use in GUI**: Model will appear in PyLaia engine dropdown
+5. **Use in GUI**: Model will appear in PyLaia engine dropdown
 
 ### Using Trained Models
 
@@ -217,6 +257,62 @@ python3 batch_processing.py \
 - `--use-pagexml`: Auto-detect and use existing PAGE XML segmentation
 - `--resume`: Skip already-processed files
 - `--dry-run`: Test without writing output
+
+---
+
+## 🖥️ Remote Server Usage
+
+Running on a remote Linux server without GUI? You have several options:
+
+### Option 1: CLI Batch Processing
+
+**Best for**: Production workflows, processing many images
+
+```bash
+# Process entire folders efficiently
+python3 batch_processing.py \
+    --input-folder HTR_Images/manuscripts \
+    --engine PyLaia \
+    --model-path models/pylaia_model/best_model.pt \
+    --use-pagexml \
+    --output-folder output
+```
+
+**Benefits**: faster than GUI methods, no display overhead, scriptable
+
+### Option 2: X11 Forwarding (Interactive Work)
+
+**Best for**: Interactive GUI work, visual parameter tuning, model comparison
+
+**Using MobaXterm on Windows:**
+1. Install MobaXterm (X server auto-starts)
+2. SSH with X11 forwarding enabled
+3. Test: `xclock &` (should show clock window)
+4. Launch GUI: `python3 transcription_gui_plugin.py`
+
+**Performance**: Good over LAN/local WiFi, slower over internet connections. Enable compression for best results.
+
+### Option 3: VNC (Alternative for Slow Connections)
+
+**Best for**: When X11 is too slow (poor internet), extended GUI sessions, session persistence
+
+```bash
+# On server
+vncserver :1 -geometry 1920x1080
+
+# Connect from Windows using VNC viewer to: server:5901
+```
+
+**Benefits**: Better compression than X11, survives disconnects, works well over internet
+
+### Comparison
+
+| Method | Speed | Best For | Network Type |
+|--------|-------|----------|--------------|
+| CLI Batch Processing | ⚡⚡⚡ | Production, automation | Any |
+| X11 Forwarding | ⚡⚡ | Interactive GUI work | LAN/Local WiFi |
+| X11 Forwarding | ⚡ | Light use only | Internet |
+| VNC/NoMachine | ⚡⚡ | Extended sessions, poor connections | Any |
 
 ---
 
@@ -295,6 +391,7 @@ SOFTWARE.
 - **Party**: PAge-wise Recognition of Text-y https://github.com/mittagessen/party/
 - **Transkribus**: Transcription, training, and inference plattform: https://app.transkribus.org/
 - **Qwen3-VL**: Alibaba's Vision-Language Model: https://github.com/QwenLM/Qwen3-VL
+- **William Mattingly**: Support with VLM fine-tuning and Church Slavonic models: https://huggingface.co/wjbmattingly
 
 ---
 
