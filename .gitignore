@@ -90,6 +90,7 @@ wandb/
 page/
 *.xml
 !example*.xml
+!ALTO_example*.xml
 
 # ignore local claude settings
 .claude/

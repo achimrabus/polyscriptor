@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns="http://www.loc.gov/standards/alto/ns-v4#"
+      xmlns:xs="http://www.w3.org/2001/XMLSchema"
+      xmlns:xd="http://www.oxygenxml.com/ns/doc/xsl"
+      xmlns:page="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15"
+      xmlns:map="http://www.w3.org/2005/xpath-functions/map"
+      xmlns:local="local"
+      xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v4# https://www.loc.gov/standards/alto/v4/alto.xsd">
+   <Description>
+      <MeasurementUnit>pixel</MeasurementUnit>
+      <sourceImageInformation>
+         <fileName>GaXXVIII1_qt-2-0038.jpg</fileName>
+      </sourceImageInformation>
+      <Processing ID="IdOcr">
+         <processingDateTime>2026-02-03T21:13:20.407+01:00</processingDateTime>
+         <processingSoftware>
+            <softwareCreator>READ COOP</softwareCreator>
+            <softwareName>Transkribus</softwareName>
+         </processingSoftware>
+      </Processing>
+   </Description>
+   <Styles>
+      <TextStyle ID="ID_bold" FONTSTYLE="bold"/>
+      <TextStyle ID="ID_italics" FONTSTYLE="italics"/>
+      <TextStyle ID="ID_smallcaps" FONTSTYLE="smallcaps"/>
+      <TextStyle ID="ID_strikethrough" FONTSTYLE="strikethrough"/>
+      <TextStyle ID="ID_subscript" FONTSTYLE="subscript"/>
+      <TextStyle ID="ID_superscript" FONTSTYLE="superscript"/>
+      <TextStyle ID="ID_underline" FONTSTYLE="underline"/>
+   </Styles>
+   <Tags/>
+   <Layout>
+      <Page ID="Page38" PHYSICAL_IMG_NR="38" HEIGHT="2530" WIDTH="1912">
+         <TopMargin HEIGHT="0" WIDTH="1912" VPOS="0" HPOS="0"/>
+         <LeftMargin HEIGHT="2530" WIDTH="0" VPOS="0" HPOS="0"/>
+         <RightMargin HEIGHT="2530" WIDTH="0" VPOS="0" HPOS="1912"/>
+         <BottomMargin HEIGHT="0" WIDTH="1912" VPOS="2530" HPOS="0"/>
+         <PrintSpace HEIGHT="2530" WIDTH="1912" VPOS="0" HPOS="0">
+            <TextBlock ID="r1" HEIGHT="326" WIDTH="280" VPOS="1738" HPOS="210">
+               <Shape>
+                  <Polygon POINTS="210,1738 210,2064 490,2064 490,1738"/>
+               </Shape>
+               <TextLine ID="r1l1"
+                         BASELINE="210,1758 236,1761 263,1762 289,1762 316,1762 342,1761 369,1760 395,1759 422,1759 448,1759 475,1759"
+                         HEIGHT="73"
+                         WIDTH="280"
+                         VPOS="1707"
+                         HPOS="202">
+                  <String HEIGHT="73"
+                          WIDTH="126"
+                          VPOS="1707"
+                          HPOS="188"
+                          CONTENT="Vsaki"/>
+                  <SP HEIGHT="73" WIDTH="14" VPOS="1707" HPOS="314"/>
+                  <String HEIGHT="73"
+                          WIDTH="182"
+                          VPOS="1707"
+                          HPOS="272"
+                          CONTENT="č(lovê)kь"/>
+                  <SP HEIGHT="73" WIDTH="14" VPOS="1707" HPOS="454"/>
+                  <String HEIGHT="73" WIDTH="70" VPOS="1707" HPOS="412" CONTENT=","/>
+                  <SP HEIGHT="73" WIDTH="14" VPOS="1707" HPOS="482"/>
+                  <String HEIGHT="73" WIDTH="56" VPOS="1707" HPOS="426" CONTENT="ki"/>
+               </TextLine>
+               <TextLine ID="r1l2"
+                         BASELINE="218,1804 244,1803 270,1803 296,1803 322,1803 348,1802 374,1802 400,1802 426,1802 452,1801 479,1801"
+                         HEIGHT="57"
+                         WIDTH="276"
+                         VPOS="1766"
+                         HPOS="210">
+                  <String HEIGHT="57"
+                          WIDTH="130"
+                          VPOS="1766"
+                          HPOS="194"
+                          CONTENT="hoĉe"/>
+                  <SP HEIGHT="57" WIDTH="16" VPOS="1766" HPOS="324"/>
+                  <String HEIGHT="57"
+                          WIDTH="146"
+                          VPOS="1766"
+                          HPOS="275"
+                          CONTENT="pravi"/>
+                  <SP HEIGHT="57" WIDTH="16" VPOS="1766" HPOS="421"/>
+                  <String HEIGHT="57"
+                          WIDTH="130"
+                          VPOS="1766"
+                          HPOS="356"
+                          CONTENT="g(o)tê"/>
+               </TextLine>
+               <TextLine ID="r1l3"
+                         BASELINE="219,1843 246,1844 273,1845 300,1845 327,1844 354,1844 381,1843 408,1842 435,1842 463,1841"
+                         HEIGHT="48"
+                         WIDTH="259"
+                         VPOS="1807"
+                         HPOS="211">
+                  <String HEIGHT="48"
+                          WIDTH="138"
+                          VPOS="1807"
+                          HPOS="194"
+                          CONTENT="ninь"/>
+                  <SP HEIGHT="48" WIDTH="17" VPOS="1807" HPOS="332"/>
+                  <String HEIGHT="48" WIDTH="86" VPOS="1807" HPOS="280" CONTENT=","/>
+                  <SP HEIGHT="48" WIDTH="17" VPOS="1807" HPOS="366"/>
+                  <String HEIGHT="48"
+                          WIDTH="173"
+                          VPOS="1807"
+                          HPOS="297"
+                          CONTENT="ispasenь"/>
+               </TextLine>
+               <TextLine ID="r1l4"
+                         BASELINE="217,1885 242,1886 268,1886 294,1886 320,1886 345,1885 371,1885 397,1884 423,1883 449,1883"
+                         HEIGHT="62"
+                         WIDTH="246"
+                         VPOS="1848"
+                         HPOS="210">
+                  <String HEIGHT="62"
+                          WIDTH="109"
+                          VPOS="1848"
+                          HPOS="196"
+                          CONTENT="biti"/>
+                  <SP HEIGHT="62" WIDTH="14" VPOS="1848" HPOS="306"/>
+                  <String HEIGHT="62" WIDTH="68" VPOS="1848" HPOS="265" CONTENT=","/>
+                  <SP HEIGHT="62" WIDTH="14" VPOS="1848" HPOS="333"/>
+                  <String HEIGHT="62"
+                          WIDTH="109"
+                          VPOS="1848"
+                          HPOS="292"
+                          CONTENT="tomu"/>
+                  <SP HEIGHT="62" WIDTH="14" VPOS="1848" HPOS="401"/>
+                  <String HEIGHT="62"
+                          WIDTH="109"
+                          VPOS="1848"
+                          HPOS="347"
+                          CONTENT="e(stь)"/>
+               </TextLine>
+               
+            </TextBlock>
+         </PrintSpace>
+      </Page>
+   </Layout>
+</alto>
