@@ -144,6 +144,7 @@ python3 train_pylaia.py \
 │
 ├── optimized_training.py            # TrOCR fine-tuning script
 ├── transkribus_parser.py            # PAGE XML data preparation
+├── alto_parser.py                   # ALTO XML data preparation
 ├── page_xml_exporter.py             # Export results to PAGE XML
 ├── qwen3_prompts.py                 # Custom prompts for Qwen3-VL
 │
