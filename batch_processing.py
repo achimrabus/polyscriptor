@@ -859,8 +859,11 @@ class BatchHTRProcessor:
         if len(line_images) == 0:
             self.logger.warning(f"  ⚠️  No lines to transcribe for {image_path.name}")
             return {
-                'image': str(image_path),
-                'lines': 0,
+                'image': str(image_path.name),
+                'line_count': 0,
+                'char_count': 0,
+                'avg_confidence': None,
+                'timestamp': datetime.now().isoformat(),
                 'status': 'skipped (no lines)'
             }
 

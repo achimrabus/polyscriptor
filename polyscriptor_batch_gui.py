@@ -83,6 +83,14 @@ ENGINES = {
         "supports_beams": False,
         "warning": "API-based: Requires API key from openwebui.uni-freiburg.de",
     },
+    "LightOnOCR": {
+        "needs_model_path": False,
+        "needs_model_id": True,  # HuggingFace model ID
+        "default_segmentation": "kraken",  # LINE-LEVEL model
+        "supports_beams": False,
+        "has_lighton_options": True,  # Enable LightOnOCR-specific controls
+        "warning": "Requires transformers from git: pip install git+https://github.com/huggingface/transformers.git",
+    },
 }
 
 # Built-in presets
@@ -154,6 +162,26 @@ BUILTIN_PRESETS = {
         "line_mode": True,  # Force line segmentation for line-trained model
         "device": "cuda:0",
         "output_formats": ["txt"],
+    },
+    "German Shorthand (LightOnOCR)": {
+        "engine": "LightOnOCR",
+        "model_id": "wjbmattingly/LightOnOCR-2-1B-german-shorthand-line",
+        "segmentation_method": "kraken",
+        "use_pagexml": True,
+        "device": "cuda:0",
+        "output_formats": ["txt"],
+        "longest_edge": 700,
+        "max_new_tokens": 256,
+    },
+    "Multilingual (LightOnOCR Base)": {
+        "engine": "LightOnOCR",
+        "model_id": "lightonai/LightOnOCR-2-1B-base",
+        "segmentation_method": "kraken",
+        "use_pagexml": True,
+        "device": "cuda:0",
+        "output_formats": ["txt"],
+        "longest_edge": 700,
+        "max_new_tokens": 256,
     },
 }
 
@@ -366,6 +394,52 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.beams_layout_widget = QWidget()
         self.beams_layout_widget.setLayout(beams_layout)
         self.beams_layout_widget.setVisible(False)  # Hidden by default
+
+        # LightOnOCR-specific controls
+        self.lighton_group = QGroupBox("LightOnOCR Settings")
+        lighton_layout = QVBoxLayout()
+
+        # Longest edge
+        edge_layout = QHBoxLayout()
+        edge_layout.addWidget(QLabel("Longest Edge:"))
+        self.longest_edge_spin = QSpinBox()
+        self.longest_edge_spin.setRange(512, 1024)
+        self.longest_edge_spin.setValue(700)
+        self.longest_edge_spin.setSingleStep(50)
+        self.longest_edge_spin.setToolTip(
+            "Image resize target (512-1024, default 700)\n"
+            "Larger = better quality but slower and more VRAM"
+        )
+        edge_layout.addWidget(self.longest_edge_spin)
+        edge_layout.addWidget(QLabel("px"))
+        edge_layout.addStretch()
+        lighton_layout.addLayout(edge_layout)
+
+        # Max new tokens
+        tokens_layout = QHBoxLayout()
+        tokens_layout.addWidget(QLabel("Max Tokens:"))
+        self.max_new_tokens_spin = QSpinBox()
+        self.max_new_tokens_spin.setRange(64, 512)
+        self.max_new_tokens_spin.setValue(256)
+        self.max_new_tokens_spin.setSingleStep(32)
+        self.max_new_tokens_spin.setToolTip("Maximum output length (default 256)")
+        tokens_layout.addWidget(self.max_new_tokens_spin)
+        tokens_layout.addStretch()
+        lighton_layout.addLayout(tokens_layout)
+
+        # Custom prompt (optional)
+        prompt_layout = QVBoxLayout()
+        self.lighton_prompt_label = QLabel("Custom Prompt (optional):")
+        prompt_layout.addWidget(self.lighton_prompt_label)
+        self.lighton_prompt_edit = QLineEdit()
+        self.lighton_prompt_edit.setPlaceholderText("e.g., 'Transcribe the German shorthand text'")
+        self.lighton_prompt_edit.setToolTip("Leave empty for default OCR prompt")
+        prompt_layout.addWidget(self.lighton_prompt_edit)
+        lighton_layout.addLayout(prompt_layout)
+
+        self.lighton_group.setLayout(lighton_layout)
+        self.lighton_group.setVisible(False)  # Hidden by default
+        layout.addWidget(self.lighton_group)
 
         group.setLayout(layout)
         return group
@@ -604,6 +678,10 @@ class PolyscriptorBatchGUI(QMainWindow):
         # Show/hide num_beams for TrOCR
         self.beams_layout_widget.setVisible(config.get("supports_beams", False))
 
+        # Show/hide LightOnOCR-specific controls
+        has_lighton = config.get("has_lighton_options", False)
+        self.lighton_group.setVisible(has_lighton)
+
         # Set default segmentation method
         default_seg = config.get("default_segmentation", "kraken")
         idx = self.seg_method_combo.findText(default_seg)
@@ -677,6 +755,20 @@ class PolyscriptorBatchGUI(QMainWindow):
             self.line_mode_check.setChecked(preset["line_mode"])
         else:
             self.line_mode_check.setChecked(False)
+
+        # LightOnOCR-specific
+        if "longest_edge" in preset:
+            self.longest_edge_spin.setValue(preset["longest_edge"])
+        else:
+            self.longest_edge_spin.setValue(700)  # Reset to default
+        if "max_new_tokens" in preset:
+            self.max_new_tokens_spin.setValue(preset["max_new_tokens"])
+        else:
+            self.max_new_tokens_spin.setValue(256)  # Reset to default
+        if "lighton_prompt" in preset:
+            self.lighton_prompt_edit.setText(preset["lighton_prompt"])
+        else:
+            self.lighton_prompt_edit.clear()
 
         self._update_command_preview()
 
@@ -794,6 +886,14 @@ class PolyscriptorBatchGUI(QMainWindow):
         if self.sensitivity_spin.value() != 0.1:
             config["sensitivity"] = self.sensitivity_spin.value()
 
+        # LightOnOCR-specific
+        if config["engine"] == "LightOnOCR":
+            config["longest_edge"] = self.longest_edge_spin.value()
+            config["max_new_tokens"] = self.max_new_tokens_spin.value()
+            prompt = self.lighton_prompt_edit.text().strip()
+            if prompt:
+                config["lighton_prompt"] = prompt
+
         return config
 
     def _build_command(self, dry_run: bool = False) -> List[str]:
@@ -857,6 +957,15 @@ class PolyscriptorBatchGUI(QMainWindow):
         if config.get("line_mode"):
             cmd += ["--line-mode"]
 
+        # LightOnOCR-specific
+        if config.get("engine") == "LightOnOCR":
+            if config.get("longest_edge"):
+                cmd += ["--longest-edge", str(config["longest_edge"])]
+            if config.get("max_new_tokens"):
+                cmd += ["--max-new-tokens", str(config["max_new_tokens"])]
+            if config.get("lighton_prompt"):
+                cmd += ["--prompt", config["lighton_prompt"]]
+
         return cmd
 
     def _update_command_preview(self):
@@ -894,6 +1003,11 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.batch_spin.valueChanged.connect(self._update_command_preview)
         self.num_beams_spin.valueChanged.connect(self._update_command_preview)
         self.sensitivity_spin.valueChanged.connect(self._update_command_preview)
+
+        # LightOnOCR-specific
+        self.longest_edge_spin.valueChanged.connect(self._update_command_preview)
+        self.max_new_tokens_spin.valueChanged.connect(self._update_command_preview)
+        self.lighton_prompt_edit.textChanged.connect(self._update_command_preview)
 
     def _validate_config(self) -> Optional[str]:
         """Validate current configuration. Returns error message or None."""

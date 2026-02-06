@@ -1,6 +1,6 @@
 # Multi-Engine HTR Training & Comparison Tool
 
-A comprehensive toolkit for training and comparing different Handwritten Text Recognition (HTR) engines on historical manuscript datasets. Supports TrOCR, PyLaia, Qwen3-VL, Party, and Kraken engines with a unified GUI interface.
+A comprehensive toolkit for training and comparing different Handwritten Text Recognition (HTR) engines on historical manuscript datasets. Supports TrOCR, PyLaia, Qwen3-VL, LightOnOCR, Party, and Kraken engines with a unified GUI interface.
 
 **Primary Focus:** Cyrillic manuscripts (Russian, Ukrainian, Church Slavonic, Glagolitic)
 
@@ -12,6 +12,7 @@ A comprehensive toolkit for training and comparing different Handwritten Text Re
 - **TrOCR**: Transformer-based OCR (line-level)
 - **PyLaia**: CTC-based CRNN (line-level)
 - **Qwen3-VL**: Vision-Language Model (line/page-level, custom prompts)
+- **LightOnOCR**: Lightweight VLM (~4GB VRAM, line-level, fine-tuned variants)
 - **Churro**: Qwen fork, experimental (line/page-level, custom prompts)
 - **Party**: Transformer-based HTR (line-level, multilingual)
 - **Kraken**: Segmentation & recognition
@@ -136,6 +137,7 @@ python3 train_pylaia.py \
 │   ├── trocr_engine.py             # TrOCR transformer
 │   ├── pylaia_engine.py            # PyLaia CRNN
 │   ├── qwen3_engine.py             # Qwen3-VL (local)
+│   ├── lighton_ocr_engine.py       # LightOnOCR VLM (lightweight)
 │   ├── churro_engine.py            # Churro (Qwen fork)
 │   ├── party_engine.py             # Party multilingual HTR
 │   ├── kraken_engine.py            # Kraken segmentation
@@ -253,7 +255,7 @@ python3 batch_processing.py \
 ```
 
 **Key options:**
-- `--engine`: PyLaia, TrOCR, Qwen3-VL, Party, Kraken
+- `--engine`: PyLaia, TrOCR, Qwen3-VL, LightOnOCR, Party, Kraken
 - `--segmentation-method`: kraken (recommended), hpp (fast), none (pre-segmented)
 - `--use-pagexml`: Auto-detect and use existing PAGE XML segmentation
 - `--resume`: Skip already-processed files
@@ -389,6 +391,7 @@ SOFTWARE.
 
 - **PyLaia**: CTC-based HTR system: https://github.com/jpuigcerver/PyLaia
 - **TrOCR**: Microsoft's Transformer-based OCR: https://huggingface.co/microsoft/trocr-base-handwritten
+- **LightOnOCR**: Lightweight VLM for OCR: https://huggingface.co/lightonai/LightOnOCR-2-1B-base
 - **Party**: PAge-wise Recognition of Text-y https://github.com/mittagessen/party/
 - **Transkribus**: Transcription, training, and inference plattform: https://app.transkribus.org/
 - **Qwen3-VL**: Alibaba's Vision-Language Model: https://github.com/QwenLM/Qwen3-VL
