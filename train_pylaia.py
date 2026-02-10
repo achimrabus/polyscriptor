@@ -64,9 +64,12 @@ class PyLaiaDataset(Dataset):
                     continue
                 # CRITICAL: Filenames can contain spaces! Split on ".png " not first space
                 # Example: "line_images/0210_apo_2023-06-20 11_09_01_line.png кꙋскѝ жꙋючѝ"
-                if '.png ' in line:
-                    img_path, text = line.split('.png ', 1)
-                    img_path = img_path + '.png'  # Add back the extension
+                if '.png' in line:
+                    # img_path, text = line.split('.png', 1)
+                    # img_path = img_path + '.png'  # Add back the extension
+                    img_path, text = line.split(',', 1)
+                    img_path = img_path.strip()
+                    text = text.strip()
                     self.samples.append((img_path, text))
                 else:
                     logger.warning(f"Skipping malformed line (no '.png '): {line[:100]}")
@@ -751,3 +754,8 @@ def main():
 
 if __name__ == '__main__':
     main()
+# python train_pylaia.py --train_dir ./train --val_dir ./val --output_dir ./models/my_model --batch_size 4 --epochs 20
+# train & val each contain images, symbols.txt and lines.txt (in format: imagename.png,text)
+
+# data_dir: Directory containing images/, gt/, lines.txt, symbols.txt
+# why do we need gt/?
