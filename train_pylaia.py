@@ -66,7 +66,7 @@ class PyLaiaDataset(Dataset):
                 # Example: "line_images/0210_apo_2023-06-20 11_09_01_line.png кꙋскѝ жꙋючѝ"
                 if '.png' in line:
                     # img_path, text = line.split('.png', 1)
-                    # img_path = img_path + '.png'  # Add back the extension
+                    # img_path = img_path + '.png'
                     img_path, text = line.split(',', 1)
                     img_path = img_path.strip()
                     text = text.strip()

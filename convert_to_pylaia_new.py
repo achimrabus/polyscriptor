@@ -115,7 +115,7 @@ def convert_dataset(
     train_df = pd.read_csv(train_csv_path, names=['image_path', 'text'], header=None, encoding='utf-8')
     val_df = pd.read_csv(val_csv_path, names=['image_path', 'text'], header=None, encoding='utf-8')
     char_set: Set[str] = set()
-    # failed = []
+
     new_train_dir = output_path / "train"
     new_val_dir = output_path / "val"
     new_train_dir.mkdir(parents=True, exist_ok=True)
