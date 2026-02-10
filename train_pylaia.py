@@ -756,6 +756,5 @@ if __name__ == '__main__':
     main()
 # python train_pylaia.py --train_dir ./train --val_dir ./val --output_dir ./models/my_model --batch_size 4 --epochs 20
 # train & val each contain images, symbols.txt and lines.txt (in format: imagename.png,text)
-
 # data_dir: Directory containing images/, gt/, lines.txt, symbols.txt
 # why do we need gt/?
