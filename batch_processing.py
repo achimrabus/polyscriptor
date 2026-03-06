@@ -49,7 +49,7 @@ def pdf_to_images(pdf_path: Path, dpi: int = 150) -> List[Image.Image]:
         raise RuntimeError("PyMuPDF not installed. Install with: pip install pymupdf")
     import fitz as _fitz
     doc = _fitz.open(str(pdf_path))
-    mat = _fitz.Matrix(dpi / 72, dpi / 72)
+    mat = _fitz.Matrix(dpi / 300, dpi / 300)
     images = []
     for page in doc:
         pix = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
