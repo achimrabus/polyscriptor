@@ -22,18 +22,21 @@ const batch = {
 };
 
 export function initBatchPanel() {
-    // Hook into the file input to detect multiple files, PDFs, or second image
+    // Hook into the file input to detect multiple files, PDFs, or second image.
+    // Use capture:true so this fires before image-viewer's bubble listener, letting us
+    // stopImmediatePropagation() and own the upload when batch-panel takes over.
     const fileInput = $('file-input');
-    fileInput.addEventListener('change', () => {
+    fileInput.addEventListener('change', e => {
         const files = Array.from(fileInput.files);
         const hasPdf = files.some(f => f.name.toLowerCase().endsWith('.pdf'));
         // Intercept: multiple files, PDF, or single image when one is already loaded
         if (files.length > 1 || hasPdf || (files.length === 1 && !hasPdf && state.imageId)) {
+            e.stopImmediatePropagation(); // prevent image-viewer from also uploading the PDF
             handleMultipleFiles(files);
             fileInput.value = '';
         }
         // Single non-PDF image with no existing image → handled by image-viewer.js
-    });
+    }, true); // capture:true — fires before image-viewer's non-capture listener
 
     // Multiple XML selection from the Upload XML button
     const xmlInput = $('xml-input');
@@ -266,12 +269,20 @@ function renderQueue() {
         row.appendChild(name);
         row.appendChild(status);
 
-        // Click a done item to reload it into the viewer
-        if (item.status === 'done') {
+        // Click a done item to reload it, or a preUploaded pending item to load for manual transcription
+        const canPreview = item.status === 'done' || (item.preUploaded && item.imageId);
+        if (canPreview) {
             row.style.cursor = 'pointer';
             row.addEventListener('click', e => {
                 if (e.target === handle) return; // don't trigger on drag handle click
-                loadBatchItem(i);
+                if (item.status === 'done') {
+                    loadBatchItem(i);
+                } else {
+                    // Load preUploaded pending page so user can manually segment/transcribe it
+                    batch.currentIndex = i;
+                    emit('batch-item-start', { imageId: item.imageId, filename: item.filename });
+                    updateNavButtons();
+                }
             });
         }
 
@@ -468,6 +479,10 @@ async function processBatch() {
             updateItemStatus(i, 'done', lines.length);
             doneThisRun++;
             updateOverallProgress(doneThisRun, pending);
+            // Fire sse-complete so the panel shows footer, column toggle, confidence filter, etc.
+            if (batch.currentIndex === i) {
+                emit('sse-complete', { lines: item.lines, total_time_s: 0, engine: '(batch)' });
+            }
 
         } catch (err) {
             if (err.name === 'AbortError' || batch.cancelled) {

@@ -31,8 +31,9 @@ export function initEnginePanel() {
     });
 
     // Enable transcribe/segment buttons when image is ready
-    on('engine-loaded', () => { updateTranscribeBtn(); updateSegmentBtn(); });
-    on('image-uploaded', () => { updateTranscribeBtn(); updateSegmentBtn(); });
+    on('engine-loaded',     () => { updateTranscribeBtn(); updateSegmentBtn(); });
+    on('image-uploaded',    () => { updateTranscribeBtn(); updateSegmentBtn(); });
+    on('batch-item-start',  () => { updateTranscribeBtn(); updateSegmentBtn(); });
     on('transcription-complete', () => {
         state.isProcessing = false;
         $('btn-transcribe').classList.remove('loading');

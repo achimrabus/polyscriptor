@@ -101,7 +101,7 @@ async function updateGpuStatus() {
 // ── Zoom controls ──────────────────────────────────────────────────────
 let zoomLevel = 1.0;
 const ZOOM_STEP = 0.25;
-const ZOOM_MIN  = 0.25;
+let   ZOOM_MIN  = 0.25; // updated per image in fitZoom() so large images are always reachable
 const ZOOM_MAX  = 4.0;
 
 function applyZoom(level) {
@@ -128,7 +128,10 @@ export function fitZoom() {
     if (!img || !img.naturalWidth || !scroll) return;
     const scaleW = scroll.clientWidth  / img.naturalWidth;
     const scaleH = scroll.clientHeight / img.naturalHeight;
-    applyZoom(Math.min(scaleW, scaleH, 1.0));  // never zoom in beyond 100% on fit
+    const fit = Math.min(scaleW, scaleH, 1.0); // never zoom in beyond 100% on fit
+    // Ensure the fit level is always reachable: lower ZOOM_MIN for large images (min 5%)
+    ZOOM_MIN = Math.min(0.25, Math.max(0.05, fit));
+    applyZoom(fit);
 }
 
 function initZoomControls() {
