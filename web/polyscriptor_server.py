@@ -449,6 +449,12 @@ ENGINE_SCHEMAS = {
              "custom_placeholder": "e.g. gpt-4.5, gemini-exp-1206, claude-opus-4"},
             {"key": "api_key", "type": "password", "label": "API Key",
              "default": "", "placeholder": "Paste your API key here"},
+            {"key": "temperature", "type": "number", "label": "Temperature",
+             "min": 0.0, "max": 2.0, "default": 0.0,
+             "placeholder": "0.0 = deterministic (recommended for transcription)"},
+            {"key": "max_output_tokens", "type": "number", "label": "Max output tokens (optional)",
+             "min": 512, "max": 65536, "default": None,
+             "placeholder": "Leave blank = model maximum"},
             {"key": "custom_prompt", "type": "text", "label": "Custom Prompt (optional)",
              "default": "",
              "placeholder": "Leave blank for default transcription prompt"},
@@ -1153,7 +1159,7 @@ async def transcribe(req: TranscribeRequest):
                 img_array = np.array(line_img.convert("RGB"))
 
                 result = await asyncio.to_thread(
-                    loaded_engine.transcribe_line, img_array
+                    loaded_engine.transcribe_line, img_array, loaded_config
                 )
 
                 text = str(result.text) if hasattr(result, "text") else str(result)

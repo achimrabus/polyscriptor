@@ -605,6 +605,11 @@ class CommercialAPIEngine(HTREngine):
                             max_tokens = int(mt_text)
                         except ValueError:
                             max_tokens = None
+                # Fallback to config dict (web UI context — no Qt widgets)
+                if max_tokens is None:
+                    max_tokens = config.get("max_output_tokens")
+                if temperature is None:
+                    temperature = config.get("temperature")
                 fast_direct_early_exit = True
                 if self._early_exit_check is not None and not self._early_exit_check.isChecked():
                     fast_direct_early_exit = False
@@ -662,14 +667,13 @@ class CommercialAPIEngine(HTREngine):
                             pass  # Keep existing max_tokens
                 
                 # Debug: show final token budget
-                final_max_tokens = max_tokens if max_tokens is not None else 2048
-                print(f"📊 Final settings: thinking_mode={thinking_mode}, max_output_tokens={final_max_tokens}, temp={temperature if temperature is not None else 1.0}")
-                
+                print(f"📊 Final settings: thinking_mode={thinking_mode}, max_output_tokens={max_tokens or 'model default'}, temp={temperature if temperature is not None else 1.0}")
+
                 text = self.model.transcribe(
-                    pil_image, 
+                    pil_image,
                     prompt=custom_prompt,
-                    temperature=temperature if temperature is not None else 1.0,
-                    max_output_tokens=max_tokens if max_tokens is not None else 2048,
+                    temperature=temperature if temperature is not None else 0.0,
+                    max_output_tokens=max_tokens,  # None = no limit, model uses its own maximum
                     auto_retry_on_block=True,
                     safety_relax=True,
                     verbose_block_logging=True,
@@ -700,11 +704,16 @@ class CommercialAPIEngine(HTREngine):
                             max_tokens = int(mt_text)
                         except ValueError:
                             max_tokens = None
+                # Fallback to config dict (web UI context — no Qt widgets)
+                if max_tokens is None:
+                    max_tokens = config.get("max_output_tokens")
+                if temperature is None:
+                    temperature = config.get("temperature")
                 text = self.model.transcribe(
                     pil_image,
                     prompt=custom_prompt,
-                    temperature=temperature if temperature is not None else 1.0,
-                    max_output_tokens=max_tokens if max_tokens is not None else 2048,
+                    temperature=temperature if temperature is not None else 0.0,
+                    max_output_tokens=max_tokens,  # None = no limit, model uses its own maximum
                 )
 
             return TranscriptionResult(

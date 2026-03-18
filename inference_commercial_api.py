@@ -346,7 +346,7 @@ class GeminiInference(BaseAPIInference):
         image: Image.Image,
         prompt: Optional[str] = None,
         temperature: float = 0.0,
-        max_output_tokens: int = 2048,
+        max_output_tokens: Optional[int] = None,
         auto_retry_on_block: bool = True,
         safety_relax: bool = True,
         verbose_block_logging: bool = True,
@@ -407,10 +407,9 @@ class GeminiInference(BaseAPIInference):
         image = self.resize_image_if_needed(image, max_dimension=3072)
 
         # Prepare generation config (remove unsupported response_modalities)
-        gen_config_params = {
-            "temperature": temperature,
-            "max_output_tokens": max_output_tokens,
-        }
+        gen_config_params = {"temperature": temperature}
+        if max_output_tokens is not None:
+            gen_config_params["max_output_tokens"] = max_output_tokens
 
     # is_preview_model already computed above
 
@@ -426,7 +425,7 @@ class GeminiInference(BaseAPIInference):
                 if verbose_block_logging:
                     print("🧠 Using HIGH thinking mode (more tokens & slight exploration)")
                 # Increase token budget and mild temperature for more exploration
-                if max_output_tokens < 8192:
+                if max_output_tokens is not None and max_output_tokens < 8192:
                     gen_config_params["max_output_tokens"] = 8192
                 if temperature < 0.15:
                     gen_config_params["temperature"] = 0.15
@@ -456,10 +455,11 @@ class GeminiInference(BaseAPIInference):
             ]
             
             # Preview models may use tokens for "thinking" - increase limit significantly
-            if max_output_tokens < 4096:
+            if max_output_tokens is not None and max_output_tokens < 4096:
                 if verbose_block_logging:
                     print(f"   Increasing max_output_tokens from {max_output_tokens} to 4096 for preview model")
                 max_output_tokens = 4096
+                gen_config_params["max_output_tokens"] = max_output_tokens
             elif verbose_block_logging:
                 print(f"   Using max_output_tokens={max_output_tokens} (from config)")
 
