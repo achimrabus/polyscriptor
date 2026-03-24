@@ -6,6 +6,25 @@ import { state, emit, on, api, saveEngineConfig, loadSavedEngineName, loadSavedE
 
 const $ = id => document.getElementById(id);
 
+// --- API Key localStorage helpers (keys never stored on server) ---
+const _KEY_PREFIX = 'polyscriptor_key_';
+
+function _loadBrowserKey(slot) {
+    try { return localStorage.getItem(_KEY_PREFIX + slot) || ''; }
+    catch (_) { return ''; }
+}
+
+function _saveBrowserKey(slot, key) {
+    try {
+        if (key) localStorage.setItem(_KEY_PREFIX + slot, key);
+        else localStorage.removeItem(_KEY_PREFIX + slot);
+    } catch (_) { /* private browsing etc. */ }
+}
+
+function _hasBrowserKey(slot) {
+    return !!_loadBrowserKey(slot);
+}
+
 export function initEnginePanel() {
     loadEngines();
 
@@ -145,13 +164,12 @@ async function onEngineSelected() {
                 _populateSelect(modelSel, []);  // show "— click ↻ to load —"
                 modelSel.dispatchEvent(new Event('change'));
 
-                // Auto-trigger fetch if we have a saved/env key for this provider
+                // Auto-trigger fetch if we have a browser key for this provider
                 const prov = providerSel.value.toLowerCase();
                 const keyEl = $('cfg-api_key');
-                const hasSaved = keyEl?.dataset?.hasSaved === 'true';
-                const hasEnv   = keyEl?.dataset?.fromEnv === 'true';
-                const hasTyped = keyEl?.value?.trim().length > 0;
-                if (hasSaved || hasEnv || hasTyped) {
+                const hasBrowser = _hasBrowserKey(prov);
+                const hasTyped   = keyEl?.value?.trim().length > 0;
+                if (hasBrowser || hasTyped) {
                     const refreshBtn = modelSel.closest('.config-field')?.querySelector('.btn-refresh');
                     if (refreshBtn) refreshBtn.click();
                 }
@@ -161,27 +179,24 @@ async function onEngineSelected() {
         }
 
         const keyInput = $('cfg-api_key');
-        if (providerSel && keyInput && keyInput.dataset.perProvider) {
-            const perProvider = JSON.parse(keyInput.dataset.perProvider);
+        if (providerSel && keyInput) {
             const updateKeyHint = () => {
                 const slot = providerSel.value.toLowerCase();
-                const s = perProvider[slot] || 'missing';
+                const hasBrowser = _hasBrowserKey(slot);
                 const saveRow = keyInput.closest('.config-field')?.querySelector('.key-save-row');
-                if (s === 'saved') {
-                    keyInput.placeholder = '••••••••  (saved — leave blank to keep)';
-                    keyInput.dataset.hasSaved = 'true';
+                const saveBox = saveRow?.querySelector('input[type="checkbox"]');
+                if (hasBrowser) {
+                    keyInput.placeholder = '••••••••  (saved in browser — leave blank to keep)';
+                    keyInput.dataset.hasBrowser = 'true';
                     keyInput.disabled = false;
-                    if (saveRow) { saveRow.style.display = ''; saveRow.querySelector('label').textContent = 'Key saved on server'; }
-                } else if (s === 'env') {
-                    keyInput.placeholder = '(loaded from server environment)';
-                    keyInput.disabled = true;
-                    delete keyInput.dataset.hasSaved;
-                    if (saveRow) saveRow.style.display = 'none';
+                    if (saveRow) { saveRow.style.display = ''; saveRow.querySelector('label').textContent = 'Key saved in browser'; }
+                    if (saveBox) saveBox.checked = true;
                 } else {
                     keyInput.placeholder = 'Paste API key here';
                     keyInput.disabled = false;
-                    delete keyInput.dataset.hasSaved;
-                    if (saveRow) { saveRow.style.display = ''; saveRow.querySelector('label').textContent = 'Save key on server'; }
+                    delete keyInput.dataset.hasBrowser;
+                    if (saveRow) { saveRow.style.display = ''; saveRow.querySelector('label').textContent = 'Save key in browser'; }
+                    if (saveBox) saveBox.checked = false;
                 }
             };
             providerSel.addEventListener('change', updateKeyHint);
@@ -321,7 +336,7 @@ function createField(field) {
                     const providerEl = $('cfg-provider');
                     const keyEl = $('cfg-api_key');
                     const provider = providerEl?.value?.toLowerCase() || 'openai';
-                    const apiKey = keyEl?.value?.trim() || '';
+                    const apiKey = keyEl?.value?.trim() || _loadBrowserKey(provider);
 
                     refreshBtn.textContent = '…';
                     refreshBtn.disabled = true;
@@ -380,6 +395,67 @@ function createField(field) {
 
                 wrapper.appendChild(customInput);
             }
+
+            // Upload button — lets users upload a local .mlmodel file from their machine
+            if (field.upload) {
+                const uploadRow = document.createElement('div');
+                uploadRow.className = 'upload-model-row';
+                uploadRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:6px;';
+
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.accept = '.mlmodel';
+                fileInput.style.display = 'none';
+
+                const uploadBtn = document.createElement('button');
+                uploadBtn.type = 'button';
+                uploadBtn.className = 'btn-secondary btn-sm';
+                uploadBtn.textContent = 'Upload .mlmodel…';
+                uploadBtn.title = 'Upload a Kraken model file from your computer';
+
+                const uploadStatus = document.createElement('span');
+                uploadStatus.className = 'muted';
+                uploadStatus.style.fontSize = '0.85em';
+
+                uploadBtn.addEventListener('click', () => fileInput.click());
+
+                fileInput.addEventListener('change', async () => {
+                    const f = fileInput.files[0];
+                    if (!f) return;
+                    uploadStatus.textContent = `Uploading ${f.name}…`;
+                    uploadBtn.disabled = true;
+                    try {
+                        const fd = new FormData();
+                        fd.append('file', f);
+                        const resp = await fetch('/api/models/upload', { method: 'POST', body: fd });
+                        if (!resp.ok) {
+                            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                            throw new Error(err.detail || resp.statusText);
+                        }
+                        const data = await resp.json();
+                        // Repopulate select with fresh options returned by server
+                        const newPath = data.path;
+                        _populateSelect(select, data.options, newPath);
+                        uploadStatus.textContent = `Uploaded: ${data.filename}`;
+                        // Re-run custom visibility sync (new value might not be __custom__)
+                        if (field.custom_key) {
+                            const isCustom = select.value === '__custom__';
+                            const ci = document.getElementById(`cfg-${field.custom_key}`);
+                            if (ci) { ci.style.display = isCustom ? '' : 'none'; ci.required = isCustom; }
+                        }
+                    } catch (e) {
+                        uploadStatus.textContent = `Upload failed: ${e.message}`;
+                    } finally {
+                        uploadBtn.disabled = false;
+                        fileInput.value = '';
+                    }
+                });
+
+                uploadRow.appendChild(fileInput);
+                uploadRow.appendChild(uploadBtn);
+                uploadRow.appendChild(uploadStatus);
+                wrapper.appendChild(uploadRow);
+            }
         } else if (field.type === 'number') {
             const input = document.createElement('input');
             input.type = 'number';
@@ -396,53 +472,61 @@ function createField(field) {
             input.dataset.key = field.key;
             input.dataset.passwordField = 'true';
 
-            const status = field.key_status || 'missing';
-            const perProvider = field.key_status_per_provider || null;
+            // Determine effective key slot for localStorage lookup
+            function _getKeySlot() {
+                const providerEl = $('cfg-provider');
+                if (providerEl) return providerEl.value.toLowerCase();
+                const engineEl = $('engine-select');
+                if (engineEl?.value === 'OpenWebUI') return 'openwebui';
+                return field.key;
+            }
 
-            function applyKeyStatus(s) {
-                if (s === 'saved') {
-                    input.placeholder = '••••••••  (saved — leave blank to keep)';
-                    input.dataset.hasSaved = 'true';
-                    input.disabled = false;
-                    delete input.dataset.fromEnv;
-                } else if (s === 'env') {
-                    input.placeholder = '(loaded from server environment)';
-                    input.disabled = true;
-                    input.dataset.fromEnv = 'true';
-                    delete input.dataset.hasSaved;
+            function applyKeyHint() {
+                const slot = _getKeySlot();
+                const hasBrowser = _hasBrowserKey(slot);
+                if (hasBrowser) {
+                    input.placeholder = '••••••••  (saved in browser — leave blank to keep)';
+                    input.dataset.hasBrowser = 'true';
                 } else {
                     input.placeholder = field.placeholder || 'Paste API key here';
-                    input.disabled = false;
-                    delete input.dataset.hasSaved;
-                    delete input.dataset.fromEnv;
+                    delete input.dataset.hasBrowser;
                 }
+                input.disabled = false;
             }
-            applyKeyStatus(status);
+            applyKeyHint();
             wrapper.appendChild(input);
 
-            // If per-provider statuses supplied, update hint when provider changes
-            if (perProvider) {
-                input.dataset.perProvider = JSON.stringify(perProvider);
-                // Wire up to the provider select (created earlier in the same form)
-                // Use a MutationObserver-free approach: listen at form level
-                wrapper.dataset.perProviderTarget = 'true';
-            }
-
-            // "Save key" checkbox — only shown when key isn't from env
-            if (status !== 'env') {
-                const saveRow = document.createElement('div');
-                saveRow.className = 'key-save-row';
-                const saveBox = document.createElement('input');
-                saveBox.type = 'checkbox';
-                saveBox.id = `cfg-${field.key}-save`;
-                saveBox.dataset.saveFor = field.key;
-                saveBox.checked = status === 'saved';  // pre-check if already saved
-                const saveLabel = document.createElement('label');
-                saveLabel.htmlFor = saveBox.id;
-                saveLabel.textContent = status === 'saved' ? 'Key saved on server' : 'Save key on server';
-                saveRow.appendChild(saveBox);
-                saveRow.appendChild(saveLabel);
-                wrapper.appendChild(saveRow);
+            // "Save key in browser" checkbox
+            const saveRow = document.createElement('div');
+            saveRow.className = 'key-save-row';
+            const saveBox = document.createElement('input');
+            saveBox.type = 'checkbox';
+            saveBox.id = `cfg-${field.key}-save`;
+            saveBox.dataset.saveFor = field.key;
+            const slot = _getKeySlot();
+            saveBox.checked = _hasBrowserKey(slot);
+            const saveLabel = document.createElement('label');
+            saveLabel.htmlFor = saveBox.id;
+            saveLabel.textContent = _hasBrowserKey(slot)
+                ? 'Key saved in browser' : 'Save key in browser';
+            saveRow.appendChild(saveBox);
+            saveRow.appendChild(saveLabel);
+            wrapper.appendChild(saveRow);
+        } else if (field.type === 'textarea') {
+            const ta = document.createElement('textarea');
+            ta.id = `cfg-${field.key}`;
+            ta.dataset.key = field.key;
+            ta.rows = field.rows || 3;
+            ta.value = field.default ?? '';
+            if (field.placeholder) ta.placeholder = field.placeholder;
+            ta.style.width = '100%';
+            ta.style.resize = 'vertical';
+            wrapper.appendChild(ta);
+            if (field.hint) {
+                const hint = document.createElement('small');
+                hint.textContent = field.hint;
+                hint.style.color = 'var(--text-muted, #888)';
+                wrapper.appendChild(hint);
             }
         } else {
             // text
@@ -464,14 +548,18 @@ function collectConfig() {
     for (const el of fields) {
         const key = el.dataset.key;
         if (el.dataset.saveFor) continue;  // "save key" checkboxes are not config
-        if (el.dataset.fromEnv) continue;   // env-sourced keys: server handles them
         if (el.type === 'checkbox') {
             config[key] = el.checked;
         } else if (el.type === 'number') {
             config[key] = Number(el.value);
-        } else if (el.dataset.passwordField && el.dataset.hasSaved && !el.value.trim()) {
-            // Blank password field with a saved key — send empty string so server uses stored key
-            config[key] = '';
+        } else if (el.dataset.passwordField && !el.value.trim()) {
+            // Blank password field — inject key from browser localStorage
+            const providerEl = $('cfg-provider');
+            let slot = key;
+            if (providerEl) slot = providerEl.value.toLowerCase();
+            else if ($('engine-select')?.value === 'OpenWebUI') slot = 'openwebui';
+            const browserKey = _loadBrowserKey(slot);
+            config[key] = browserKey;  // may be empty — server will check env next
         } else {
             config[key] = el.value;
         }
@@ -479,15 +567,13 @@ function collectConfig() {
     return config;
 }
 
-async function _persistNewKeys(engineName) {
+function _persistNewKeys(engineName) {
     // For engines with password fields: if user typed a new key AND checked "save",
-    // persist it to the server key store before loading the model.
+    // persist it to browser localStorage (never to server).
     const saveBoxes = $('config-form').querySelectorAll('[data-save-for]');
     for (const box of saveBoxes) {
-        if (!box.checked) continue;
         const keyField = $(`cfg-${box.dataset.saveFor}`);
         const newKey = keyField?.value?.trim();
-        if (!newKey) continue;
 
         // Determine slot from engine name
         const slotMap = {
@@ -501,24 +587,24 @@ async function _persistNewKeys(engineName) {
         }
         if (!slot) continue;
 
-        try {
-            await fetch('/api/keys', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ slot, key: newKey }),
-            });
-            // Update UI hint
-            keyField.placeholder = '••••••••  (saved — leave blank to keep)';
-            keyField.dataset.hasSaved = 'true';
+        if (box.checked && newKey) {
+            // Save to browser localStorage
+            _saveBrowserKey(slot, newKey);
+            keyField.placeholder = '••••••••  (saved in browser — leave blank to keep)';
+            keyField.dataset.hasBrowser = 'true';
             const label = box.nextElementSibling;
-            if (label) label.textContent = 'Key saved on server';
-        } catch (_) { /* non-fatal */ }
+            if (label) label.textContent = 'Key saved in browser';
+        } else if (!box.checked) {
+            // Unchecked = delete from browser
+            _saveBrowserKey(slot, '');
+            delete keyField?.dataset?.hasBrowser;
+        }
     }
 }
 
 async function onLoadModel() {
     const name = $('engine-select').value;
-    await _persistNewKeys(name);   // save any new keys before loading
+    _persistNewKeys(name);   // save any new keys to browser localStorage
     const config = collectConfig();
     // Attach Kraken preset ID if one is selected
     if (name === 'Kraken') {
@@ -658,7 +744,9 @@ async function onSegment() {
         const data = await resp.json();
         // Reuse the same event the transcription flow uses — draws bboxes on canvas
         emit('sse-segmentation', data);
-        toast(`${data.num_lines} lines found (${data.source})`, 'success', 3000);
+        if (data.source !== 'page') {
+            toast(`${data.num_lines} lines found (${data.source})`, 'success', 3000);
+        }
         emit('segment-preview');  // switch mobile tab to image view
     } catch (err) {
         toast(`Segmentation failed: ${err.message}`, 'error');

@@ -14,18 +14,21 @@ Date: 2026-02-26
 """
 
 import asyncio
+import hashlib
+import importlib
 import json
 import logging
 import os
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 from PIL import Image, ImageOps
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Cookie, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -84,7 +87,134 @@ app = FastAPI(title="Polyscriptor HTR", version="0.1.0")
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# State — single user, single engine at a time
+# ---------------------------------------------------------------------------
+# Engine pool — Phase 2: shared pool of loaded engine instances
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EngineSlot:
+    """One loaded engine instance in the pool."""
+    engine: Any  # HTREngine instance (not the registry singleton)
+    engine_name: str
+    config: dict
+    pool_key: str
+    ref_count: int = 0
+    last_used: float = field(default_factory=time.time)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+engine_pool: Dict[str, EngineSlot] = {}
+pool_lock = asyncio.Lock()
+
+# VRAM budget estimates (GB) for eviction decisions
+_ENGINE_VRAM_GB = {
+    "CRNN-CTC (PyLaia-inspired)": 2,
+    "TrOCR": 3,
+    "Qwen3-VL": 18,
+    "Churro VLM": 10,
+    "Kraken": 2,
+    "Party": 4,
+    "PaddleOCR": 2,
+}
+_NO_GPU_ENGINES = {"Commercial APIs", "OpenWebUI", "LightOnOCR", "DeepSeek-OCR"}
+_TOTAL_VRAM_GB = 92  # 2x L40S @ 46GB each
+
+
+# Factory: engine name -> (module, class) for creating fresh instances
+_ENGINE_FACTORY = {
+    "TrOCR":                       ("engines.trocr_engine",        "TrOCREngine"),
+    "CRNN-CTC (PyLaia-inspired)":  ("engines.pylaia_engine",       "PyLaiaEngine"),
+    "Qwen3-VL":                    ("engines.qwen3_engine",        "Qwen3Engine"),
+    "Churro VLM":                   ("engines.churro_engine",       "ChurroEngine"),
+    "Kraken":                       ("engines.kraken_engine",       "KrakenEngine"),
+    "Commercial APIs":              ("engines.commercial_api_engine", "CommercialAPIEngine"),
+    "Party":                        ("engines.party_engine",        "PartyEngine"),
+    "OpenWebUI":                    ("engines.openwebui_engine",    "OpenWebUIEngine"),
+    "DeepSeek-OCR":                 ("engines.deepseek_ocr_engine", "DeepSeekOCREngine"),
+    "LightOnOCR":                   ("engines.lighton_ocr_engine",  "LightOnOCREngine"),
+    "PaddleOCR":                    ("engines.paddle_engine",       "PaddleOCREngine"),
+}
+
+
+def _create_engine_instance(engine_name: str):
+    """Create a fresh engine instance (not the registry singleton).
+
+    The registry is used for discovery/availability only.
+    Pool slots get their own instances so multiple models can coexist.
+    """
+    entry = _ENGINE_FACTORY.get(engine_name)
+    if not entry:
+        return None
+    module_name, class_name = entry
+    mod = importlib.import_module(module_name)
+    cls = getattr(mod, class_name)
+    return cls()
+
+
+def _make_pool_key(engine_name: str, config: dict) -> str:
+    """Build a key that uniquely identifies an engine+model combination."""
+    if engine_name == "Commercial APIs":
+        provider = config.get("provider", "unknown")
+        model = config.get("model", "unknown")
+        api_key = config.get("api_key", "")
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:8] if api_key else "nokey"
+        return f"{engine_name}::{provider}::{model}::{key_hash}"
+
+    if engine_name == "OpenWebUI":
+        model = config.get("model", "unknown")
+        api_key = config.get("api_key", "")
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:8] if api_key else "nokey"
+        return f"{engine_name}::{model}::{key_hash}"
+
+    if engine_name == "TrOCR":
+        return f"{engine_name}::{config.get('model_path', 'default')}"
+
+    if engine_name in ("CRNN-CTC (PyLaia-inspired)", "Kraken"):
+        return f"{engine_name}::{config.get('model_path', 'default')}"
+
+    if engine_name == "Qwen3-VL":
+        base = config.get("base_model", "default")
+        adapter = config.get("adapter", "")
+        return f"{engine_name}::{base}::{adapter or 'none'}"
+
+    if engine_name == "Churro VLM":
+        return f"{engine_name}::{config.get('model_name', 'default')}"
+
+    # Fallback: hash the config
+    config_hash = hashlib.sha256(str(sorted(config.items())).encode()).hexdigest()[:12]
+    return f"{engine_name}::{config_hash}"
+
+
+async def _maybe_evict(new_engine_name: str):
+    """Evict LRU slots with ref_count==0 if VRAM is tight. Called UNDER pool_lock."""
+    if new_engine_name in _NO_GPU_ENGINES:
+        return
+    needed = _ENGINE_VRAM_GB.get(new_engine_name, 4)
+    used = sum(_ENGINE_VRAM_GB.get(s.engine_name, 4)
+               for s in engine_pool.values()
+               if s.engine_name not in _NO_GPU_ENGINES)
+    if used + needed <= _TOTAL_VRAM_GB:
+        return
+    # Evict: ref_count==0, oldest first
+    candidates = sorted(
+        [(k, s) for k, s in engine_pool.items()
+         if s.ref_count == 0 and s.engine_name not in _NO_GPU_ENGINES],
+        key=lambda x: x[1].last_used
+    )
+    for key, slot in candidates:
+        if used + needed <= _TOTAL_VRAM_GB:
+            break
+        log.info(f"Evicting engine slot '{key}' (last used {time.time() - slot.last_used:.0f}s ago)")
+        try:
+            slot.engine.unload_model()
+        except Exception as e:
+            log.warning(f"Error unloading evicted engine: {e}")
+        del engine_pool[key]
+        used -= _ENGINE_VRAM_GB.get(slot.engine_name, 4)
+    if used + needed > _TOTAL_VRAM_GB:
+        log.warning(f"VRAM tight: ~{used}GB used + ~{needed}GB needed > {_TOTAL_VRAM_GB}GB total")
+
+
+# Compatibility shims — will be removed after full migration
 loaded_engine: Optional[HTREngine] = None
 loaded_engine_name: str = ""
 loaded_config: dict = {}
@@ -93,18 +223,94 @@ loaded_config: dict = {}
 UPLOAD_DIR = Path(__file__).parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Image cache: image_id -> {path, xml_path, pil_image, lines, results}
-image_cache: Dict[str, dict] = {}
-
-# Cancel event — set to stop a running transcription stream
-cancel_event: asyncio.Event = None  # initialised in startup_event
-
 # Upload TTL: 24 hours
 _UPLOAD_TTL_SECONDS = 86400
 
+# Session TTL: 2 hours of inactivity
+_SESSION_TTL_SECONDS = 7200
+
+# Cookie name for session tracking
+_SESSION_COOKIE = "polyscriptor_session"
+
+
+# ---------------------------------------------------------------------------
+# Per-user sessions — Phase 1 of multi-user refactoring
+# ---------------------------------------------------------------------------
+
+@dataclass
+class UserSession:
+    session_id: str
+    image_cache: Dict[str, dict] = field(default_factory=dict)
+    cancel_events: Dict[str, asyncio.Event] = field(default_factory=dict)
+    pool_key: Optional[str] = None  # Reference into engine_pool
+    created_at: float = field(default_factory=time.time)
+    last_active: float = field(default_factory=time.time)
+
+
+sessions: Dict[str, UserSession] = {}
+
+
+def _get_or_create_session(session_id: Optional[str]) -> tuple[UserSession, bool]:
+    """Return (session, created). If session_id is missing/unknown, create a new one."""
+    if session_id and session_id in sessions:
+        session = sessions[session_id]
+        session.last_active = time.time()
+        return session, False
+    new_id = str(uuid.uuid4())
+    session = UserSession(session_id=new_id)
+    sessions[new_id] = session
+    return session, True
+
+
+def _cleanup_expired_sessions() -> int:
+    """Remove sessions inactive for more than _SESSION_TTL_SECONDS. Returns count removed."""
+    cutoff = time.time() - _SESSION_TTL_SECONDS
+    expired = [sid for sid, s in sessions.items() if s.last_active < cutoff]
+    for sid in expired:
+        session = sessions.pop(sid)
+        # Release pool reference
+        if session.pool_key and session.pool_key in engine_pool:
+            engine_pool[session.pool_key].ref_count = max(
+                0, engine_pool[session.pool_key].ref_count - 1)
+        # Clean up upload files belonging to this session
+        for iid, img_data in session.image_cache.items():
+            p = img_data.get("path")
+            if p:
+                Path(p).unlink(missing_ok=True)
+            xp = img_data.get("xml_path")
+            if xp:
+                Path(xp).unlink(missing_ok=True)
+        log.info(f"Expired session {sid[:8]}... ({len(session.image_cache)} images)")
+    return len(expired)
+
+
+@app.middleware("http")
+async def session_middleware(request: Request, call_next):
+    """Inject session into request.state; set session cookie on new sessions."""
+    session_id = request.cookies.get(_SESSION_COOKIE)
+    session, created = _get_or_create_session(session_id)
+    request.state.session = session
+
+    response = await call_next(request)
+
+    if created or session_id != session.session_id:
+        response.set_cookie(
+            key=_SESSION_COOKIE,
+            value=session.session_id,
+            httponly=True,
+            samesite="lax",
+            max_age=_SESSION_TTL_SECONDS,
+        )
+    return response
+
+
+def _get_session(request: Request) -> UserSession:
+    """FastAPI dependency: extract session set by middleware."""
+    return request.state.session
+
 
 def _cleanup_old_uploads() -> int:
-    """Delete uploads older than TTL and evict their image_cache entries. Returns count deleted."""
+    """Delete uploads older than TTL and evict image_cache entries across all sessions."""
     cutoff = time.time() - _UPLOAD_TTL_SECONDS
     deleted = 0
     for f in list(UPLOAD_DIR.iterdir()):
@@ -115,78 +321,45 @@ def _cleanup_old_uploads() -> int:
                     deleted += 1
             except OSError:
                 pass
-    # Evict stale image_cache entries whose file no longer exists
-    for iid in list(image_cache.keys()):
-        p = image_cache[iid].get("path")
-        if p and not Path(p).exists():
-            del image_cache[iid]
+    # Evict stale image_cache entries whose file no longer exists (all sessions)
+    for session in sessions.values():
+        for iid in list(session.image_cache.keys()):
+            p = session.image_cache[iid].get("path")
+            if p and not Path(p).exists():
+                del session.image_cache[iid]
     return deleted
 
 
 async def _periodic_cleanup():
-    """Background task: clean up uploads every hour."""
+    """Background task: clean up uploads + expired sessions every hour."""
     while True:
         await asyncio.sleep(3600)
         n = _cleanup_old_uploads()
-        if n:
-            log.info(f"Periodic cleanup: removed {n} old upload file(s).")
+        m = _cleanup_expired_sessions()
+        if n or m:
+            log.info(f"Periodic cleanup: {n} old file(s), {m} expired session(s).")
 
 
 # ---------------------------------------------------------------------------
-# API key store — web/api_keys.json (gitignored)
-# Priority: request value → key store → environment variable
+# API key resolution — keys never stored or shared server-side (Phase 3)
+# Web UI users MUST provide their own keys via browser localStorage.
+# Server env vars (.env) are NOT used by the web UI — they exist only for
+# the PyQt GUI and CLI tools which run locally on the admin's machine.
 # ---------------------------------------------------------------------------
 
-_KEY_STORE_PATH = Path(__file__).parent / "api_keys.json"
-
-# Mapping from engine/provider name to environment variable
-_KEY_ENV_VARS: Dict[str, str] = {
-    "openai":   "OPENAI_API_KEY",
-    "gemini":   "GOOGLE_API_KEY",
-    "claude":   "ANTHROPIC_API_KEY",
-    "openwebui": "OPENWEBUI_API_KEY",
-}
-
-
-def _load_key_store() -> Dict[str, str]:
-    """Load api_keys.json; return empty dict on any error."""
-    try:
-        if _KEY_STORE_PATH.exists():
-            return json.loads(_KEY_STORE_PATH.read_text()) or {}
-    except Exception as e:
-        log.warning(f"Could not read api_keys.json: {e}")
-    return {}
-
-
-def _save_key_store(keys: Dict[str, str]) -> None:
-    try:
-        _KEY_STORE_PATH.write_text(json.dumps(keys, indent=2))
-    except Exception as e:
-        log.warning(f"Could not write api_keys.json: {e}")
+# Known key slots (for validation only — env vars are NOT consulted)
+_KEY_SLOTS = {"openai", "gemini", "claude", "openwebui"}
 
 
 def _resolve_api_key(slot: str, request_value: str) -> str:
     """
-    Return the best available API key for a named slot (e.g. 'openai').
-    Priority: non-empty request value → api_keys.json → environment variable.
+    Return the API key from the browser request, or empty string.
+    Server env vars are deliberately NOT used as fallback — each web user
+    must supply their own key via browser localStorage.
     """
-    slot = slot.lower()
     if request_value and request_value.strip():
         return request_value.strip()
-    stored = _load_key_store().get(slot, "")
-    if stored:
-        return stored
-    env_var = _KEY_ENV_VARS.get(slot, "")
-    return os.environ.get(env_var, "")
-
-
-def _key_is_saved(slot: str) -> bool:
-    return bool(_load_key_store().get(slot.lower()))
-
-
-def _key_is_in_env(slot: str) -> bool:
-    env_var = _KEY_ENV_VARS.get(slot.lower(), "")
-    return bool(env_var and os.environ.get(env_var))
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -208,10 +381,7 @@ def _load_startup_config() -> dict:
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialise cancel event, clean old uploads, start periodic cleanup, auto-load engine."""
-    global cancel_event
-    cancel_event = asyncio.Event()
-
+    """Clean old uploads, start periodic cleanup, auto-load engine."""
     # Clean up uploads left over from previous server runs
     n = _cleanup_old_uploads()
     if n:
@@ -229,15 +399,27 @@ async def startup_event():
     log.info(f"Auto-loading engine '{engine_name}' from server_config.yaml ...")
     try:
         registry = get_global_registry()
-        engine = registry.get_engine_by_name(engine_name)
-        if engine and engine.is_available():
+        reg_engine = registry.get_engine_by_name(engine_name)
+        if reg_engine and reg_engine.is_available():
+            engine = _create_engine_instance(engine_name)
+            if not engine:
+                log.warning(f"Auto-load: cannot create instance for '{engine_name}'.")
+                return
             ok = await asyncio.to_thread(engine.load_model, engine_config)
             if ok:
+                pool_key = _make_pool_key(engine_name, engine_config)
+                slot = EngineSlot(
+                    engine=engine, engine_name=engine_name,
+                    config=engine_config, pool_key=pool_key,
+                    ref_count=0,  # No session owns it yet
+                )
+                engine_pool[pool_key] = slot
+                # Update compat shims
                 global loaded_engine, loaded_engine_name, loaded_config
                 loaded_engine = engine
                 loaded_engine_name = engine_name
                 loaded_config = engine_config
-                log.info(f"Auto-loaded '{engine_name}' successfully.")
+                log.info(f"Auto-loaded '{engine_name}' into pool as '{pool_key}'.")
             else:
                 log.warning(f"Auto-load of '{engine_name}' failed (load_model returned False).")
         else:
@@ -253,6 +435,30 @@ async def startup_event():
 def _get_pylaia_model_options() -> list:
     _import_segmenters()
     return [{"label": k, "value": k} for k in PYLAIA_MODELS.keys()]
+
+
+def _scan_kraken_models() -> list:
+    """Scan models/ directory for local Kraken .mlmodel files and build select options."""
+    options = []
+    models_root = Path(__file__).resolve().parents[1] / "models"
+    if models_root.exists():
+        for p in sorted(models_root.rglob("*.mlmodel")):
+            rel = str(p.relative_to(models_root.parent))  # e.g. models/kraken_cs/best.mlmodel
+            label = f"{p.parent.name}/{p.name}"
+            options.append({"label": label, "value": rel, "source": "local"})
+    # Zenodo presets from kraken_engine (auto-download on load)
+    try:
+        from engines.kraken_engine import KRAKEN_MODELS
+        for preset_id, info in KRAKEN_MODELS.items():
+            if info.get("source") == "zenodo":
+                options.append({
+                    "label": f"{info.get('label', preset_id)} [Zenodo, auto-download]",
+                    "value": f"__zenodo__{preset_id}",
+                    "source": "zenodo",
+                })
+    except Exception:
+        pass
+    return options
 
 
 def _scan_trocr_models() -> list:
@@ -427,8 +633,11 @@ ENGINE_SCHEMAS = {
     },
     "Kraken": lambda: {
         "fields": [
-            {"key": "model_path", "type": "text", "label": "Model Path",
-             "default": "", "placeholder": "Path to Kraken model file"},
+            {"key": "model_path", "type": "select", "label": "Model",
+             "options": _scan_kraken_models(),
+             "custom_key": "custom_model_path",
+             "custom_placeholder": "Absolute path on server, e.g. /home/user/models/my.mlmodel",
+             "upload": True},
         ]
     },
     "Commercial APIs": lambda: {
@@ -455,9 +664,11 @@ ENGINE_SCHEMAS = {
             {"key": "max_output_tokens", "type": "number", "label": "Max output tokens (optional)",
              "min": 512, "max": 65536, "default": None,
              "placeholder": "Leave blank = model maximum"},
-            {"key": "custom_prompt", "type": "text", "label": "Custom Prompt (optional)",
+            {"key": "custom_prompt", "type": "textarea", "label": "Custom Prompt (optional)",
              "default": "",
-             "placeholder": "Leave blank for default transcription prompt"},
+             "rows": 4,
+             "placeholder": "Transcribe all handwritten text in this manuscript image. Preserve the original language (Cyrillic, Latin, etc.) and layout. Output only the transcribed text without any additional commentary.",
+             "hint": "Leave blank to use the default prompt shown above"},
         ]
     },
     "OpenWebUI": lambda: {
@@ -473,11 +684,14 @@ ENGINE_SCHEMAS = {
              "options": []},   # populated via /api/engine/OpenWebUI/models
             {"key": "temperature", "type": "number", "label": "Temperature",
              "min": 0.0, "max": 2.0, "default": 0.1},
-            {"key": "max_tokens", "type": "number", "label": "Max Tokens",
-             "min": 100, "max": 4096, "default": 500},
-            {"key": "custom_prompt", "type": "text", "label": "Custom Prompt (optional)",
+            {"key": "max_tokens", "type": "number", "label": "Max output tokens (optional)",
+             "min": 512, "max": 65536, "default": None,
+             "placeholder": "Leave blank = model maximum"},
+            {"key": "custom_prompt", "type": "textarea", "label": "Custom Prompt (optional)",
              "default": "",
-             "placeholder": "Leave blank for default transcription prompt"},
+             "rows": 3,
+             "placeholder": "Transcribe all handwritten text in this manuscript image. Preserve the original language (Cyrillic, Latin, etc.) and layout. Output only the transcribed text without any additional commentary.",
+             "hint": "Leave blank to use the default prompt shown above"},
         ]
     },
 }
@@ -533,43 +747,26 @@ async def get_config_schema(name: str):
         return {"fields": []}
     schema = ENGINE_SCHEMAS[name]()
 
-    # Inject key_status into password fields so the frontend can show
-    # whether a key is already saved or available via environment variable.
+    # Key status: always "missing" from server perspective — browser localStorage
+    # is the only key store. The frontend checks localStorage client-side.
     for field in schema.get("fields", []):
         if field.get("type") == "password":
-            slot = field["key"]  # e.g. "api_key" — we normalise below
-            # Determine the slot name: openwebui, openai, gemini, claude
-            if name == "OpenWebUI":
-                slot_name = "openwebui"
-            elif name == "Commercial APIs":
-                slot_name = None  # handled below — report per-provider status
-            else:
-                slot_name = slot
-
-            if slot_name:
-                if _key_is_saved(slot_name):
-                    field["key_status"] = "saved"
-                elif _key_is_in_env(slot_name):
-                    field["key_status"] = "env"
-                else:
-                    field["key_status"] = "missing"
-            elif name == "Commercial APIs":
-                # Report status for each provider so the frontend can update
-                # the hint dynamically when the user switches provider.
-                field["key_status_per_provider"] = {
-                    provider: (
-                        "saved" if _key_is_saved(provider) else
-                        "env"   if _key_is_in_env(provider) else
-                        "missing"
-                    )
-                    for provider in ["openai", "gemini", "claude"]
-                }
+            field["key_status"] = "missing"
 
     return schema
 
 
 @app.get("/api/engine/status")
-async def engine_status():
+async def engine_status(request: Request):
+    session = _get_session(request)
+    if session.pool_key and session.pool_key in engine_pool:
+        slot = engine_pool[session.pool_key]
+        return {
+            "loaded": slot.engine.is_model_loaded(),
+            "engine_name": slot.engine_name,
+            "config": slot.config,
+        }
+    # Fallback: compat shim for tests / startup
     return {
         "loaded": loaded_engine is not None and loaded_engine.is_model_loaded(),
         "engine_name": loaded_engine_name,
@@ -593,7 +790,7 @@ async def get_engine_models(
     if name == "OpenWebUI":
         resolved = _resolve_api_key("openwebui", api_key)
         if not resolved:
-            return {"models": [], "error": "No API key — paste one in the form or set OPENWEBUI_API_KEY"}
+            return {"models": [], "error": "No API key — paste one in the form"}
         effective_url = base_url.strip() or "https://openwebui.uni-freiburg.de/api"
         try:
             from openai import OpenAI as _OAI  # openai SDK speaks the same protocol
@@ -610,19 +807,21 @@ async def get_engine_models(
     elif name == "Commercial APIs":
         prov = provider.lower()
         resolved = _resolve_api_key(prov, api_key)
+        if not resolved:
+            return {"models": [], "error": "No API key — paste one in the form"}
         try:
             sys.path.insert(0, str(PROJECT_ROOT))
             if prov == "openai":
                 from inference_commercial_api import fetch_openai_models
-                models = await asyncio.to_thread(fetch_openai_models, resolved or None)
+                models = await asyncio.to_thread(fetch_openai_models, resolved)
                 return {"models": models}
             elif prov == "gemini":
                 from inference_commercial_api import fetch_gemini_models
-                models = await asyncio.to_thread(fetch_gemini_models, resolved or None)
+                models = await asyncio.to_thread(fetch_gemini_models, resolved)
                 return {"models": models}
             elif prov == "claude":
                 from inference_commercial_api import fetch_claude_models
-                models = await asyncio.to_thread(fetch_claude_models, resolved or None)
+                models = await asyncio.to_thread(fetch_claude_models, resolved)
                 return {"models": models}
             else:
                 return {"models": [], "error": f"Unknown provider: {provider}"}
@@ -633,31 +832,39 @@ async def get_engine_models(
 
 
 @app.post("/api/engine/load")
-async def load_engine(req: EngineLoadRequest):
+async def load_engine(request: Request, req: EngineLoadRequest):
     global loaded_engine, loaded_engine_name, loaded_config
+    session = _get_session(request)
 
     registry = get_global_registry()
-    engine = registry.get_engine_by_name(req.engine_name)
-    if not engine:
+    reg_engine = registry.get_engine_by_name(req.engine_name)
+    if not reg_engine:
         raise HTTPException(404, f"Engine '{req.engine_name}' not found")
-    if not engine.is_available():
-        raise HTTPException(400, f"Engine not available: {engine.get_unavailable_reason()}")
+    if not reg_engine.is_available():
+        raise HTTPException(400, f"Engine not available: {reg_engine.get_unavailable_reason()}")
 
-    # Unload previous
-    if loaded_engine and loaded_engine.is_model_loaded():
-        loaded_engine.unload_model()
-
-    # Expand config based on engine type
+    # --- Config resolution (unchanged logic) ---
     config = dict(req.config)
 
-    if req.engine_name == "TrOCR" and "model_path" in config:
+    if req.engine_name == "Kraken" and "model_path" in config:
+        custom_val = config.pop("custom_model_path", "").strip()
+        val = config["model_path"]
+        if val == "__custom__":
+            if not custom_val:
+                raise HTTPException(400, "Please enter a path to a local .mlmodel file")
+            config["model_path"] = custom_val
+        elif val.startswith("__zenodo__"):
+            # Zenodo preset: pass preset_id, let engine handle download
+            config["preset_id"] = val[len("__zenodo__"):]
+            config["model_path"] = None
+        # else: relative local path from select (e.g. "models/kraken_cs/best.mlmodel") — use as-is
+
+    elif req.engine_name == "TrOCR" and "model_path" in config:
         custom_val = config.pop("custom_model_path", "").strip()
         if config["model_path"] == "__custom__":
-            # User entered a custom HuggingFace ID or local path
             if not custom_val:
                 raise HTTPException(400, "Please enter a HuggingFace model ID or local path")
             config["model_path"] = custom_val
-        # Detect source: local path vs HuggingFace ID
         from pathlib import Path as _P
         if _P(config["model_path"]).exists():
             config["model_source"] = "local"
@@ -665,15 +872,12 @@ async def load_engine(req: EngineLoadRequest):
             config["model_source"] = "huggingface"
 
     elif req.engine_name == "Qwen3-VL" and "model_preset" in config:
-        # Resolve local VLM preset to base_model + adapter
         preset_val = config.pop("model_preset")
         custom_val = config.pop("base_model", "").strip()
         if preset_val == "__custom__":
-            # User typed a custom HuggingFace ID into the extra text field
             config["base_model"] = custom_val or "Qwen/Qwen3-VL-8B-Instruct"
             config["adapter"] = None
         else:
-            # Find the matching preset option to get base_model + adapter
             vlm_opts = _scan_vlm_models("qwen3")
             matched = next((o for o in vlm_opts if o["value"] == preset_val), None)
             if matched:
@@ -684,7 +888,6 @@ async def load_engine(req: EngineLoadRequest):
                 config["adapter"] = None
 
     elif req.engine_name == "Churro VLM" and "model_preset" in config:
-        # Resolve local VLM preset to model_name + adapter_path
         preset_val = config.pop("model_preset")
         custom_val = config.pop("model_name", "").strip()
         if preset_val == "__custom__":
@@ -701,44 +904,62 @@ async def load_engine(req: EngineLoadRequest):
                 config["adapter_path"] = None
 
     elif req.engine_name == "Commercial APIs":
-        # Resolve __custom__ model sentinel
         if config.get("model") == "__custom__":
             config["model"] = config.pop("model_custom", "").strip() or "gpt-4o"
 
-    # Resolve API keys via priority chain: request → key store → env var
-    # Also persist non-empty keys that were explicitly provided
+    # Resolve API keys
     if req.engine_name == "Commercial APIs":
         provider_slot = config.get("provider", "openai").lower()
         raw_key = config.get("api_key", "")
         resolved = _resolve_api_key(provider_slot, raw_key)
         if not resolved:
             raise HTTPException(400, f"No API key for {config.get('provider')}. "
-                                     "Paste a key in the field or set the env variable.")
+                                     "Paste your API key in the field.")
         config["api_key"] = resolved
-        # Save newly-provided key for next time
-        if raw_key.strip() and raw_key.strip() != resolved:
-            pass  # already resolved from store/env
-        if raw_key.strip():
-            keys = _load_key_store()
-            keys[provider_slot] = raw_key.strip()
-            _save_key_store(keys)
 
     elif req.engine_name == "OpenWebUI":
         raw_key = config.get("api_key", "")
         resolved = _resolve_api_key("openwebui", raw_key)
         if not resolved:
             raise HTTPException(400, "No API key for OpenWebUI. "
-                                     "Paste a key in the field or set OPENWEBUI_API_KEY.")
+                                     "Paste your API key in the field.")
         config["api_key"] = resolved
-        if raw_key.strip():
-            keys = _load_key_store()
-            keys["openwebui"] = raw_key.strip()
-            _save_key_store(keys)
 
     # Strip empty custom_prompt for API engines (use engine default)
     if req.engine_name in ("Commercial APIs", "OpenWebUI"):
         if not config.get("custom_prompt", "").strip():
             config["custom_prompt"] = None
+
+    # --- Engine pool logic ---
+    pool_key = _make_pool_key(req.engine_name, config)
+
+    async with pool_lock:
+        # Release previous engine reference for this session
+        if session.pool_key and session.pool_key in engine_pool:
+            engine_pool[session.pool_key].ref_count = max(
+                0, engine_pool[session.pool_key].ref_count - 1)
+
+        # Check if this exact engine+model is already loaded
+        if pool_key in engine_pool:
+            slot = engine_pool[pool_key]
+            slot.ref_count += 1
+            slot.last_used = time.time()
+            session.pool_key = pool_key
+            # Update compat shims
+            loaded_engine = slot.engine
+            loaded_engine_name = slot.engine_name
+            loaded_config = slot.config
+            log.info(f"Pool hit: reusing '{pool_key}' (ref_count={slot.ref_count})")
+            return {"success": True, "load_time_s": 0.0,
+                    "engine_name": req.engine_name, "reused": True}
+
+        # Need new slot — evict if VRAM tight
+        await _maybe_evict(req.engine_name)
+
+    # Load model OUTSIDE pool_lock (blocking I/O)
+    engine = _create_engine_instance(req.engine_name)
+    if not engine:
+        raise HTTPException(500, f"Cannot create engine instance for '{req.engine_name}'")
 
     start = time.time()
     success = await asyncio.to_thread(engine.load_model, config)
@@ -747,67 +968,69 @@ async def load_engine(req: EngineLoadRequest):
     if not success:
         raise HTTPException(500, "Failed to load model")
 
-    loaded_engine = engine
-    loaded_engine_name = req.engine_name
-    loaded_config = config
+    slot = EngineSlot(
+        engine=engine,
+        engine_name=req.engine_name,
+        config=config,
+        pool_key=pool_key,
+        ref_count=1,
+        last_used=time.time(),
+    )
 
+    async with pool_lock:
+        # Double-check: another request may have loaded the same key concurrently
+        if pool_key in engine_pool:
+            engine.unload_model()
+            slot = engine_pool[pool_key]
+            slot.ref_count += 1
+            slot.last_used = time.time()
+        else:
+            engine_pool[pool_key] = slot
+
+        session.pool_key = pool_key
+        # Update compat shims
+        loaded_engine = slot.engine
+        loaded_engine_name = slot.engine_name
+        loaded_config = slot.config
+
+    log.info(f"Pool miss: loaded '{pool_key}' in {elapsed:.1f}s (pool size={len(engine_pool)})")
     return {"success": True, "load_time_s": round(elapsed, 2),
-            "engine_name": req.engine_name}
+            "engine_name": req.engine_name, "reused": False}
 
 
 @app.get("/api/keys")
 async def list_keys():
-    """Return saved key slots with masked values (never expose full keys)."""
-    store = _load_key_store()
-    result = {}
-    for slot, key in store.items():
-        if key:
-            result[slot] = "•" * min(len(key), 8) + key[-4:] if len(key) > 4 else "••••"
-    # Also report env-only keys
-    for slot, env_var in _KEY_ENV_VARS.items():
-        if slot not in result and os.environ.get(env_var):
-            result[slot] = f"(from env: {env_var})"
-    return result
+    """Keys are stored in browser localStorage only. Server has no key info.
 
-
-class SaveKeyRequest(BaseModel):
-    slot: str    # e.g. "openai", "gemini", "claude", "openwebui"
-    key: str     # empty string = delete
-
-
-@app.post("/api/keys")
-async def save_key(req: SaveKeyRequest):
-    """Save or delete an API key in the key store."""
-    slot = req.slot.lower()
-    if slot not in _KEY_ENV_VARS:
-        raise HTTPException(400, f"Unknown key slot '{slot}'. "
-                                 f"Valid: {list(_KEY_ENV_VARS.keys())}")
-    keys = _load_key_store()
-    if req.key.strip():
-        keys[slot] = req.key.strip()
-        action = "saved"
-    else:
-        keys.pop(slot, None)
-        action = "deleted"
-    _save_key_store(keys)
-    return {"success": True, "slot": slot, "action": action}
+    This endpoint returns an empty dict — it exists for backwards compatibility.
+    """
+    return {}
 
 
 @app.post("/api/engine/unload")
-async def unload_engine():
+async def unload_engine(request: Request):
     global loaded_engine, loaded_engine_name, loaded_config
-    if loaded_engine:
-        loaded_engine.unload_model()
-    loaded_engine = None
-    loaded_engine_name = ""
-    loaded_config = {}
+    session = _get_session(request)
+
+    async with pool_lock:
+        if session.pool_key and session.pool_key in engine_pool:
+            slot = engine_pool[session.pool_key]
+            slot.ref_count = max(0, slot.ref_count - 1)
+            # Don't actually unload — other sessions may still use it.
+            # LRU eviction handles cleanup when VRAM is needed.
+        session.pool_key = None
+        # Update compat shims
+        loaded_engine = None
+        loaded_engine_name = ""
+        loaded_config = {}
+
     return {"success": True}
 
 
-def _register_image(pil_image: Image.Image, filename: str, save_path: Path) -> str:
-    """Store a PIL image in the cache and return its image_id."""
+def _register_image(session: UserSession, pil_image: Image.Image, filename: str, save_path: Path) -> str:
+    """Store a PIL image in the session's cache and return its image_id."""
     image_id = str(uuid.uuid4())
-    image_cache[image_id] = {
+    session.image_cache[image_id] = {
         "path": save_path,
         "xml_path": None,
         "pil_image": pil_image,
@@ -820,7 +1043,8 @@ def _register_image(pil_image: Image.Image, filename: str, save_path: Path) -> s
 
 
 @app.post("/api/image/upload")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(request: Request, file: UploadFile = File(...)):
+    session = _get_session(request)
     filename = file.filename or "upload"
     is_pdf = (
         filename.lower().endswith(".pdf") or
@@ -839,7 +1063,7 @@ async def upload_image(file: UploadFile = File(...)):
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
-            def _render_pdf(data: bytes, stem: str) -> list:
+            def _render_pdf(data: bytes, stem: str, sess: UserSession) -> list:
                 mat = _fitz.Matrix(150 / 72, 150 / 72)
                 doc = _fitz.open(stream=data, filetype="pdf")
                 results = []
@@ -849,7 +1073,7 @@ async def upload_image(file: UploadFile = File(...)):
                     page_filename = f"{stem}_page{i+1:03d}.png"
                     save_path = UPLOAD_DIR / f"{uuid.uuid4()}.png"
                     pil_page.save(save_path)
-                    pid = _register_image(pil_page, page_filename, save_path)
+                    pid = _register_image(sess, pil_page, page_filename, save_path)
                     results.append({
                         "image_id": pid,
                         "filename": page_filename,
@@ -863,7 +1087,7 @@ async def upload_image(file: UploadFile = File(...)):
             stem = Path(filename).stem
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor(max_workers=1) as pool:
-                pages_out = await loop.run_in_executor(pool, _render_pdf, content, stem)
+                pages_out = await loop.run_in_executor(pool, _render_pdf, content, stem, session)
             return {
                 "is_pdf": True,
                 "filename": filename,
@@ -889,7 +1113,7 @@ async def upload_image(file: UploadFile = File(...)):
         save_path.unlink(missing_ok=True)
         raise HTTPException(400, f"Invalid image: {e}")
 
-    image_id = _register_image(pil_image, filename, save_path)
+    image_id = _register_image(session, pil_image, filename, save_path)
     return {
         "image_id": image_id,
         "width": pil_image.width,
@@ -899,31 +1123,34 @@ async def upload_image(file: UploadFile = File(...)):
 
 
 @app.post("/api/image/{image_id}/xml")
-async def upload_xml(image_id: str, file: UploadFile = File(...)):
+async def upload_xml(request: Request, image_id: str, file: UploadFile = File(...)):
     """Attach a PAGE XML file to an already-uploaded image."""
-    if image_id not in image_cache:
+    session = _get_session(request)
+    if image_id not in session.image_cache:
         raise HTTPException(404, "Image not found — upload image first")
     content = await file.read()
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(400, "XML too large (max 10MB)")
     xml_path = UPLOAD_DIR / f"{image_id}.xml"
     xml_path.write_bytes(content)
-    image_cache[image_id]["xml_path"] = xml_path
+    session.image_cache[image_id]["xml_path"] = xml_path
     return {"success": True, "filename": file.filename}
 
 
 @app.get("/api/image/{image_id}")
-async def get_image(image_id: str):
-    if image_id not in image_cache:
+async def get_image(request: Request, image_id: str):
+    session = _get_session(request)
+    if image_id not in session.image_cache:
         raise HTTPException(404, "Image not found")
-    return FileResponse(str(image_cache[image_id]["path"]))
+    return FileResponse(str(session.image_cache[image_id]["path"]))
 
 
 @app.get("/api/image/{image_id}/info")
-async def image_info(image_id: str):
-    if image_id not in image_cache:
+async def image_info(request: Request, image_id: str):
+    session = _get_session(request)
+    if image_id not in session.image_cache:
         raise HTTPException(404, "Image not found")
-    d = image_cache[image_id]
+    d = session.image_cache[image_id]
     return {
         "image_id": image_id,
         "filename": d["filename"],
@@ -1009,15 +1236,16 @@ async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
 
 
 @app.delete("/api/image/{image_id}/region/{region_index}")
-async def delete_region(image_id: str, region_index: int):
+async def delete_region(request: Request, image_id: str, region_index: int):
     """
     Remove one detected region and its lines from the cached segmentation.
     Returns updated segmentation data in the same format as /segment,
     so the client can redraw the canvas.
     """
-    if image_id not in image_cache:
+    session = _get_session(request)
+    if image_id not in session.image_cache:
         raise HTTPException(404, "Image not found")
-    img_data = image_cache[image_id]
+    img_data = session.image_cache[image_id]
 
     seg_regions = img_data.get("seg_regions") or []
     if not seg_regions:
@@ -1055,6 +1283,7 @@ async def delete_region(image_id: str, region_index: int):
 
 @app.get("/api/image/{image_id}/segment")
 async def segment_image(
+    request: Request,
     image_id: str,
     method: str = "kraken",
     device: str = "cpu",
@@ -1065,28 +1294,45 @@ async def segment_image(
     Run segmentation only (no transcription) and return line bboxes as JSON.
     Useful for previewing line layout before transcribing.
     """
-    if image_id not in image_cache:
+    session = _get_session(request)
+    if image_id not in session.image_cache:
         raise HTTPException(404, "Image not found — upload first")
 
     try:
-        return await _run_segmentation(image_cache[image_id], method, device,
+        return await _run_segmentation(session.image_cache[image_id], method, device,
                                        max_columns, split_width_fraction)
     except Exception as e:
         raise HTTPException(500, f"Segmentation failed: {e}")
 
 
 @app.post("/api/transcribe")
-async def transcribe(req: TranscribeRequest):
-    if not loaded_engine or not loaded_engine.is_model_loaded():
+async def transcribe(request: Request, req: TranscribeRequest):
+    session = _get_session(request)
+
+    # Resolve engine from session's pool slot
+    if not session.pool_key or session.pool_key not in engine_pool:
+        # Fallback: check compat shims (e.g. auto-loaded engine, no session yet)
+        if not loaded_engine or not loaded_engine.is_model_loaded():
+            raise HTTPException(400, "No engine loaded")
+    slot = engine_pool.get(session.pool_key) if session.pool_key else None
+    # Build effective engine/config references
+    eff_engine = slot.engine if slot else loaded_engine
+    eff_config = slot.config if slot else loaded_config
+    eff_engine_name = slot.engine_name if slot else loaded_engine_name
+
+    if not eff_engine or not eff_engine.is_model_loaded():
         raise HTTPException(400, "No engine loaded")
-    if req.image_id not in image_cache:
+
+    if req.image_id not in session.image_cache:
         raise HTTPException(404, "Image not found — upload first")
 
-    img_data = image_cache[req.image_id]
+    img_data = session.image_cache[req.image_id]
     pil_image = img_data["pil_image"]
 
-    # Reset cancel flag for this transcription run
-    cancel_event.clear()
+    # Per-request cancel event (replaces global cancel_event)
+    request_id = str(uuid.uuid4())
+    cancel_evt = asyncio.Event()
+    session.cancel_events[request_id] = cancel_evt
 
     async def event_stream():
         _import_segmenters()
@@ -1095,7 +1341,7 @@ async def transcribe(req: TranscribeRequest):
             # --- Segmentation ---
             xml_path = img_data.get("xml_path") if req.use_pagexml else None
 
-            if not loaded_engine.requires_line_segmentation():
+            if not eff_engine.requires_line_segmentation():
                 # Page-level engine — no segmentation needed
                 from inference_page import LineSegment
                 lines = [LineSegment(
@@ -1151,16 +1397,24 @@ async def transcribe(req: TranscribeRequest):
 
             for i, line in enumerate(lines):
                 # Check for cancellation before each line
-                if cancel_event.is_set():
+                if cancel_evt.is_set():
                     yield _sse("cancelled", {})
                     return
 
                 line_img = line.image if line.image is not None else pil_image.crop(line.bbox)
                 img_array = np.array(line_img.convert("RGB"))
 
-                result = await asyncio.to_thread(
-                    loaded_engine.transcribe_line, img_array, loaded_config
-                )
+                # Use slot lock to serialize access to this engine instance
+                if slot:
+                    async with slot.lock:
+                        slot.last_used = time.time()
+                        result = await asyncio.to_thread(
+                            eff_engine.transcribe_line, img_array, eff_config
+                        )
+                else:
+                    result = await asyncio.to_thread(
+                        eff_engine.transcribe_line, img_array, eff_config
+                    )
 
                 text = str(result.text) if hasattr(result, "text") else str(result)
                 confidence = None
@@ -1184,22 +1438,25 @@ async def transcribe(req: TranscribeRequest):
                 })
 
                 # Check for cancellation after each line's progress event
-                if cancel_event.is_set():
+                if cancel_evt.is_set():
                     yield _sse("cancelled", {})
                     return
 
-            # Store completed results in image_cache for export
+            # Store completed results in session image_cache for export
             img_data["results"] = results
 
             elapsed = time.time() - start_time
             yield _sse("complete", {
                 "lines": results,
                 "total_time_s": round(elapsed, 2),
-                "engine": loaded_engine_name,
+                "engine": eff_engine_name,
             })
 
         except Exception as e:
             yield _sse("error", {"message": str(e)})
+        finally:
+            # Clean up this request's cancel event
+            session.cancel_events.pop(request_id, None)
 
     return StreamingResponse(
         event_stream(),
@@ -1212,17 +1469,19 @@ async def transcribe(req: TranscribeRequest):
 
 
 @app.post("/api/transcribe/cancel")
-async def cancel_transcription():
-    """Signal the running transcription to stop after the current line."""
-    if cancel_event is not None:
-        cancel_event.set()
+async def cancel_transcription(request: Request):
+    """Signal all running transcriptions for this session to stop."""
+    session = _get_session(request)
+    for evt in session.cancel_events.values():
+        evt.set()
     return {"success": True}
 
 
 @app.post("/api/image/{image_id}/export-xml")
-async def export_xml(image_id: str):
+async def export_xml(request: Request, image_id: str):
     """Export transcription results for image_id as PAGE XML."""
-    pretty, stem = _build_xml_bytes(image_id)
+    session = _get_session(request)
+    pretty, stem = _build_xml_bytes(session, image_id)
     return Response(
         content=pretty,
         media_type="application/xml",
@@ -1230,15 +1489,15 @@ async def export_xml(image_id: str):
     )
 
 
-def _build_xml_bytes(image_id: str) -> tuple[bytes, str]:
+def _build_xml_bytes(session: UserSession, image_id: str) -> tuple[bytes, str]:
     """Return (xml_bytes, stem) for a cached image, or raise HTTPException."""
     import xml.etree.ElementTree as ET
     from xml.dom import minidom
     from page_xml_exporter import PageXMLExporter
 
-    if image_id not in image_cache:
+    if image_id not in session.image_cache:
         raise HTTPException(404, f"Image {image_id} not found")
-    img_data = image_cache[image_id]
+    img_data = session.image_cache[image_id]
     results = img_data.get("results")
     if not results:
         raise HTTPException(400, f"No results for {image_id}")
@@ -1286,14 +1545,15 @@ class BatchXMLRequest(BaseModel):
 
 
 @app.post("/api/batch/export-xml")
-async def batch_export_xml(req: BatchXMLRequest):
+async def batch_export_xml(request: Request, req: BatchXMLRequest):
     """Return a ZIP archive containing one PAGE XML file per image."""
+    session = _get_session(request)
     import zipfile, io
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         for image_id in req.image_ids:
             try:
-                xml_bytes, stem = _build_xml_bytes(image_id)
+                xml_bytes, stem = _build_xml_bytes(session, image_id)
                 zf.writestr(f"{stem}.xml", xml_bytes)
             except HTTPException:
                 pass  # skip images without results
@@ -1303,6 +1563,41 @@ async def batch_export_xml(req: BatchXMLRequest):
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="batch_export.zip"'},
     )
+
+
+@app.get("/api/session")
+async def session_info(request: Request):
+    """Return info about the current session (useful for debugging)."""
+    session = _get_session(request)
+    return {
+        "session_id": session.session_id[:8] + "...",
+        "images": len(session.image_cache),
+        "active_transcriptions": len(session.cancel_events),
+        "pool_key": session.pool_key,
+        "created_at": session.created_at,
+        "last_active": session.last_active,
+        "total_sessions": len(sessions),
+    }
+
+
+@app.get("/api/engine/pool")
+async def pool_status():
+    """Return current engine pool state (admin/debug endpoint)."""
+    slots = []
+    for key, slot in engine_pool.items():
+        slots.append({
+            "pool_key": key,
+            "engine_name": slot.engine_name,
+            "ref_count": slot.ref_count,
+            "loaded": slot.engine.is_model_loaded(),
+            "last_used": slot.last_used,
+            "age_s": round(time.time() - slot.last_used, 0),
+        })
+    return {
+        "pool_size": len(engine_pool),
+        "slots": slots,
+        "total_sessions": len(sessions),
+    }
 
 
 @app.get("/api/kraken/presets")
@@ -1321,6 +1616,38 @@ async def kraken_presets():
             "source": info.get("source", ""),
         })
     return {"presets": presets}
+
+
+@app.post("/api/models/upload")
+async def upload_model(file: UploadFile = File(...)):
+    """Upload a Kraken .mlmodel file to the server's models/kraken_uploads/ directory."""
+    filename = file.filename or "model.mlmodel"
+    if not filename.lower().endswith(".mlmodel"):
+        raise HTTPException(400, "Only .mlmodel files are accepted")
+
+    content = await file.read()
+    if len(content) > 500 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 500 MB)")
+
+    upload_dir = PROJECT_ROOT / "models" / "kraken_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sanitize filename — keep only safe characters
+    safe_name = Path(filename).name
+    safe_name = "".join(c for c in safe_name if c.isalnum() or c in "._- ")
+    safe_name = safe_name.strip() or "uploaded.mlmodel"
+
+    dest = upload_dir / safe_name
+    dest.write_bytes(content)
+    log.info(f"Uploaded Kraken model: {dest} ({len(content)} bytes)")
+
+    rel_path = str(dest.relative_to(PROJECT_ROOT))  # e.g. models/kraken_uploads/foo.mlmodel
+    return {
+        "path": rel_path,
+        "filename": safe_name,
+        "size": len(content),
+        "options": _scan_kraken_models(),  # refreshed list for frontend to repopulate select
+    }
 
 
 @app.get("/api/gpu")

@@ -608,10 +608,15 @@ class CommercialAPIEngine(HTREngine):
                 # Fallback to config dict (web UI context — no Qt widgets)
                 if max_tokens is None:
                     max_tokens = config.get("max_output_tokens")
+                # Treat 0 as "no limit" (HTML number fields send 0 for blank)
+                if max_tokens is not None and max_tokens <= 0:
+                    max_tokens = None
                 if temperature is None:
                     temperature = config.get("temperature")
-                fast_direct_early_exit = True
-                if self._early_exit_check is not None and not self._early_exit_check.isChecked():
+                # Web UI (no Qt widgets): disable early exit for full reasoning quality
+                if self._early_exit_check is not None:
+                    fast_direct_early_exit = self._early_exit_check.isChecked()
+                else:
                     fast_direct_early_exit = False
                 # Extract continuation settings
                 auto_continue = False
@@ -636,7 +641,8 @@ class CommercialAPIEngine(HTREngine):
                         except ValueError:
                             pass  # Keep default
                 
-                reasoning_fallback_threshold = 0.6
+                # Web UI (no Qt widgets): disable reasoning fallback (1.0 = never trigger)
+                reasoning_fallback_threshold = 1.0 if not (hasattr(self, '_reasoning_fallback_edit') and self._reasoning_fallback_edit is not None) else 0.6
                 if hasattr(self, '_reasoning_fallback_edit') and self._reasoning_fallback_edit is not None:
                     rft_text = self._reasoning_fallback_edit.text().strip()
                     if rft_text:
@@ -685,7 +691,8 @@ class CommercialAPIEngine(HTREngine):
                     continuation_min_new_chars=continuation_min_new_chars,
                     reasoning_fallback_threshold=reasoning_fallback_threshold,
                     fallback_max_output_tokens=fallback_cap,
-                    record_stats_csv="gemini_runs.csv"
+                    record_stats_csv="gemini_runs.csv",
+                    apply_restriction_prompt=False  # Let model reason freely — improves transcription quality
                 )
             else:
                 temperature = None
@@ -707,6 +714,9 @@ class CommercialAPIEngine(HTREngine):
                 # Fallback to config dict (web UI context — no Qt widgets)
                 if max_tokens is None:
                     max_tokens = config.get("max_output_tokens")
+                # Treat 0 as "no limit" (HTML number fields send 0 for blank)
+                if max_tokens is not None and max_tokens <= 0:
+                    max_tokens = None
                 if temperature is None:
                     temperature = config.get("temperature")
                 text = self.model.transcribe(

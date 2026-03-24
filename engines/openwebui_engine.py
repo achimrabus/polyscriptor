@@ -436,10 +436,13 @@ class OpenWebUIEngine(HTREngine):
             # Get model and parameters
             model = config.get("model", "gpt-4-vision-preview")
             temperature = config.get("temperature", 0.1)
-            max_tokens = config.get("max_tokens", 500)
+            max_tokens = config.get("max_tokens")
+            # Treat 0 as "no limit" (HTML number fields send 0 for blank)
+            if max_tokens is not None and max_tokens <= 0:
+                max_tokens = None
 
             # Call OpenWebUI API (OpenAI-compatible)
-            response = self.client.chat.completions.create(
+            api_kwargs = dict(
                 model=model,
                 messages=[
                     {
@@ -459,8 +462,10 @@ class OpenWebUIEngine(HTREngine):
                     }
                 ],
                 temperature=temperature,
-                max_tokens=max_tokens
             )
+            if max_tokens is not None:
+                api_kwargs["max_tokens"] = max_tokens
+            response = self.client.chat.completions.create(**api_kwargs)
 
             # Extract transcription
             text = response.choices[0].message.content.strip()

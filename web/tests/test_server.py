@@ -316,3 +316,94 @@ def test_delete_region_on_image_without_segmentation_returns_404_or_error():
     # 200 (empty), 400 (no regions), or 404 (not found) — not a 500
     assert resp.status_code in (200, 400, 404)
     assert resp.status_code != 500
+
+
+# ── Engine pool ──────────────────────────────────────────────────────────────
+
+def test_pool_status_endpoint():
+    resp = client.get("/api/engine/pool")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "pool_size" in data
+    assert "slots" in data
+    assert isinstance(data["slots"], list)
+
+
+def test_pool_key_deterministic():
+    """Same inputs produce the same pool key."""
+    from web.polyscriptor_server import _make_pool_key
+    k1 = _make_pool_key("TrOCR", {"model_path": "models/test_model"})
+    k2 = _make_pool_key("TrOCR", {"model_path": "models/test_model"})
+    assert k1 == k2
+
+
+def test_pool_key_differentiates_models():
+    from web.polyscriptor_server import _make_pool_key
+    k1 = _make_pool_key("TrOCR", {"model_path": "models/model_a"})
+    k2 = _make_pool_key("TrOCR", {"model_path": "models/model_b"})
+    assert k1 != k2
+
+
+def test_pool_key_api_key_isolation():
+    """Different API keys produce different pool keys."""
+    from web.polyscriptor_server import _make_pool_key
+    k1 = _make_pool_key("Commercial APIs", {"provider": "Gemini", "model": "gemini-pro", "api_key": "key_aaa"})
+    k2 = _make_pool_key("Commercial APIs", {"provider": "Gemini", "model": "gemini-pro", "api_key": "key_bbb"})
+    assert k1 != k2
+
+
+def test_engine_factory_creates_independent_instances():
+    from web.polyscriptor_server import _create_engine_instance
+    e1 = _create_engine_instance("TrOCR")
+    e2 = _create_engine_instance("TrOCR")
+    assert e1 is not None
+    assert e2 is not None
+    assert e1 is not e2  # Independent instances
+
+
+def test_session_shows_pool_key():
+    resp = client.get("/api/session")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "pool_key" in data
+
+
+def test_engine_status_session_aware():
+    """engine_status returns unloaded for a fresh session (no pool_key)."""
+    resp = client.get("/api/engine/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["loaded"] is False
+
+
+def test_model_upload_rejects_non_mlmodel():
+    """Upload endpoint rejects files that don't have .mlmodel extension."""
+    content = b"not a model"
+    resp = client.post(
+        "/api/models/upload",
+        files={"file": ("model.txt", io.BytesIO(content), "text/plain")},
+    )
+    assert resp.status_code == 400
+    assert "mlmodel" in resp.json()["detail"].lower()
+
+
+def test_model_upload_accepts_mlmodel(tmp_path):
+    """Upload endpoint accepts a .mlmodel file and returns path + refreshed options."""
+    # Use a tiny fake .mlmodel (just bytes)
+    content = b"\x00fake_mlmodel_data\x00"
+    resp = client.post(
+        "/api/models/upload",
+        files={"file": ("test_model.mlmodel", io.BytesIO(content), "application/octet-stream")},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["filename"] == "test_model.mlmodel"
+    assert data["path"].endswith("test_model.mlmodel")
+    assert isinstance(data["options"], list)
+    assert data["size"] == len(content)
+    # Verify file actually exists on disk
+    from pathlib import Path
+    from web.polyscriptor_server import PROJECT_ROOT
+    uploaded = PROJECT_ROOT / data["path"]
+    assert uploaded.exists()
+    uploaded.unlink()  # cleanup

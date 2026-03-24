@@ -389,9 +389,15 @@ class KrakenEngine(HTREngine):
         """
         import subprocess
         import shutil
+        import sys
         import time
 
-        if not shutil.which("kraken"):
+        # Prefer the kraken binary from the same venv as this Python process
+        # (shutil.which only searches PATH, which may not include the venv bin/ in
+        # systemd services that invoke uvicorn directly without activating the venv).
+        venv_kraken = Path(sys.executable).parent / "kraken"
+        kraken_cmd = str(venv_kraken) if venv_kraken.exists() else shutil.which("kraken")
+        if not kraken_cmd:
             _print("❌ 'kraken' command not found. Install with: pip install kraken")
             _print(f"💡 Manual download: https://zenodo.org/record/{zenodo_id.split('/')[-1]}")
             return None
@@ -417,7 +423,7 @@ class KrakenEngine(HTREngine):
 
         try:
             result = subprocess.run(
-                ["kraken", "get", zenodo_id],
+                [kraken_cmd, "get", zenodo_id],
                 capture_output=True, text=True, timeout=300
             )
             if result.returncode == 0:

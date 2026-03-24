@@ -124,7 +124,11 @@ export function initTranscriptionPanel() {
     });
 
     on('sse-segmentation', data => {
-        $('progress-text').textContent = `${data.num_lines} lines found. Transcribing...`;
+        if (data.source === 'page') {
+            $('progress-text').textContent = 'Processing full page...';
+        } else {
+            $('progress-text').textContent = `${data.num_lines} lines found. Transcribing...`;
+        }
     });
 
     on('sse-progress', data => {

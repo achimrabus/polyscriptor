@@ -140,6 +140,23 @@ python3 train_pylaia.py \
 
 ---
 
+## 🤖 Pre-trained Models
+
+Ready-to-use CRNN-CTC models for Cyrillic and Glagolitic manuscripts are published on HuggingFace:
+
+**[https://huggingface.co/achimrabus](https://huggingface.co/achimrabus)**
+
+| Model | Script / Language | CER | Description |
+|-------|-------------------|-----|-------------|
+| [crnn-ctc-church-slavonic](https://huggingface.co/achimrabus/crnn-ctc-church-slavonic) | Church Slavonic | 2.89% | QuantiSlav corpus (Elena Renje) |
+| [crnn-ctc-prosta-mova](https://huggingface.co/achimrabus/crnn-ctc-prosta-mova) | Prosta Mova (Old Ruthenian) | 3.77% | Continslav corpus (Martin Meindl) |
+| [crnn-ctc-ukrainian](https://huggingface.co/achimrabus/crnn-ctc-ukrainian) | Ukrainian (Cyrillic) | 4.76% | 19th–20th c. manuscripts (MultiHTR) |
+| [crnn-ctc-glagolitic](https://huggingface.co/achimrabus/crnn-ctc-glagolitic) | Croatian Glagolitic | 5.33% | Outputs Latin transliteration |
+
+All models run on CPU (no GPU required) and can be loaded directly in the CRNN-CTC engine — either in the GUI or the web UI.
+
+---
+
 ## 📁 Repository Structure
 
 ```

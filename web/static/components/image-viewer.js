@@ -76,7 +76,12 @@ export function initImageViewer() {
     // Draw bboxes after segmentation; keep state.regions in sync
     on('sse-segmentation', data => {
         state.regions = data.regions || [];
-        drawBboxes(data.bboxes, -1, state.regions);
+        if (data.source === 'page') {
+            // Page-level engine: clear any old line bboxes, don't draw full-page box
+            drawBboxes([], -1, []);
+        } else {
+            drawBboxes(data.bboxes, -1, state.regions);
+        }
         if (data.source === 'pagexml') {
             $('xml-status').textContent = `PAGE XML: ${data.num_lines} lines`;
         }
