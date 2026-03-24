@@ -155,8 +155,17 @@ export function initTranscriptionPanel() {
         $('progress-container').classList.add('hidden');
         $('results-footer').classList.remove('hidden');
         $('btn-export-xml').classList.remove('hidden');
-        $('results-summary').textContent =
-            `${data.lines.length} lines in ${data.total_time_s}s (${data.engine})`;
+        let summary = `${data.lines.length} lines in ${data.total_time_s}s (${data.engine})`;
+        if (data.token_usage) {
+            const tu = data.token_usage;
+            const parts = [];
+            if (tu.prompt_tokens != null)   parts.push(`in: ${tu.prompt_tokens}`);
+            if (tu.output_tokens != null)   parts.push(`out: ${tu.output_tokens}`);
+            if (tu.thinking_tokens != null && tu.thinking_tokens > 0)
+                parts.push(`think: ${tu.thinking_tokens}`);
+            if (parts.length) summary += ` | tokens: ${parts.join(', ')}`;
+        }
+        $('results-summary').textContent = summary;
         // Show confidence filter if any line has confidence data
         if (state.lines.some(l => l.confidence != null)) {
             $('conf-filter-row').classList.remove('hidden');

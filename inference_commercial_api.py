@@ -229,8 +229,10 @@ class OpenAIInference(BaseAPIInference):
 class GeminiInference(BaseAPIInference):
     """Google Gemini inference via google-genai SDK (with legacy google-generativeai fallback)."""
 
-    # thinking_mode string -> thinking_budget token count
-    _THINKING_BUDGETS = {"low": 1024, "high": 8000}
+    # thinking_mode string -> thinking_budget token count (max tokens for internal reasoning)
+    # "low":  8000  — moderate budget; fast enough for most lines
+    # "high": None  — no ThinkingConfig passed at all; model decides dynamically (no cap)
+    _THINKING_BUDGETS = {"low": 8000, "high": None}
 
     def __init__(
         self,

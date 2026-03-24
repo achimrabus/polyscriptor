@@ -590,6 +590,9 @@ class CommercialAPIEngine(HTREngine):
                     elif "High" in thinking_text:
                         thinking_mode = "high"
                     # else: Auto = None (default)
+                else:
+                    # Web UI context — get thinking_mode from config dict
+                    thinking_mode = config.get("thinking_mode") or None
                 if self._temperature_edit is not None:
                     t_text = self._temperature_edit.text().strip()
                     if t_text:
@@ -719,20 +722,25 @@ class CommercialAPIEngine(HTREngine):
                     max_tokens = None
                 if temperature is None:
                     temperature = config.get("temperature")
+                thinking_mode = config.get("thinking_mode") or None
                 text = self.model.transcribe(
                     pil_image,
                     prompt=custom_prompt,
                     temperature=temperature if temperature is not None else 0.0,
                     max_output_tokens=max_tokens,  # None = no limit, model uses its own maximum
+                    thinking_mode=thinking_mode,
                 )
 
+            meta: Dict[str, Any] = {
+                "provider": self._current_provider,
+                "model": config.get("model", ""),
+            }
+            if hasattr(self.model, "last_usage") and self.model.last_usage:
+                meta["token_usage"] = dict(self.model.last_usage)
             return TranscriptionResult(
                 text=text if text else "",
                 confidence=1.0,  # API models don't provide confidence
-                metadata={
-                    "provider": self._current_provider,
-                    "model": config.get("model", "")
-                }
+                metadata=meta,
             )
 
         except Exception as e:

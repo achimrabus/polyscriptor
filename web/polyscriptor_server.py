@@ -669,6 +669,12 @@ ENGINE_SCHEMAS = {
              "rows": 4,
              "placeholder": "Transcribe all handwritten text in this manuscript image. Preserve the original language (Cyrillic, Latin, etc.) and layout. Output only the transcribed text without any additional commentary.",
              "hint": "Leave blank to use the default prompt shown above"},
+            {"key": "thinking_mode", "type": "select", "label": "Thinking Mode (Gemini only)",
+             "options": [
+                 {"label": "Auto (model decides, no cap)", "value": ""},
+                 {"label": "Low (budget: 8k tokens)", "value": "low"},
+                 {"label": "High (no cap, max reasoning)", "value": "high"},
+             ], "default": ""},
         ]
     },
     "OpenWebUI": lambda: {
@@ -1392,6 +1398,7 @@ async def transcribe(request: Request, req: TranscribeRequest):
 
             # --- Transcription ---
             results = []
+            token_usage: Dict[str, Any] = {}
             start_time = time.time()
             line_regions = img_data.get("line_regions") or ([0] * len(lines))
 
@@ -1422,6 +1429,13 @@ async def transcribe(request: Request, req: TranscribeRequest):
                     confidence = float(result.confidence)
                     if confidence > 1:
                         confidence = confidence / 100.0
+                # Accumulate token usage from API engines (e.g. Gemini)
+                if hasattr(result, "metadata") and isinstance(result.metadata, dict):
+                    tu = result.metadata.get("token_usage")
+                    if tu:
+                        for k, v in tu.items():
+                            if v is not None:
+                                token_usage[k] = token_usage.get(k, 0) + v
 
                 line_data = {
                     "index": i,
@@ -1446,11 +1460,14 @@ async def transcribe(request: Request, req: TranscribeRequest):
             img_data["results"] = results
 
             elapsed = time.time() - start_time
-            yield _sse("complete", {
+            complete_data: Dict[str, Any] = {
                 "lines": results,
                 "total_time_s": round(elapsed, 2),
                 "engine": eff_engine_name,
-            })
+            }
+            if token_usage:
+                complete_data["token_usage"] = token_usage
+            yield _sse("complete", complete_data)
 
         except Exception as e:
             yield _sse("error", {"message": str(e)})
