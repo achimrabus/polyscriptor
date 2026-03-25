@@ -270,8 +270,16 @@ def _cleanup_expired_sessions() -> int:
         session = sessions.pop(sid)
         # Release pool reference
         if session.pool_key and session.pool_key in engine_pool:
-            engine_pool[session.pool_key].ref_count = max(
-                0, engine_pool[session.pool_key].ref_count - 1)
+            slot = engine_pool[session.pool_key]
+            slot.ref_count = max(0, slot.ref_count - 1)
+            if slot.ref_count == 0:
+                log.info(f"Immediate eviction (session expiry): '{slot.engine_name}'")
+                try:
+                    slot.engine.unload_model()
+                except Exception as e:
+                    log.warning(f"unload_model() failed for '{slot.engine_name}': {e}")
+                if session.pool_key in engine_pool:
+                    del engine_pool[session.pool_key]
         # Clean up upload files belonging to this session
         for iid, img_data in session.image_cache.items():
             p = img_data.get("path")
@@ -700,6 +708,31 @@ ENGINE_SCHEMAS = {
              "hint": "Leave blank to use the default prompt shown above"},
         ]
     },
+    "PaddleOCR": lambda: {
+        "fields": [
+            {"key": "lang", "type": "select", "label": "Language / Script",
+             "default": "ch",
+             "options": [
+                 {"label": "Chinese + English (mixed, recommended default)",  "value": "ch"},
+                 {"label": "English",                                          "value": "en"},
+                 {"label": "German",                                           "value": "german"},
+                 {"label": "French",                                           "value": "french"},
+                 {"label": "Japanese",                                         "value": "japan"},
+                 {"label": "Korean",                                           "value": "korean"},
+                 {"label": "Arabic",                                           "value": "arabic"},
+                 {"label": "Cyrillic (Russian/Ukrainian/Bulgarian)",           "value": "cyrillic"},
+                 {"label": "Latin script (generic)",                           "value": "latin"},
+                 {"label": "Custom (enter code below)",                        "value": "__custom__"},
+             ],
+             "custom_key": "custom_lang",
+             "custom_placeholder": "PaddleOCR lang code, e.g. ru, uk, fr, es, it, pt, …",
+             "hint": "One language model per run. 'ch' is bilingual (Chinese+English) and PaddleOCR's strongest model. For mixed-script documents outside this list, run separate passes."},
+            {"key": "use_angle_cls", "type": "checkbox",
+             "label": "Text-angle classifier (correct 180° rotation)", "default": True},
+            {"key": "use_gpu", "type": "checkbox",
+             "label": "Use GPU (requires paddlepaddle-gpu)", "default": False},
+        ]
+    },
 }
 
 
@@ -719,6 +752,7 @@ class TranscribeRequest(BaseModel):
     max_columns: int = 6          # blla: max sub-columns per region (iterative splitting)
     split_width_fraction: float = 0.40  # blla: min region width (fraction of page) to trigger sub-split
     use_pagexml: bool = True      # use attached PAGE XML for segmentation when available
+    engine_config_overrides: Dict[str, Any] = {}  # live form values merged into stored config at transcription time
 
 
 # ---------------------------------------------------------------------------
@@ -909,6 +943,15 @@ async def load_engine(request: Request, req: EngineLoadRequest):
                 config["model_name"] = preset_val
                 config["adapter_path"] = None
 
+    elif req.engine_name == "PaddleOCR" and "lang" in config:
+        if config["lang"] == "__custom__":
+            custom_lang = config.pop("custom_lang", "").strip()
+            if not custom_lang:
+                raise HTTPException(400, "Please enter a PaddleOCR language code")
+            config["lang"] = custom_lang
+        else:
+            config.pop("custom_lang", None)
+
     elif req.engine_name == "Commercial APIs":
         if config.get("model") == "__custom__":
             config["model"] = config.pop("model_custom", "").strip() or "gpt-4o"
@@ -942,8 +985,16 @@ async def load_engine(request: Request, req: EngineLoadRequest):
     async with pool_lock:
         # Release previous engine reference for this session
         if session.pool_key and session.pool_key in engine_pool:
-            engine_pool[session.pool_key].ref_count = max(
-                0, engine_pool[session.pool_key].ref_count - 1)
+            prev_slot = engine_pool[session.pool_key]
+            prev_slot.ref_count = max(0, prev_slot.ref_count - 1)
+            if prev_slot.ref_count == 0:
+                log.info(f"Immediate eviction (engine switch): '{prev_slot.engine_name}'")
+                try:
+                    prev_slot.engine.unload_model()
+                except Exception as e:
+                    log.warning(f"unload_model() failed for '{prev_slot.engine_name}': {e}")
+                if session.pool_key in engine_pool:
+                    del engine_pool[session.pool_key]
 
         # Check if this exact engine+model is already loaded
         if pool_key in engine_pool:
@@ -1022,8 +1073,14 @@ async def unload_engine(request: Request):
         if session.pool_key and session.pool_key in engine_pool:
             slot = engine_pool[session.pool_key]
             slot.ref_count = max(0, slot.ref_count - 1)
-            # Don't actually unload — other sessions may still use it.
-            # LRU eviction handles cleanup when VRAM is needed.
+            if slot.ref_count == 0:
+                log.info(f"Immediate eviction (explicit unload): '{slot.engine_name}'")
+                try:
+                    slot.engine.unload_model()
+                except Exception as e:
+                    log.warning(f"unload_model() failed for '{slot.engine_name}': {e}")
+                if session.pool_key in engine_pool:
+                    del engine_pool[session.pool_key]
         session.pool_key = None
         # Update compat shims
         loaded_engine = None
@@ -1323,7 +1380,21 @@ async def transcribe(request: Request, req: TranscribeRequest):
     slot = engine_pool.get(session.pool_key) if session.pool_key else None
     # Build effective engine/config references
     eff_engine = slot.engine if slot else loaded_engine
-    eff_config = slot.config if slot else loaded_config
+    _base_config = slot.config if slot else loaded_config
+    # Merge live form overrides into a copy of the stored config so changes to
+    # runtime-only fields (custom_prompt, thinking_mode, temperature, …) take
+    # effect without requiring a model reload.  Never overwrite security-sensitive
+    # keys that were set during load (api_key, provider, model, model_path, …).
+    _RELOAD_ONLY_KEYS = {"api_key", "provider", "model", "model_path", "model_source",
+                         "base_model", "adapter", "model_name", "preset_id", "lang",
+                         "use_gpu", "venv_path"}
+    if req.engine_config_overrides:
+        eff_config = dict(_base_config)
+        for k, v in req.engine_config_overrides.items():
+            if k not in _RELOAD_ONLY_KEYS:
+                eff_config[k] = v
+    else:
+        eff_config = _base_config
     eff_engine_name = slot.engine_name if slot else loaded_engine_name
 
     if not eff_engine or not eff_engine.is_model_loaded():
@@ -1347,8 +1418,8 @@ async def transcribe(request: Request, req: TranscribeRequest):
             # --- Segmentation ---
             xml_path = img_data.get("xml_path") if req.use_pagexml else None
 
-            if not eff_engine.requires_line_segmentation():
-                # Page-level engine — no segmentation needed
+            if not eff_engine.requires_line_segmentation() and not xml_path:
+                # Page-level engine with no PAGE XML — send whole page as single line
                 from inference_page import LineSegment
                 lines = [LineSegment(
                     image=pil_image,
@@ -1429,13 +1500,15 @@ async def transcribe(request: Request, req: TranscribeRequest):
                     confidence = float(result.confidence)
                     if confidence > 1:
                         confidence = confidence / 100.0
-                # Accumulate token usage from API engines (e.g. Gemini)
+                # Accumulate token usage and extract thinking text from API engines (e.g. Gemini)
+                thinking_text = None
                 if hasattr(result, "metadata") and isinstance(result.metadata, dict):
                     tu = result.metadata.get("token_usage")
                     if tu:
                         for k, v in tu.items():
                             if v is not None:
                                 token_usage[k] = token_usage.get(k, 0) + v
+                    thinking_text = result.metadata.get("thinking_text")
 
                 line_data = {
                     "index": i,
@@ -1444,6 +1517,8 @@ async def transcribe(request: Request, req: TranscribeRequest):
                     "bbox": list(line.bbox),
                     "region": line_regions[i] if i < len(line_regions) else 0,
                 }
+                if thinking_text:
+                    line_data["thinking_text"] = thinking_text
                 results.append(line_data)
                 yield _sse("progress", {
                     "current": i + 1,

@@ -736,7 +736,11 @@ class CommercialAPIEngine(HTREngine):
                 "model": config.get("model", ""),
             }
             if hasattr(self.model, "last_usage") and self.model.last_usage:
-                meta["token_usage"] = dict(self.model.last_usage)
+                usage = dict(self.model.last_usage)
+                thinking_text = usage.pop("thinking_text", None)
+                meta["token_usage"] = usage
+                if thinking_text:
+                    meta["thinking_text"] = thinking_text
             return TranscriptionResult(
                 text=text if text else "",
                 confidence=1.0,  # API models don't provide confidence

@@ -290,6 +290,21 @@ function appendLine(line, container = null) {
     div.appendChild(textSpan);
     if (confSpan) div.appendChild(confSpan);
 
+    // Thinking text (Gemini reasoning) — collapsible per line
+    if (line.thinking_text) {
+        const details = document.createElement('details');
+        details.className = 'thinking-block';
+        const summary = document.createElement('summary');
+        summary.className = 'thinking-toggle';
+        summary.textContent = 'reasoning';
+        const pre = document.createElement('pre');
+        pre.className = 'thinking-text';
+        pre.textContent = line.thinking_text;
+        details.appendChild(summary);
+        details.appendChild(pre);
+        div.appendChild(details);
+    }
+
     // Single click → highlight bbox on image
     div.addEventListener('click', e => {
         if (textSpan.contentEditable === 'true') return; // don't interfere while editing

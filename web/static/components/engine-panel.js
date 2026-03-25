@@ -665,6 +665,19 @@ async function onTranscribe() {
     emit('transcription-start');
 
     try {
+        // Collect live config overrides — non-password form fields are sent at
+        // transcription time so changes (e.g. custom_prompt, thinking_mode) take
+        // effect immediately without requiring a model reload.
+        const liveOverrides = {};
+        for (const el of $('config-form').querySelectorAll('[data-key]')) {
+            if (el.dataset.saveFor) continue;       // skip "save key" checkboxes
+            if (el.dataset.passwordField) continue; // never resend secrets
+            const key = el.dataset.key;
+            if (el.type === 'checkbox')      liveOverrides[key] = el.checked;
+            else if (el.type === 'number')   liveOverrides[key] = Number(el.value);
+            else                             liveOverrides[key] = el.value;
+        }
+
         const resp = await fetch('/api/transcribe', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -674,6 +687,7 @@ async function onTranscribe() {
                 seg_device: segDevice,
                 max_columns: maxColumns,
                 split_width_fraction: splitWidth,
+                engine_config_overrides: liveOverrides,
             }),
         });
 

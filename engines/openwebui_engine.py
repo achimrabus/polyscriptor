@@ -7,7 +7,6 @@ Supports multiple models available on the OpenWebUI platform.
 
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-import os
 import numpy as np
 from PIL import Image
 import io
@@ -88,11 +87,8 @@ class OpenWebUIEngine(HTREngine):
         Looks for .env in the project root directory (parent of engines/).
         Silently skips loading if python-dotenv is not installed or if .env doesn't exist.
         
-        Environment variables loaded (if present):
-            - OPENWEBUI_API_KEY: Used as fallback when API key not in config
-        
-        If .env loading fails or is skipped, the engine will still work if API keys
-        are provided through other means (config, OS environment variables).
+        If .env loading fails or is skipped, the engine will still work if the API key
+        is provided through the config dict.
         """
         if not DOTENV_AVAILABLE:
             return
@@ -351,12 +347,8 @@ class OpenWebUIEngine(HTREngine):
         try:
             api_key = config.get("api_key", "")
 
-            # Fall back to environment variable if no API key provided
             if not api_key:
-                api_key = os.environ.get("OPENWEBUI_API_KEY", "")
-
-            if not api_key:
-                print("Error: No API key provided. Set via config or OPENWEBUI_API_KEY env var.")
+                print("Error: No API key provided. Paste your key in the field.")
                 return False
 
             # Store config for batch processing (model, temperature, etc.)

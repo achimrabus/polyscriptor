@@ -516,6 +516,21 @@ async function processBatch() {
     emit('batch-complete', { items: batch.items });
 }
 
+function _collectLiveOverrides() {
+    const overrides = {};
+    const form = document.getElementById('config-form');
+    if (!form) return overrides;
+    for (const el of form.querySelectorAll('[data-key]')) {
+        if (el.dataset.saveFor) continue;
+        if (el.dataset.passwordField) continue;
+        const key = el.dataset.key;
+        if (el.type === 'checkbox')     overrides[key] = el.checked;
+        else if (el.type === 'number')  overrides[key] = Number(el.value);
+        else                            overrides[key] = el.value;
+    }
+    return overrides;
+}
+
 function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFraction = 0.4, usePageXml = true, signal = null) {
     return new Promise((resolve, reject) => {
         const lines = [];
@@ -524,6 +539,7 @@ function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFrac
             seg_device: segDevice, max_columns: maxColumns,
             split_width_fraction: splitWidthFraction,
             use_pagexml: usePageXml,
+            engine_config_overrides: _collectLiveOverrides(),
         });
 
         fetch('/api/transcribe', {

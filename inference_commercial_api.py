@@ -315,6 +315,16 @@ class GeminiInference(BaseAPIInference):
             "thinking_tokens": getattr(usage, "thoughts_token_count", None) if usage else None,
             "total_tokens": getattr(usage, "total_token_count", None) if usage else None,
         }
+        # Extract thinking text from thought parts (only present when thinking_budget > 0)
+        thinking_parts = []
+        try:
+            for cand in (getattr(resp, "candidates", None) or []):
+                for part in (getattr(getattr(cand, "content", None), "parts", None) or []):
+                    if getattr(part, "thought", False) and getattr(part, "text", None):
+                        thinking_parts.append(part.text)
+        except Exception:
+            pass
+        self._last_call_usage["thinking_text"] = "\n\n".join(thinking_parts) if thinking_parts else None
         return resp.text.strip()
 
     def _maybe_continue(
@@ -620,8 +630,6 @@ def fetch_openai_models(api_key: str = None) -> list:
         return OPENAI_MODELS_FALLBACK
 
     try:
-        import os
-        api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
             return OPENAI_MODELS_FALLBACK
 
@@ -656,8 +664,6 @@ def fetch_gemini_models(api_key: str = None) -> list:
     if not GEMINI_AVAILABLE:
         return GEMINI_MODELS_FALLBACK
     try:
-        import os
-        api_key = api_key or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             return GEMINI_MODELS_FALLBACK
         if GEMINI_NEW_SDK:
@@ -692,8 +698,6 @@ def fetch_claude_models(api_key: str = None) -> list:
         return CLAUDE_MODELS_FALLBACK
 
     try:
-        import os
-        api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             return CLAUDE_MODELS_FALLBACK
 
