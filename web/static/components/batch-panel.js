@@ -408,6 +408,7 @@ async function processBatch() {
     const segDevice   = $('seg-device').value;
     const maxColumns  = parseInt($('seg-max-columns')?.value || '6', 10);
     const splitWidth  = parseFloat($('seg-split-width')?.value || '40') / 100;
+    const textDirection = $('seg-text-direction')?.value || 'horizontal-lr';
     const usePageXml  = $('batch-use-pagexml').checked;
     const resume      = $('batch-resume').checked;
     const pending = batch.items.filter(i => resume ? i.status === 'pending' : i.status !== 'done').length;
@@ -472,16 +473,18 @@ async function processBatch() {
 
             // 2. Transcribe via SSE (abortable)
             batch.abortController = new AbortController();
-            const lines = await transcribeSSE(
-                item.imageId, segMethod, segDevice, maxColumns, splitWidth, usePageXml, batch.abortController.signal
+            const result = await transcribeSSE(
+                item.imageId, segMethod, segDevice, maxColumns, splitWidth, usePageXml, batch.abortController.signal, textDirection
             );
-            item.lines = lines;
-            updateItemStatus(i, 'done', lines.length);
+            item.lines        = result.lines;
+            item.time_s       = result.time_s;
+            item.token_usage  = result.token_usage;
+            updateItemStatus(i, 'done', result.lines.length);
             doneThisRun++;
             updateOverallProgress(doneThisRun, pending);
             // Fire sse-complete so the panel shows footer, column toggle, confidence filter, etc.
             if (batch.currentIndex === i) {
-                emit('sse-complete', { lines: item.lines, total_time_s: 0, engine: '(batch)' });
+                emit('sse-complete', { lines: item.lines, total_time_s: item.time_s, engine: '(batch)', token_usage: item.token_usage });
             }
 
         } catch (err) {
@@ -531,16 +534,24 @@ function _collectLiveOverrides() {
     return overrides;
 }
 
-function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFraction = 0.4, usePageXml = true, signal = null) {
+function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFraction = 0.4, usePageXml = true, signal = null, textDirection = 'horizontal-lr') {
     return new Promise((resolve, reject) => {
         const lines = [];
+        let startTime = null;
+        let lastTokenUsage = null;
         const body = JSON.stringify({
             image_id: imageId, seg_method: segMethod,
             seg_device: segDevice, max_columns: maxColumns,
             split_width_fraction: splitWidthFraction,
+            text_direction: textDirection,
             use_pagexml: usePageXml,
             engine_config_overrides: _collectLiveOverrides(),
         });
+
+        const finish = (cancelled = false) => {
+            const time_s = startTime ? Math.round((Date.now() - startTime) / 100) / 10 : 0;
+            resolve({ lines, time_s, token_usage: lastTokenUsage, cancelled });
+        };
 
         fetch('/api/transcribe', {
             method: 'POST',
@@ -554,7 +565,7 @@ function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFrac
             let buf = '';
 
             const pump = () => reader.read().then(({ done, value }) => {
-                if (done) { resolve(lines); return; }
+                if (done) { finish(); return; }
                 buf += decoder.decode(value, { stream: true });
                 const parts = buf.split('\n\n');
                 buf = parts.pop();
@@ -565,6 +576,8 @@ function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFrac
                     const event = evLine.slice(7).trim();
                     const data  = JSON.parse(dataLine.slice(5).trim());
                     if (event === 'progress') {
+                        if (!startTime) startTime = Date.now();
+                        if (data.token_usage) lastTokenUsage = data.token_usage;
                         lines.push(data.line);
                         // Only stream to panel when user is watching this item
                         if (batch.currentIndex === batch.processingIndex) emit('sse-progress', data);
@@ -576,11 +589,12 @@ function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFrac
                         }
                         if (batch.currentIndex === batch.processingIndex) emit('sse-segmentation', data);
                     } else if (event === 'complete') {
-                        resolve(lines);
+                        if (data.token_usage) lastTokenUsage = data.token_usage;
+                        finish();
                     } else if (event === 'error') {
                         reject(new Error(data.message));
                     } else if (event === 'cancelled') {
-                        resolve(lines);
+                        finish(true);
                     }
                 }
                 pump();
@@ -611,7 +625,7 @@ function loadBatchItem(index) {
     state.lines.forEach(l => emit('sse-progress', {
         current: l.index + 1, total: state.lines.length, line: l
     }));
-    emit('sse-complete', { lines: state.lines, total_time_s: 0, engine: '(batch)' });
+    emit('sse-complete', { lines: state.lines, total_time_s: item.time_s || 0, engine: '(batch)', token_usage: item.token_usage || null });
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────

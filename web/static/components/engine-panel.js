@@ -568,8 +568,8 @@ function collectConfig() {
 }
 
 function _persistNewKeys(engineName) {
-    // For engines with password fields: if user typed a new key AND checked "save",
-    // persist it to browser localStorage (never to server).
+    // Save any typed API key to browser localStorage automatically.
+    // Unchecking "Save key" is the explicit opt-out (deletes saved key).
     const saveBoxes = $('config-form').querySelectorAll('[data-save-for]');
     for (const box of saveBoxes) {
         const keyField = $(`cfg-${box.dataset.saveFor}`);
@@ -587,15 +587,17 @@ function _persistNewKeys(engineName) {
         }
         if (!slot) continue;
 
-        if (box.checked && newKey) {
-            // Save to browser localStorage
+        if (newKey) {
+            // Always save a typed key — no checkbox opt-in required
             _saveBrowserKey(slot, newKey);
+            keyField.value = '';  // clear field; hint shows key is saved
             keyField.placeholder = '••••••••  (saved in browser — leave blank to keep)';
             keyField.dataset.hasBrowser = 'true';
+            box.checked = true;
             const label = box.nextElementSibling;
             if (label) label.textContent = 'Key saved in browser';
-        } else if (!box.checked) {
-            // Unchecked = delete from browser
+        } else if (!box.checked && _hasBrowserKey(slot)) {
+            // Explicit opt-out: unchecked + no typed key → delete saved key
             _saveBrowserKey(slot, '');
             delete keyField?.dataset?.hasBrowser;
         }
@@ -661,6 +663,7 @@ async function onTranscribe() {
     const segDevice = $('seg-device').value;
     const maxColumns = parseInt($('seg-max-columns')?.value || '6', 10);
     const splitWidth = parseFloat($('seg-split-width')?.value || '40') / 100;
+    const textDirection = $('seg-text-direction')?.value || 'horizontal-lr';
 
     emit('transcription-start');
 
@@ -687,6 +690,7 @@ async function onTranscribe() {
                 seg_device: segDevice,
                 max_columns: maxColumns,
                 split_width_fraction: splitWidth,
+                text_direction: textDirection,
                 engine_config_overrides: liveOverrides,
             }),
         });
@@ -740,6 +744,7 @@ async function onSegment() {
     const segDevice   = $('seg-device').value;
     const maxColumns  = parseInt($('seg-max-columns')?.value || '6', 10);
     const splitWidth  = parseFloat($('seg-split-width')?.value || '40') / 100;
+    const textDirection = $('seg-text-direction')?.value || 'horizontal-lr';
 
     btn.classList.add('loading');
     btn.textContent = 'Segmenting…';
@@ -749,6 +754,7 @@ async function onSegment() {
         const params = new URLSearchParams({
             method: segMethod, device: segDevice,
             max_columns: maxColumns, split_width_fraction: splitWidth,
+            text_direction: textDirection,
         });
         const resp = await api(`/api/image/${state.imageId}/segment?${params}`);
         if (!resp.ok) {

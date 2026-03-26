@@ -44,6 +44,7 @@ class TrOCREngine(HTREngine):
         self._hf_model_edit: Optional[QLineEdit] = None
         self._beam_spin: Optional[QSpinBox] = None
         self._normalize_check: Optional[QCheckBox] = None
+        self._flip_rtl_check: Optional[QCheckBox] = None
 
     def get_name(self) -> str:
         return "TrOCR"
@@ -143,6 +144,10 @@ class TrOCREngine(HTREngine):
         self._normalize_check.setToolTip("Apply CLAHE normalization (use if model was trained with it)")
         settings_layout.addWidget(self._normalize_check)
 
+        self._flip_rtl_check = QCheckBox("RTL manuscript (flip line images)")
+        self._flip_rtl_check.setToolTip("Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew)")
+        settings_layout.addWidget(self._flip_rtl_check)
+
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
 
@@ -222,6 +227,7 @@ class TrOCREngine(HTREngine):
             "model_path": self._local_model_combo.currentText() if is_local else self._hf_model_edit.text(),
             "beam_search": self._beam_spin.value(),
             "normalize_background": self._normalize_check.isChecked(),
+            "flip_rtl": self._flip_rtl_check.isChecked(),
         }
 
     def set_config(self, config: Dict[str, Any]):
@@ -242,6 +248,8 @@ class TrOCREngine(HTREngine):
 
         self._beam_spin.setValue(config.get("beam_search", 4))
         self._normalize_check.setChecked(config.get("normalize_background", False))
+        if self._flip_rtl_check:
+            self._flip_rtl_check.setChecked(config.get("flip_rtl", False))
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load TrOCR model."""
@@ -251,12 +259,14 @@ class TrOCREngine(HTREngine):
                 return False
 
             normalize = config.get("normalize_background", False)
+            flip_rtl = config.get("flip_rtl", False)
             model_source = config.get("model_source", "local")
             is_hf = (model_source == "huggingface")
 
             self.model = TrOCRInference(
                 model_path=model_path,
                 normalize_bg=normalize,
+                flip_rtl=flip_rtl,
                 is_huggingface=is_hf
             )
 

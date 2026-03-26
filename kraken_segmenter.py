@@ -188,6 +188,7 @@ class KrakenLineSegmenter:
         max_columns: int = 4,
         split_width_fraction: float = 0.40,
         min_lines_to_split: int = 10,
+        text_direction: str = 'horizontal-lr',
     ) -> Tuple[List[SegRegion], List[LineSegment]]:
         """
         Neural baseline segmentation using blla.segment().
@@ -231,6 +232,7 @@ class KrakenLineSegmenter:
                     max_columns=max_columns,
                     split_width_fraction=split_width_fraction,
                     min_lines_to_split=min_lines_to_split,
+                    text_direction=text_direction,
                 )
                 if regions:
                     print(f"[KrakenSegmenter] blla: {len(regions)} regions, {len(lines)} lines")
@@ -257,6 +259,7 @@ class KrakenLineSegmenter:
         max_columns: int = 4,
         split_width_fraction: float = 0.40,
         min_lines_to_split: int = 10,
+        text_direction: str = 'horizontal-lr',
     ) -> Tuple[List[SegRegion], List[LineSegment]]:
         """Run blla.segment() and build SegRegion / LineSegment lists."""
         from kraken import blla
@@ -298,7 +301,8 @@ class KrakenLineSegmenter:
         # blla has built-in autocast support (disabled by default). Enable it
         # on CUDA for faster fp16 forward pass.
         baseline_seg = blla.segment(img, model=model, device=device,
-                                    autocast=device.startswith('cuda'))
+                                    autocast=device.startswith('cuda'),
+                                    text_direction=text_direction)
 
         w, h = image.size
         seg_lines: List[LineSegment] = []
@@ -349,7 +353,8 @@ class KrakenLineSegmenter:
                 break  # no new splits — converged
 
         # Build SegRegion objects
-        regions, ordered_lines = self._build_regions(regions_dict, seg_lines, w)
+        regions, ordered_lines = self._build_regions(regions_dict, seg_lines, w,
+                                                      text_direction=text_direction)
 
         elapsed = time.time() - start
         print(f"[KrakenSegmenter] blla completed in {elapsed:.2f}s")
@@ -609,21 +614,25 @@ class KrakenLineSegmenter:
         regions_dict: Dict[str, dict],
         all_lines: list,
         page_w: int,
+        text_direction: str = 'horizontal-lr',
     ) -> Tuple[List[SegRegion], List[LineSegment]]:
         """
         Build SegRegion objects from regions_dict.
 
         Returns (regions, ordered_lines) where ordered_lines is sorted by
-        region (left-to-right) then top-to-bottom within each region.
+        region (left-to-right for LTR, right-to-left for RTL) then
+        top-to-bottom within each region.
         """
-        # Sort regions left-to-right by mean x-center of their lines
+        rtl = text_direction.endswith('-rl')
+
+        # Sort regions by mean x-center: LTR = ascending, RTL = descending
         def _region_mean_x(item):
             lines = item[1]['lines']
             if not lines:
                 return 0
             return sum((l.bbox[0] + l.bbox[2]) / 2 for _, l in lines) / len(lines)
 
-        sorted_regions = sorted(regions_dict.items(), key=_region_mean_x)
+        sorted_regions = sorted(regions_dict.items(), key=_region_mean_x, reverse=rtl)
 
         regions: List[SegRegion] = []
         ordered_lines: List[LineSegment] = []

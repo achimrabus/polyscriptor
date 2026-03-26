@@ -843,6 +843,21 @@ class TranscriptionGUI(QMainWindow):
         blla_minlines_layout.addStretch()
         blla_layout.addLayout(blla_minlines_layout)
 
+        # Text direction (reading order)
+        blla_dir_layout = QHBoxLayout()
+        blla_dir_layout.addWidget(QLabel("Direction:"))
+        self.blla_direction_combo = QComboBox()
+        self.blla_direction_combo.addItem("LTR — Latin, Cyrillic, …", "horizontal-lr")
+        self.blla_direction_combo.addItem("RTL — Arabic, Ottoman, Hebrew, …", "horizontal-rl")
+        self.blla_direction_combo.addItem("Vertical LTR", "vertical-lr")
+        self.blla_direction_combo.addItem("Vertical RTL", "vertical-rl")
+        self.blla_direction_combo.setToolTip(
+            "Controls column reading order.\n"
+            "Use RTL for Arabic, Ottoman Turkish, Hebrew manuscripts.\n"
+            "Affects which column is listed first in the output.")
+        blla_dir_layout.addWidget(self.blla_direction_combo)
+        blla_layout.addLayout(blla_dir_layout)
+
         # Custom model path
         blla_model_layout = QHBoxLayout()
         blla_model_layout.addWidget(QLabel("Model:"))
@@ -1456,12 +1471,14 @@ class TranscriptionGUI(QMainWindow):
                 split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.40
                 min_lines = self.blla_min_lines_spin.value() if hasattr(self, 'blla_min_lines_spin') else 10
                 custom_model = self.blla_model_edit.text().strip() if hasattr(self, 'blla_model_edit') else None
+                text_dir = self.blla_direction_combo.currentData() if hasattr(self, 'blla_direction_combo') else 'horizontal-lr'
                 regions, kraken_lines = segmenter.segment_with_regions(
                     self.current_image, device=device,
                     model_path=custom_model or None,
                     max_columns=max_cols,
                     split_width_fraction=split_frac,
                     min_lines_to_split=min_lines,
+                    text_direction=text_dir,
                 )
 
                 # Store regions for later use (visualization, export)
@@ -1682,6 +1699,7 @@ class TranscriptionGUI(QMainWindow):
         split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.40
         min_lines = self.blla_min_lines_spin.value() if hasattr(self, 'blla_min_lines_spin') else 10
         custom_model = self.blla_model_edit.text().strip() if hasattr(self, 'blla_model_edit') else None
+        text_dir = self.blla_direction_combo.currentData() if hasattr(self, 'blla_direction_combo') else 'horizontal-lr'
 
         segmenter = KrakenLineSegmenter(device=device)
         new_pairs = []
@@ -1703,6 +1721,7 @@ class TranscriptionGUI(QMainWindow):
                     max_columns=max_cols,
                     split_width_fraction=split_frac,
                     min_lines_to_split=min_lines,
+                    text_direction=text_dir,
                 )
             except Exception as e:
                 self.status_bar.showMessage(f"Error re-segmenting rect {ri + 1}: {e}")

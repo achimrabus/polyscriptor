@@ -218,7 +218,8 @@ All models run on CPU (no GPU required) and can be loaded directly in the CRNN-C
        --input_dir ./transkribus_export \
        --output_dir ./data/my_dataset \
        --preserve-aspect-ratio \
-       --target-height 128
+       --target-height 128 \
+       # add --flip-rtl for Ottoman/Arabic/Hebrew manuscripts
    ```
 3. **Convert to CRNN-CTC format**:
    ```bash
@@ -308,6 +309,81 @@ python3 batch_processing.py \
 - `--use-pagexml`: Auto-detect and use existing PAGE XML segmentation
 - `--resume`: Skip already-processed files
 - `--dry-run`: Test without writing output
+- `--flip-rtl`: Flip line images horizontally for RTL scripts (see below)
+
+---
+
+## ↔️ RTL Manuscript Support (Ottoman, Arabic, Hebrew)
+
+Some manuscript traditions are written right-to-left (RTL), but are transcribed with a Latin or Cyrillic alphabet that is read left-to-right (LTR). A key example is **Ottoman Turkish manuscripts**: the image is scanned RTL, but the ground truth transcription is a Latin-alphabet transliteration read LTR.
+
+**The problem:** CRNN-CTC uses CTC alignment, which maps spatial position left-to-right to sequence position. If the image is RTL but the label is LTR, training fails. TrOCR (attention decoder) has the same issue. The fix is simple: **flip all line images horizontally** before training and during inference. This makes the visual input LTR, matching the LTR transcription.
+
+### What to do
+
+**Step 1 — Data preparation** (flip images when parsing Transkribus export):
+```bash
+python3 transkribus_parser.py \
+    --input_dir ./transkribus_export \
+    --output_dir ./data/ottoman_dataset \
+    --preserve-aspect-ratio \
+    --target-height 128 \
+    --flip-rtl          # <-- flip all line images horizontally
+```
+This saves flipped images to disk. The `dataset_info.json` will record `"flip_rtl": true`.
+
+**Step 2 — Training:** No change needed. Train normally on the flipped images:
+```bash
+# CRNN-CTC
+python3 train_pylaia.py \
+    --train_dir ./data/crnn_train \
+    --val_dir ./data/crnn_val \
+    --output_dir ./models/ottoman_model \
+    --epochs 250
+
+# TrOCR
+python3 optimized_training.py --config config_ottoman.yaml
+```
+
+**Step 3 — Inference:** You must use `--flip-rtl` at inference time too, because the model was trained on flipped images and expects the same orientation.
+
+```bash
+# Batch processing (CRNN-CTC or TrOCR)
+python3 batch_processing.py \
+    --input-folder HTR_Images/ottoman \
+    --engine crnn-ctc \
+    --model-path models/ottoman_model/best_model.pt \
+    --flip-rtl
+
+# Single-page inference (TrOCR)
+python3 inference_page.py \
+    --image page.jpg \
+    --checkpoint models/ottoman_model/checkpoint-3000 \
+    --flip-rtl
+```
+
+**GUI (PyQt):** Enable the "RTL manuscript (flip line images)" checkbox in the engine's settings panel before loading the model.
+
+**Web UI:** Enable "RTL manuscript (flip line images)" in the CRNN-CTC or TrOCR config form. For TrOCR, this setting is applied at model load time (same as "Normalize Background") — reload the model after changing it.
+
+### Which engines support `--flip-rtl`?
+
+| Engine | Supported | Notes |
+|--------|-----------|-------|
+| **CRNN-CTC** | Yes | Flip applied per inference call — works as a runtime toggle |
+| **TrOCR** | Yes | Flip applied at model load time — must reload if changed |
+| **API engines** (Gemini, Claude, GPT) | Not needed | Vision models handle image orientation internally |
+| **Qwen3-VL / LightOnOCR** | Not needed | Same — full-image vision models |
+
+### Kraken Neural (blla) — reading order (`text_direction`)
+
+When using Kraken Neural segmentation on RTL manuscripts, set the reading direction so that columns are returned in the correct order (right-most column first):
+
+- **Web UI**: "Reading direction" dropdown in Segmentation → Kraken Neural options → select `RTL (Arabic, Ottoman, Hebrew, …)`
+- **PyQt GUI**: "Direction" combo box in the blla segmentation settings
+- **CLI**: not yet exposed as a flag; defaults to `horizontal-lr`
+
+This controls **column ordering only** — which column is listed first. It is independent of `--flip-rtl`, which flips the pixel content of each line. For Ottoman manuscripts you typically want **both**.
 
 ---
 

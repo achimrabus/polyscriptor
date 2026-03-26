@@ -253,6 +253,8 @@ Shared Server Notice:
                        help='Path to LoRA adapter (Qwen3: use with --model-id for base model)')
     parser.add_argument('--line-mode', action='store_true',
                        help='Force line segmentation for page-based engines (Qwen3 line-trained models)')
+    parser.add_argument('--flip-rtl', action='store_true',
+                       help='Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew)')
 
     # API-based engines (OpenWebUI)
     parser.add_argument('--api-key', type=str,
@@ -735,6 +737,9 @@ class BatchHTRProcessor:
 
         if self.args.language:
             config['language'] = self.args.language
+
+        if self.args.flip_rtl:
+            config['flip_rtl'] = True
 
         # OpenWebUI-specific
         if self.args.api_key:

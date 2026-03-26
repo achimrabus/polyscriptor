@@ -153,6 +153,15 @@ class PyLaiaEngine(HTREngine):
         )
         output_layout.addWidget(self._enable_spaces_check)
 
+        self._flip_rtl_check = QCheckBox("RTL manuscript (flip line images)")
+        self._flip_rtl_check.setChecked(False)
+        self._flip_rtl_check.setToolTip(
+            "Flip line images horizontally for right-to-left scripts.\n"
+            "Required for models trained on RTL manuscripts (Ottoman, Arabic, Hebrew, etc.)\n"
+            "with left-to-right transcriptions (Latin transliteration)."
+        )
+        output_layout.addWidget(self._flip_rtl_check)
+
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
 
@@ -224,6 +233,7 @@ class PyLaiaEngine(HTREngine):
             "use_lm": self._use_lm_check.isChecked(),
             "lm_weight": self._lm_weight_spin.value(),
             "enable_spaces": self._enable_spaces_check.isChecked(),
+            "flip_rtl": self._flip_rtl_check.isChecked(),
         }
 
         if config["use_lm"]:
@@ -251,6 +261,8 @@ class PyLaiaEngine(HTREngine):
         self._use_lm_check.setChecked(config.get("use_lm", False))
         self._lm_weight_spin.setValue(config.get("lm_weight", 1.5))
         self._enable_spaces_check.setChecked(config.get("enable_spaces", True))
+        if hasattr(self, '_flip_rtl_check'):
+            self._flip_rtl_check.setChecked(config.get("flip_rtl", False))
 
         if "lm_path" in config:
             self._custom_lm_edit.setText(config["lm_path"])
@@ -341,6 +353,10 @@ class PyLaiaEngine(HTREngine):
                 pil_image = PILImage.fromarray(image)
             else:
                 pil_image = image
+
+            # Flip horizontally for RTL scripts
+            if config and config.get("flip_rtl", False):
+                pil_image = pil_image.transpose(PILImage.FLIP_LEFT_RIGHT)
 
             # PyLaiaInferenceWSL uses transcribe() which returns (text, confidence) tuple
             # Use LM version if available (not yet implemented for WSL)

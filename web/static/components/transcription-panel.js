@@ -144,7 +144,16 @@ export function initTranscriptionPanel() {
         const etaStr = remaining != null
             ? ` · ~${remaining < 60 ? remaining + 's' : Math.round(remaining / 60) + 'min'} left`
             : '';
-        $('progress-text').textContent = `${data.current} / ${data.total} lines${etaStr}`;
+        let tokenStr = '';
+        if (data.token_usage) {
+            const tu = data.token_usage;
+            const parts = [];
+            if (tu.prompt_tokens  != null) parts.push(`in:${tu.prompt_tokens}`);
+            if (tu.output_tokens  != null) parts.push(`out:${tu.output_tokens}`);
+            if (tu.thinking_tokens != null && tu.thinking_tokens > 0) parts.push(`think:${tu.thinking_tokens}`);
+            if (parts.length) tokenStr = ` | ${parts.join(' ')} tok`;
+        }
+        $('progress-text').textContent = `${data.current} / ${data.total} lines${etaStr}${tokenStr}`;
 
         _numRegions = Math.max(_numRegions, (data.line.region ?? 0) + 1);
         state.lines.push(data.line);

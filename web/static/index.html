@@ -80,7 +80,7 @@
                     <div id="batch-export-row" class="btn-row hidden" style="margin-top:6px">
                         <button id="btn-export-batch-txt" class="btn btn-small">All TXT</button>
                         <button id="btn-export-batch-csv" class="btn btn-small">All CSV</button>
-                        <button id="btn-export-batch-xml" class="btn btn-small">All XML</button>
+                        <button id="btn-export-batch-xml" class="btn btn-small btn-primary">Download ZIP (XML)</button>
                     </div>
                 </div>
                 <div id="xml-upload-row" class="xml-row hidden">
@@ -120,6 +120,15 @@
                             <label for="seg-split-width">Split width %</label>
                             <input type="number" id="seg-split-width" min="5" max="80" value="40" step="5" style="width:60px" title="Min region width (% of page) to trigger sub-column splitting. Lower = split narrower regions. Double pages: try 20.">
                         </div>
+                    </div>
+                    <div style="margin-top:6px">
+                        <label for="seg-text-direction">Reading direction</label>
+                        <select id="seg-text-direction" title="Controls column reading order. Use horizontal-rl for Arabic, Ottoman, Hebrew manuscripts.">
+                            <option value="horizontal-lr">LTR (Latin, Cyrillic, …)</option>
+                            <option value="horizontal-rl">RTL (Arabic, Ottoman, Hebrew, …)</option>
+                            <option value="vertical-lr">Vertical LTR</option>
+                            <option value="vertical-rl">Vertical RTL</option>
+                        </select>
                     </div>
                 </div>
             </section>

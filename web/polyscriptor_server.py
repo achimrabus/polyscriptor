@@ -600,6 +600,9 @@ ENGINE_SCHEMAS = {
              "options": _get_pylaia_model_options()},
             {"key": "enable_spaces", "type": "checkbox",
              "label": "Convert <space> tokens", "default": True},
+            {"key": "flip_rtl", "type": "checkbox",
+             "label": "RTL manuscript (flip line images)", "default": False,
+             "hint": "Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew)"},
         ]
     },
     "TrOCR": lambda: {
@@ -612,6 +615,9 @@ ENGINE_SCHEMAS = {
              "min": 1, "max": 10, "default": 4},
             {"key": "normalize_background", "type": "checkbox",
              "label": "Normalize Background", "default": False},
+            {"key": "flip_rtl", "type": "checkbox",
+             "label": "RTL manuscript (flip line images)", "default": False,
+             "hint": "Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew)"},
         ]
     },
     "Qwen3-VL": lambda: {
@@ -752,6 +758,7 @@ class TranscribeRequest(BaseModel):
     max_columns: int = 6          # blla: max sub-columns per region (iterative splitting)
     split_width_fraction: float = 0.40  # blla: min region width (fraction of page) to trigger sub-split
     use_pagexml: bool = True      # use attached PAGE XML for segmentation when available
+    text_direction: str = "horizontal-lr"  # reading order for Kraken: horizontal-lr, horizontal-rl, vertical-lr, vertical-rl
     engine_config_overrides: Dict[str, Any] = {}  # live form values merged into stored config at transcription time
 
 
@@ -1225,7 +1232,8 @@ async def image_info(request: Request, image_id: str):
 
 async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
                             max_columns: int = 6,
-                            split_width_fraction: float = 0.40) -> dict:
+                            split_width_fraction: float = 0.40,
+                            text_direction: str = "horizontal-lr") -> dict:
     """
     Shared segmentation helper.  Runs the appropriate segmenter, stores
     results in img_data, and returns a serialisable dict ready for SSE or JSON.
@@ -1239,11 +1247,14 @@ async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
     regions: list = []
     lines: list   = []
 
+    xml_region_data: list = []  # TextRegion bboxes from PAGE XML (for visualization)
     if xml_path is not None:
         from inference_page import PageXMLSegmenter as _PXSeg
         segmenter = _PXSeg(str(xml_path))
         lines = await asyncio.to_thread(segmenter.segment_lines, pil_image)
         source = "pagexml"
+        xml_region_data = getattr(segmenter, 'region_data', []) or []
+
 
     elif method == "kraken-blla":
         segmenter = KrakenLineSegmenter(device=device)
@@ -1252,6 +1263,7 @@ async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
             device=device,
             max_columns=max_columns,
             split_width_fraction=split_width_fraction,
+            text_direction=text_direction,
         )
         source = "kraken-blla"
 
@@ -1283,17 +1295,23 @@ async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
     img_data["lines"]        = lines
     img_data["line_regions"] = line_regions
     img_data["seg_source"]   = source
-    img_data["seg_regions"]  = [
-        {"id": r.id, "bbox": list(r.bbox), "num_lines": len(r.line_ids)}
-        for r in regions
-    ] if regions else []
+    # PAGE XML provides region bboxes directly; Kraken/blla provide SegRegion objects
+    if xml_region_data:
+        img_data["seg_regions"] = xml_region_data
+    elif regions:
+        img_data["seg_regions"] = [
+            {"id": r.id, "bbox": list(r.bbox), "num_lines": len(r.line_ids)}
+            for r in regions
+        ]
+    else:
+        img_data["seg_regions"] = []
 
     result: dict = {
         "num_lines": len(lines),
         "bboxes":    [list(l.bbox) for l in lines],
         "source":    source,
     }
-    if regions:
+    if img_data["seg_regions"]:
         result["regions"] = img_data["seg_regions"]
     return result
 
@@ -1352,6 +1370,7 @@ async def segment_image(
     device: str = "cpu",
     max_columns: int = 6,
     split_width_fraction: float = 0.40,
+    text_direction: str = "horizontal-lr",
 ):
     """
     Run segmentation only (no transcription) and return line bboxes as JSON.
@@ -1363,7 +1382,7 @@ async def segment_image(
 
     try:
         return await _run_segmentation(session.image_cache[image_id], method, device,
-                                       max_columns, split_width_fraction)
+                                       max_columns, split_width_fraction, text_direction)
     except Exception as e:
         raise HTTPException(500, f"Segmentation failed: {e}")
 
@@ -1456,14 +1475,16 @@ async def transcribe(request: Request, req: TranscribeRequest):
                     yield _sse("status", {"message": "Reading line layout from PAGE XML..."})
                     seg_result = await _run_segmentation(img_data, "pagexml",
                                                          req.seg_device, req.max_columns,
-                                                         req.split_width_fraction)
+                                                         req.split_width_fraction,
+                                                         req.text_direction)
                     lines = img_data["lines"]
                     yield _sse("segmentation", seg_result)
                 else:
                     yield _sse("status", {"message": f"Segmenting with {req.seg_method}..."})
                     seg_result = await _run_segmentation(img_data, req.seg_method,
                                                          req.seg_device, req.max_columns,
-                                                         req.split_width_fraction)
+                                                         req.split_width_fraction,
+                                                         req.text_direction)
                     lines = img_data["lines"]
                     yield _sse("segmentation", seg_result)
 
@@ -1520,11 +1541,14 @@ async def transcribe(request: Request, req: TranscribeRequest):
                 if thinking_text:
                     line_data["thinking_text"] = thinking_text
                 results.append(line_data)
-                yield _sse("progress", {
+                progress_data: Dict[str, Any] = {
                     "current": i + 1,
                     "total": len(lines),
                     "line": line_data,
-                })
+                }
+                if token_usage:
+                    progress_data["token_usage"] = dict(token_usage)
+                yield _sse("progress", progress_data)
 
                 # Check for cancellation after each line's progress event
                 if cancel_evt.is_set():
