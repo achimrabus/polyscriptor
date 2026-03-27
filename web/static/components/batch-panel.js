@@ -100,6 +100,8 @@ export function initBatchPanel() {
     $('btn-clear-batch').addEventListener('click', clearBatch);
     $('btn-export-batch-txt').addEventListener('click', exportAllTxt);
     $('btn-export-batch-csv').addEventListener('click', exportAllCsv);
+    $('btn-export-batch-txt-zip').addEventListener('click', exportAllTxtZip);
+    $('btn-export-batch-thinking-zip').addEventListener('click', exportAllThinkingZip);
     $('btn-export-batch-xml').addEventListener('click', exportAllXml);
 
     $('btn-nav-prev').addEventListener('click', () => navigate(-1));
@@ -650,6 +652,46 @@ function exportAllCsv() {
         })
     );
     downloadFile('batch_transcription.csv', header + rows.join('\n'), 'text/csv');
+}
+
+async function exportAllThinkingZip() {
+    const done = batch.items.filter(i => i.status === 'done' && i.imageId);
+    if (!done.length) return;
+    try {
+        const resp = await fetch('/api/batch/export-thinking', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_ids: done.map(i => i.imageId) }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'batch_thinking.zip'; a.click();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        toast(`Thinking export failed: ${err.message}`, 'error');
+    }
+}
+
+async function exportAllTxtZip() {
+    const done = batch.items.filter(i => i.status === 'done' && i.imageId);
+    if (!done.length) return;
+    try {
+        const resp = await fetch('/api/batch/export-txt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_ids: done.map(i => i.imageId) }),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'batch_export_txt.zip'; a.click();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        toast(`TXT ZIP export failed: ${err.message}`, 'error');
+    }
 }
 
 async function exportAllXml() {

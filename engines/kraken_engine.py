@@ -50,82 +50,19 @@ KRAKEN_MODELS = {
         "language": "multi",
         "source": "local"
     },
-    # --- PRINTED TEXT MODELS ---
-    "catmus-print-fondue": {
+    # --- VERIFIED ZENODO MODELS ---
+    # CATMuS-Print: printed text, multilingual, verified DOI 10.5281/zenodo.10592716
+    "catmus-print": {
         "zenodo_id": "10.5281/zenodo.10592716",
-        "description": "CATMuS Print (Modern Printed Text)",
+        "description": "CATMuS-Print (Modern Printed Text, multilingual)",
         "language": "multi",
         "source": "zenodo"
     },
-    "catmus-print-largefile": {
-        "zenodo_id": "10.5281/zenodo.10592716",
-        "description": "CATMuS Print Large File (Modern Printed)",
-        "language": "multi",
-        "source": "zenodo"
-    },
-    # --- MANUSCRIPT MODELS ---
-    "medieval-latin": {
-        "zenodo_id": "10.5281/zenodo.10592711",
-        "description": "Medieval Latin Manuscripts",
-        "language": "latin",
-        "source": "zenodo"
-    },
-    "handwritten-french": {
-        "zenodo_id": "10.5281/zenodo.10592714",
-        "description": "Handwritten French Documents",
-        "language": "french",
-        "source": "zenodo"
-    },
-    # --- HISTORICAL DOCUMENTS ---
-    "legal-historical": {
-        "zenodo_id": "10.5281/zenodo.10592712",
-        "description": "Historical Legal Documents",
-        "language": "multi",
-        "source": "zenodo"
-    },
-    # --- SPECIALIZED SCRIPTS ---
-    "arabic-manuscripts": {
-        "zenodo_id": "10.5281/zenodo.10592713",
-        "description": "Arabic Historical Manuscripts",
+    # Arabic handwritten segmentation (Muharaf Corpus), verified DOI 10.5281/zenodo.14295555
+    "arabic-muharaf": {
+        "zenodo_id": "10.5281/zenodo.14295555",
+        "description": "Arabic Handwritten Segmentation (Muharaf Corpus)",
         "language": "arabic",
-        "source": "zenodo"
-    },
-    "greek-ancient": {
-        "zenodo_id": "10.5281/zenodo.10592715",
-        "description": "Ancient Greek Manuscripts",
-        "language": "greek",
-        "source": "zenodo"
-    },
-    "hebrew-ancient": {
-        "zenodo_id": "10.5281/zenodo.10592717",
-        "description": "Ancient Hebrew Texts",
-        "language": "hebrew",
-        "source": "zenodo"
-    },
-    # --- ASIAN SCRIPTS ---
-    "classical-chinese": {
-        "zenodo_id": "10.5281/zenodo.10592718",
-        "description": "Classical Chinese Documents",
-        "language": "chinese",
-        "source": "zenodo"
-    },
-    "japanese-historical": {
-        "zenodo_id": "10.5281/zenodo.10592719",
-        "description": "Historical Japanese Texts",
-        "language": "japanese",
-        "source": "zenodo"
-    },
-    # --- EUROPEAN SCRIPTS ---
-    "fraktur-german": {
-        "zenodo_id": "10.5281/zenodo.10592720",
-        "description": "German Fraktur Texts",
-        "language": "german",
-        "source": "zenodo"
-    },
-    "english-early-modern": {
-        "zenodo_id": "10.5281/zenodo.10592721",
-        "description": "Early Modern English (1500-1700)",
-        "language": "english",
         "source": "zenodo"
     },
 }

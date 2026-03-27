@@ -759,6 +759,43 @@ input[disabled] { opacity: 0.45; cursor: not-allowed; }
 .line-result.line-hidden { display: none; }
 .line-result mark { background: color-mix(in srgb, var(--accent) 35%, transparent); border-radius: 2px; }
 
+/* Thinking / reasoning block (Gemini, Claude) */
+.thinking-block {
+    margin-top: 4px;
+    border-left: 2px solid var(--accent);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    background: color-mix(in srgb, var(--accent) 6%, var(--bg-secondary));
+    font-size: 0.75rem;
+}
+.thinking-toggle {
+    cursor: pointer;
+    padding: 2px 6px;
+    color: var(--accent);
+    user-select: none;
+    font-style: italic;
+    list-style: none;
+}
+.thinking-toggle::marker,
+.thinking-toggle::-webkit-details-marker { display: none; }
+.thinking-toggle::before {
+    content: '▶ ';
+    font-style: normal;
+    font-size: 0.65rem;
+    transition: transform 0.15s;
+}
+details[open] > .thinking-toggle::before { content: '▼ '; }
+.thinking-text {
+    margin: 0;
+    padding: 4px 8px 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-secondary);
+    font-family: inherit;
+    line-height: 1.45;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
 .conf-filter-row {
     display: flex;
     align-items: center;

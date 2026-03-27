@@ -315,14 +315,15 @@ class TranskribusParser:
             use_polygon_mask=self.use_polygon_mask,
             normalize_background=self.normalize_background,
             preserve_aspect_ratio=self.preserve_aspect_ratio,
-            target_height=self.target_height
+            target_height=self.target_height,
+            flip_rtl=self.flip_rtl
         )
 
     @staticmethod
     def _process_single_page_static(xml_path: Path, output_dir: Path, images_dir: Path,
                                      min_line_width: int, use_polygon_mask: bool,
                                      normalize_background: bool, preserve_aspect_ratio: bool,
-                                     target_height: int) -> List[dict]:
+                                     target_height: int, flip_rtl: bool = False) -> List[dict]:
         """
         Process a single page (static method for parallel processing).
 
@@ -337,6 +338,7 @@ class TranskribusParser:
             normalize_background=normalize_background,
             preserve_aspect_ratio=preserve_aspect_ratio,
             target_height=target_height,
+            flip_rtl=flip_rtl,
             num_workers=1  # Each worker processes sequentially
         )
 

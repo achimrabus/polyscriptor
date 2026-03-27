@@ -442,7 +442,11 @@ async def startup_event():
 
 def _get_pylaia_model_options() -> list:
     _import_segmenters()
-    return [{"label": k, "value": k} for k in PYLAIA_MODELS.keys()]
+    from inference_pylaia_native import _scan_pylaia_models
+    _scan_pylaia_models(str(Path(__file__).resolve().parents[1] / "models"))
+    options = [{"label": k, "value": k} for k in PYLAIA_MODELS.keys()]
+    options.append({"label": "Custom / local path…", "value": "__custom__"})
+    return options
 
 
 def _scan_kraken_models() -> list:
@@ -597,7 +601,9 @@ ENGINE_SCHEMAS = {
     "CRNN-CTC (PyLaia-inspired)": lambda: {
         "fields": [
             {"key": "model_path", "type": "select", "label": "Model",
-             "options": _get_pylaia_model_options()},
+             "options": _get_pylaia_model_options(),
+             "custom_key": "custom_model_path",
+             "custom_placeholder": "Absolute path to best_model.pt (e.g. /home/…/models/pylaia_yiddish_20260326/best_model.pt)"},
             {"key": "enable_spaces", "type": "checkbox",
              "label": "Convert <space> tokens", "default": True},
             {"key": "flip_rtl", "type": "checkbox",
@@ -893,7 +899,15 @@ async def load_engine(request: Request, req: EngineLoadRequest):
     # --- Config resolution (unchanged logic) ---
     config = dict(req.config)
 
-    if req.engine_name == "Kraken" and "model_path" in config:
+    if req.engine_name == "CRNN-CTC (PyLaia-inspired)" and "model_path" in config:
+        custom_val = config.pop("custom_model_path", "").strip()
+        if config["model_path"] == "__custom__":
+            if not custom_val:
+                raise HTTPException(400, "Please enter an absolute path to a best_model.pt file")
+            config["model_path"] = custom_val
+        # else: named preset from PYLAIA_MODELS — engine resolves it
+
+    elif req.engine_name == "Kraken" and "model_path" in config:
         custom_val = config.pop("custom_model_path", "").strip()
         val = config["model_path"]
         if val == "__custom__":
@@ -1656,8 +1670,86 @@ def _build_xml_bytes(session: UserSession, image_id: str) -> tuple[bytes, str]:
     return pretty, Path(filename).stem
 
 
+def _build_thinking_bytes(session: UserSession, image_id: str) -> tuple[bytes, str]:
+    """Return (thinking_bytes, stem) for a cached image, or raise HTTPException(404) if no thinking."""
+    if image_id not in session.image_cache:
+        raise HTTPException(404, f"Image {image_id} not found")
+    img_data = session.image_cache[image_id]
+    results = img_data.get("results")
+    if not results:
+        raise HTTPException(400, f"No results for {image_id}")
+    filename = img_data.get("filename", img_data["path"].name)
+    stem = Path(filename).stem
+    blocks = []
+    for i, r in enumerate(results):
+        t = r.get("thinking_text", "")
+        if t:
+            if len(results) > 1:
+                blocks.append(f"=== Line {i + 1} ===\n{t}")
+            else:
+                blocks.append(t)
+    if not blocks:
+        raise HTTPException(404, f"No thinking text for {image_id}")
+    return "\n\n".join(blocks).encode("utf-8"), stem
+
+
+def _build_txt_bytes(session: UserSession, image_id: str) -> tuple[bytes, str]:
+    """Return (txt_bytes, stem) for a cached image, or raise HTTPException."""
+    if image_id not in session.image_cache:
+        raise HTTPException(404, f"Image {image_id} not found")
+    img_data = session.image_cache[image_id]
+    results = img_data.get("results")
+    if not results:
+        raise HTTPException(400, f"No results for {image_id}")
+    filename = img_data.get("filename", img_data["path"].name)
+    text = "\n".join(r.get("text", "") for r in results)
+    return text.encode("utf-8"), Path(filename).stem
+
+
 class BatchXMLRequest(BaseModel):
     image_ids: list[str]
+
+
+@app.post("/api/batch/export-thinking")
+async def batch_export_thinking(request: Request, req: BatchXMLRequest):
+    """Return a ZIP archive containing one thinking-text file per image (skips pages without thinking)."""
+    session = _get_session(request)
+    import zipfile, io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for image_id in req.image_ids:
+            try:
+                thinking_bytes, stem = _build_thinking_bytes(session, image_id)
+                zf.writestr(f"{stem}_thinking.txt", thinking_bytes)
+            except HTTPException:
+                pass  # skip pages without thinking
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="batch_thinking.zip"'},
+    )
+
+
+@app.post("/api/batch/export-txt")
+async def batch_export_txt(request: Request, req: BatchXMLRequest):
+    """Return a ZIP archive containing one plain-text file per image."""
+    session = _get_session(request)
+    import zipfile, io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for image_id in req.image_ids:
+            try:
+                txt_bytes, stem = _build_txt_bytes(session, image_id)
+                zf.writestr(f"{stem}.txt", txt_bytes)
+            except HTTPException:
+                pass  # skip images without results
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="batch_export_txt.zip"'},
+    )
 
 
 @app.post("/api/batch/export-xml")
