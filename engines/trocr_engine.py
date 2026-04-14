@@ -110,7 +110,9 @@ class TrOCREngine(HTREngine):
             "dh-unibe/trocr-kurrent",
             "dh-unibe/trocr-kurrent-XVI-XVII",
             "microsoft/trocr-base-handwritten",
-            "microsoft/trocr-large-handwritten"
+            "microsoft/trocr-large-handwritten",
+            "microsoft/trocr-base-printed",
+            "microsoft/trocr-large-printed"
         ])
         self._hf_preset_combo.currentTextChanged.connect(self._on_preset_changed)
         hf_layout.addWidget(self._hf_preset_combo)
