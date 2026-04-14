@@ -63,8 +63,8 @@ class PyLaiaDataset(Dataset):
         # Supports two formats (auto-detected per line):
         #   Space:  "line_images/my_image.png transcription text"
         #   CSV:    "line_images/my_image.png,transcription text"
-        # CRITICAL: Filenames can contain spaces, so we split on ".png " or ".png,"
-        # not on the first space or comma.
+        # CRITICAL: Filenames can contain spaces, so we split on extension boundary.
+        # Supports .png and .jpg extensions.
         list_path = self.data_dir / list_file
         self.samples = []  # List of (image_path, text) tuples
         with open(list_path, 'r', encoding='utf-8') as f:
@@ -72,16 +72,20 @@ class PyLaiaDataset(Dataset):
                 line = line.strip()
                 if not line:
                     continue
-                if '.png,' in line:
-                    img_path, text = line.split('.png,', 1)
-                    img_path = img_path + '.png'
-                    self.samples.append((img_path, text))
-                elif '.png ' in line:
-                    img_path, text = line.split('.png ', 1)
-                    img_path = img_path + '.png'
-                    self.samples.append((img_path, text))
-                else:
-                    logger.warning(f"Skipping malformed line (no '.png,' or '.png '): {line[:100]}")
+                matched = False
+                for ext in ['.png', '.jpg']:
+                    if ext + ',' in line:
+                        img_path, text = line.split(ext + ',', 1)
+                        self.samples.append((img_path + ext, text))
+                        matched = True
+                        break
+                    elif ext + ' ' in line:
+                        img_path, text = line.split(ext + ' ', 1)
+                        self.samples.append((img_path + ext, text))
+                        matched = True
+                        break
+                if not matched:
+                    logger.warning(f"Skipping malformed line (no supported image extension): {line[:100]}")
         
         # Load vocabulary (handle both list and KALDI formats)
         symbols_path = self.data_dir / symbols_file
@@ -156,6 +160,8 @@ class PyLaiaDataset(Dataset):
             new_width = min(new_width, 10000)
         else:
             new_width = width
+        # Enforce minimum width for CNN architecture (3x MaxPool2x2 requires width >= 16)
+        new_width = max(new_width, 32)
 
         image = image.resize((new_width, self.img_height), Image.Resampling.LANCZOS)
 
@@ -635,7 +641,7 @@ def main():
         'output_dir': args.output_dir,
         'img_height': 128,
         'batch_size': args.batch_size,
-        'num_workers': 4,
+        'num_workers': 8,
         'cnn_filters': [12, 24, 48, 48],
         'cnn_poolsize': [2, 2, 0, 2],
         'rnn_hidden': 256,
@@ -688,23 +694,29 @@ def main():
     )
     
     # Create data loaders
-    # IMPORTANT: num_workers=0 to avoid multiprocessing deadlock
+    # Use spawn context to avoid CUDA fork deadlock with num_workers > 0
+    num_workers = config.get('num_workers', 4)
+    mp_context = 'spawn' if num_workers > 0 else None
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=0,  # Single-process loading to avoid deadlock
+        num_workers=num_workers,
+        multiprocessing_context=mp_context,
+        persistent_workers=num_workers > 0,
         collate_fn=collate_fn,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=torch.cuda.is_available()
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=0,  # Single-process loading to avoid deadlock
+        num_workers=num_workers,
+        multiprocessing_context=mp_context,
+        persistent_workers=num_workers > 0,
         collate_fn=collate_fn,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=torch.cuda.is_available()
     )
     
     # Create model

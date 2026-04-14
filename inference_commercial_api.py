@@ -264,17 +264,25 @@ class GeminiInference(BaseAPIInference):
             "Output only the transcribed text without any additional commentary."
         )
 
-    def _build_config(self, temperature, max_output_tokens, thinking_budget, safety_settings):
-        """Build GenerateContentConfig for google-genai SDK."""
+    def _build_config(self, temperature, max_output_tokens, thinking_budget, safety_settings,
+                      request_thoughts: bool = True):
+        """Build GenerateContentConfig for google-genai SDK.
+
+        request_thoughts=True (default): always sets include_thoughts=True so thought parts
+        appear in candidates[].content.parts[] and can be exported.  Pass False when retrying
+        against a model that rejects ThinkingConfig entirely.
+        """
         kw: Dict[str, Any] = {"temperature": temperature}
         if max_output_tokens:
             kw["max_output_tokens"] = max_output_tokens
         if safety_settings:
             kw["safety_settings"] = safety_settings
-        if thinking_budget is not None:
-            kw["thinking_config"] = _google_genai_types.ThinkingConfig(
-                thinking_budget=thinking_budget
-            )
+        if request_thoughts:
+            # Always request thought text back; only cap thinking_budget when explicitly set
+            tc_kw: Dict[str, Any] = {"include_thoughts": True}
+            if thinking_budget is not None:
+                tc_kw["thinking_budget"] = thinking_budget
+            kw["thinking_config"] = _google_genai_types.ThinkingConfig(**tc_kw)
         return _google_genai_types.GenerateContentConfig(**kw)
 
     def _generate(self, prompt, image, temperature, thinking_budget, safety_settings, verbose):
@@ -288,20 +296,20 @@ class GeminiInference(BaseAPIInference):
             self._last_call_usage = {}
             return resp.text.strip()
 
-        config = self._build_config(temperature or 0.0, None, thinking_budget, safety_settings)
+        config = self._build_config(temperature or 0.0, None, thinking_budget, safety_settings,
+                                    request_thoughts=True)
         try:
             resp = self._client.models.generate_content(
                 model=self.model_name, contents=[prompt, image], config=config
             )
         except Exception as e:
             err = str(e)
-            # Non-thinking models reject ThinkingConfig with a 400 error
-            if thinking_budget and thinking_budget > 0 and (
-                "thinking" in err.lower() or "400" in err
-            ):
+            # Non-thinking models reject ThinkingConfig with a 400/invalid error — retry without it
+            if "thinking" in err.lower() or ("400" in err and "invalid" in err.lower()):
                 if verbose:
-                    print(f"Model does not support thinking_budget={thinking_budget}, retrying without.")
-                config = self._build_config(temperature or 0.0, None, 0, safety_settings)
+                    print(f"Model does not support ThinkingConfig, retrying without.")
+                config = self._build_config(temperature or 0.0, None, thinking_budget,
+                                            safety_settings, request_thoughts=False)
                 resp = self._client.models.generate_content(
                     model=self.model_name, contents=[prompt, image], config=config
                 )
@@ -315,7 +323,7 @@ class GeminiInference(BaseAPIInference):
             "thinking_tokens": getattr(usage, "thoughts_token_count", None) if usage else None,
             "total_tokens": getattr(usage, "total_token_count", None) if usage else None,
         }
-        # Extract thinking text from thought parts (only present when thinking_budget > 0)
+        # Extract thinking text from thought parts (present when include_thoughts=True was sent)
         thinking_parts = []
         try:
             for cand in (getattr(resp, "candidates", None) or []):
