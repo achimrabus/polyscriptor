@@ -430,8 +430,13 @@ select:focus {
 /* ── Actions card ─────────────────────────────────────────────────────── */
 .actions-card {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 12px;
+}
+
+#btn-cancel {
+  flex: 0 0 100%;
 }
 
 .btn-action {

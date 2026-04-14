@@ -164,49 +164,60 @@ async function onEngineChange() {
   if (!name) return;
   localStorage.setItem(LS_ENGINE, name);
 
-  // If this engine is already the loaded one, no need to show load controls
+  // If this engine is already the loaded one, hide load controls
   if (name === state.loadedEngine) {
     el.modelRow.hidden = true;
     el.btnLoadModel.hidden = true;
     return;
   }
 
-  // Load model list for this engine
   el.modelRow.hidden = false;
-  el.modelSelect.innerHTML = '<option>Loading models…</option>';
+  el.modelSelect.innerHTML = '<option>Loading…</option>';
   el.btnLoadModel.hidden = false;
   el.btnLoadModel.disabled = true;
+  state.modelFieldKey = null;
 
   try {
-    const resp = await api(`/api/engine/${encodeURIComponent(name)}/models`);
-    const data = await resp.json();
-    const models = data.models || [];
+    // Use config-schema (same as main app) — it has the full model option list
+    const resp = await api(`/api/engine/${encodeURIComponent(name)}/config-schema`);
+    const schema = await resp.json();
+
+    // Find first non-dynamic select field → that's the model selector
+    const selectField = (schema.fields || []).find(
+      f => f.type === 'select' && !f.dynamic
+    );
 
     el.modelSelect.innerHTML = '';
-    if (models.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'Default';
-      el.modelSelect.appendChild(opt);
-    } else {
-      for (const m of models) {
-        const opt = document.createElement('option');
-        opt.value = m.value ?? m.id ?? m;
-        opt.textContent = m.label || m.display_name || opt.value;
-        el.modelSelect.appendChild(opt);
-      }
-    }
 
-    // Restore last model for this engine
-    const lastModel = localStorage.getItem(LS_MODEL(name));
-    if (lastModel && el.modelSelect.querySelector(`option[value="${lastModel}"]`)) {
-      el.modelSelect.value = lastModel;
+    if (selectField && (selectField.options || []).length > 0) {
+      state.modelFieldKey = selectField.key;
+      for (const opt of selectField.options) {
+        const o = document.createElement('option');
+        o.value = typeof opt === 'object' ? opt.value : opt;
+        o.textContent = typeof opt === 'object' ? opt.label : opt;
+        el.modelSelect.appendChild(o);
+      }
+      // Restore last selection or apply schema default
+      const lastModel = localStorage.getItem(LS_MODEL(name));
+      if (lastModel && el.modelSelect.querySelector(`option[value="${lastModel}"]`)) {
+        el.modelSelect.value = lastModel;
+      } else if (selectField.default != null) {
+        el.modelSelect.value = selectField.default;
+      }
+    } else {
+      // No static options (e.g. API-based engines) — show Default
+      state.modelFieldKey = selectField?.key || 'model_path';
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = 'Default';
+      el.modelSelect.appendChild(o);
     }
 
     el.btnLoadModel.disabled = false;
   } catch {
-    el.modelSelect.innerHTML = '<option value="">Could not load models</option>';
-    el.btnLoadModel.disabled = false; // allow trying anyway
+    el.modelSelect.innerHTML = '<option value="">Default</option>';
+    state.modelFieldKey = 'model_path';
+    el.btnLoadModel.disabled = false;
   }
 }
 
@@ -224,8 +235,9 @@ async function loadModel() {
   setBadge('loading', 'Loading…');
 
   try {
-    // Build a minimal config: just set model/model_id field
-    const config = modelVal ? { model: modelVal } : {};
+    // Use the field key from the config schema (e.g. 'model_path' for CRNN-CTC/TrOCR/Kraken)
+    const fieldKey = state.modelFieldKey || 'model_path';
+    const config = modelVal ? { [fieldKey]: modelVal } : {};
     await api('/api/engine/load', {
       method: 'POST',
       body: JSON.stringify({ engine_name: engineName, config }),
