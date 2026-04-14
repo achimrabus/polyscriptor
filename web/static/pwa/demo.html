@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#3b82f6">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Polyscriptor">
+  <title>Polyscriptor HTR Demo</title>
+  <link rel="manifest" href="/static/pwa/manifest.json">
+  <link rel="apple-touch-icon" href="/static/pwa/icons/icon-192.png">
+  <link rel="stylesheet" href="/static/pwa/demo.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header id="header">
+    <div class="header-brand">
+      <span class="logo-hex">⬡</span>
+      <span class="logo-text">Polyscriptor <span class="logo-sub">HTR Demo</span></span>
+    </div>
+    <div class="header-actions">
+      <div id="engine-pill" class="engine-pill engine-pill--unknown" title="Engine status">
+        <span class="pill-dot"></span>
+        <span id="engine-pill-text">…</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Toast container -->
+  <div id="toast-container" aria-live="polite"></div>
+
+  <!-- Main content (scrollable) -->
+  <main id="main">
+
+    <!-- Card: Upload / Camera -->
+    <section id="upload-card" class="card">
+      <div id="upload-buttons" class="upload-btn-row">
+        <button id="btn-camera" class="btn btn-capture">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span>Take Photo</span>
+        </button>
+        <button id="btn-file" class="btn btn-secondary btn-upload">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span>Upload Image</span>
+        </button>
+      </div>
+
+      <!-- Hidden inputs -->
+      <input id="file-camera" type="file" accept="image/*" capture="environment" hidden>
+      <input id="file-picker" type="file" accept="image/*,application/pdf" hidden>
+
+      <!-- Image preview with bbox canvas overlay -->
+      <div id="image-preview-wrap" hidden>
+        <div id="image-container">
+          <img id="preview-img" alt="Uploaded image">
+          <canvas id="bbox-canvas"></canvas>
+        </div>
+        <div class="preview-meta">
+          <span id="preview-filename" class="meta-filename"></span>
+          <button id="btn-clear-image" class="btn-ghost btn-small">✕ Remove</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Card: Engine & Model -->
+    <section id="engine-card" class="card">
+      <div class="card-header">
+        <h2>HTR Engine</h2>
+        <span id="model-status-badge" class="badge badge--loading">checking…</span>
+      </div>
+
+      <div id="engine-controls">
+        <div class="field-row">
+          <label for="engine-select">Engine</label>
+          <select id="engine-select">
+            <option value="">Loading…</option>
+          </select>
+        </div>
+
+        <div class="field-row" id="model-row" hidden>
+          <label for="model-select">Model</label>
+          <select id="model-select">
+            <option value="">Select engine first</option>
+          </select>
+        </div>
+
+        <button id="btn-load-model" class="btn btn-secondary" hidden>
+          Load Model
+        </button>
+      </div>
+
+      <!-- Advanced: segmentation -->
+      <details id="advanced-details">
+        <summary>Advanced options</summary>
+        <div class="advanced-inner">
+          <div class="field-row">
+            <label for="seg-method-select">Line segmentation</label>
+            <select id="seg-method-select">
+              <option value="kraken">Kraken Classical (fast, recommended)</option>
+              <option value="kraken-blla">Kraken Neural (blla, slower)</option>
+              <option value="hpp">Projection Profile (fastest)</option>
+            </select>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- Card: Actions -->
+    <section id="actions-card" class="card actions-card">
+      <button id="btn-segment" class="btn btn-action btn-segment" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <line x1="3" y1="9" x2="21" y2="9"/>
+          <line x1="3" y1="15" x2="21" y2="15"/>
+        </svg>
+        Detect Lines
+      </button>
+      <button id="btn-transcribe" class="btn btn-action btn-primary" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+        </svg>
+        Transcribe
+      </button>
+      <button id="btn-cancel" class="btn btn-danger" hidden>
+        Cancel
+      </button>
+    </section>
+
+    <!-- Card: Progress -->
+    <section id="progress-card" class="card" hidden>
+      <div id="progress-bar-wrap">
+        <div id="progress-bar" style="width:0%"></div>
+      </div>
+      <p id="status-text" class="status-text"></p>
+    </section>
+
+    <!-- Card: Results -->
+    <section id="results-card" class="card" hidden>
+      <div class="card-header">
+        <h2>Transcription</h2>
+        <span id="line-count" class="badge badge--info"></span>
+      </div>
+      <div id="results-list"></div>
+      <div id="results-actions" class="results-actions">
+        <button id="btn-copy" class="btn btn-secondary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          Copy All
+        </button>
+        <button id="btn-export-txt" class="btn btn-secondary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Save TXT
+        </button>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/pwa/demo.js" type="module"></script>
+</body>
+</html>

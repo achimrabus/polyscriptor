@@ -68,6 +68,7 @@ unpacked-datasets/
 !example*.png
 !sample*.png
 !assets/*.png
+!web/static/pwa/icons/*.png
 
 # Test images directory
 HTR_Images/
@@ -144,6 +145,7 @@ Documentation/
 CLAUDE.md
 
 # Internal planning documents (not for public repo)
+*-handoff.md
 *_PLAN.md
 *_PLAN_*.md
 IMPLEMENTATION_SUMMARY.md

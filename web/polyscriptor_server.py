@@ -777,6 +777,11 @@ async def index():
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
+@app.get("/demo")
+async def pwa_demo():
+    return FileResponse(str(STATIC_DIR / "pwa" / "demo.html"))
+
+
 @app.get("/api/engines")
 async def list_engines():
     registry = get_global_registry()
