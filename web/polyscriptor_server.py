@@ -488,6 +488,12 @@ def _scan_trocr_models() -> list:
         {"label": "kazars24/trocr-base-handwritten-ru (HuggingFace)",
          "value": "kazars24/trocr-base-handwritten-ru",
          "source": "huggingface"},
+        {"label": "dh-unibe/trocr-kurrent — German Kurrent 19th c. (CER 2.66%)",
+         "value": "dh-unibe/trocr-kurrent",
+         "source": "huggingface"},
+        {"label": "dh-unibe/trocr-kurrent-XVI-XVII — German Kurrent 16th–18th c. (CER 5.42%)",
+         "value": "dh-unibe/trocr-kurrent-XVI-XVII",
+         "source": "huggingface"},
     ]
     if models_dir.exists():
         for d in sorted(models_dir.iterdir()):

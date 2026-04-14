@@ -416,7 +416,7 @@ async function segmentImage() {
   localStorage.setItem(LS_SEG_METHOD, method);
 
   try {
-    const url  = `/api/image/${state.imageId}/segment?method=${encodeURIComponent(method)}`;
+    const url  = `/api/image/${state.imageId}/segment?method=${encodeURIComponent(method)}&device=cuda%3A0`;
     const resp = await api(url);
     const data = await resp.json();
 
@@ -455,6 +455,7 @@ async function startTranscription() {
   const body = JSON.stringify({
     image_id:   state.imageId,
     seg_method: method,
+    seg_device: 'cuda:0',
   });
 
   const abort = new AbortController();

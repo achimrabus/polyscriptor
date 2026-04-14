@@ -107,6 +107,8 @@ class TrOCREngine(HTREngine):
             "Custom (enter below)",
             "cyrillic-trocr/trocr-handwritten-cyrillic",
             "kazars24/trocr-base-handwritten-ru",
+            "dh-unibe/trocr-kurrent",
+            "dh-unibe/trocr-kurrent-XVI-XVII",
             "microsoft/trocr-base-handwritten",
             "microsoft/trocr-large-handwritten"
         ])
