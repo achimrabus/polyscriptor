@@ -595,12 +595,24 @@ class TrOCRInference:
             try:
                 print(f"Attempting to load processor from {model_path}...")
                 self.processor = TrOCRProcessor.from_pretrained(model_path)
+                # Some models (e.g. dh-unibe/trocr-kurrent) ship a truncated tokenizer
+                # with only special tokens (vocab_size=5).  The model itself uses the full
+                # microsoft/trocr-base-handwritten vocabulary (50265 tokens).  Detect this
+                # by checking vocab_size and replace only the tokenizer – keep the image
+                # processor from the model so preprocessing stays correct.
+                if self.processor.tokenizer.vocab_size < 100:
+                    print(f"WARNING: tokenizer from '{model_path}' has vocab_size="
+                          f"{self.processor.tokenizer.vocab_size} (looks broken). "
+                          f"Replacing tokenizer with microsoft/trocr-base-handwritten.")
+                    _fallback = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
+                    self.processor.tokenizer = _fallback.tokenizer
             except Exception as e:
                 print(f"Failed to load processor from model: {e}")
                 print(f"Falling back to base model processor: {self.base_model}")
                 self.processor = TrOCRProcessor.from_pretrained(self.base_model)
 
-            self.model = VisionEncoderDecoderModel.from_pretrained(model_path)
+            self.model = VisionEncoderDecoderModel.from_pretrained(
+                model_path, low_cpu_mem_usage=False)
             # For backwards compatibility
             self.checkpoint_path = model_path
         else:
@@ -615,11 +627,22 @@ class TrOCRInference:
             else:
                 model_dir = self.checkpoint_path
 
-            print(f"Loading processor from base model: {self.base_model}")
-            self.processor = TrOCRProcessor.from_pretrained(self.base_model)
-            self.model = VisionEncoderDecoderModel.from_pretrained(model_dir)
+            # Try to load processor from the local model first (correct tokenizer),
+            # fall back to base_model for old checkpoints that lack processor files.
+            try:
+                print(f"Attempting to load processor from local model: {model_dir}")
+                self.processor = TrOCRProcessor.from_pretrained(model_dir)
+            except Exception as e:
+                print(f"Local processor not found ({e}), falling back to base model: {self.base_model}")
+                self.processor = TrOCRProcessor.from_pretrained(self.base_model)
+            self.model = VisionEncoderDecoderModel.from_pretrained(
+                model_dir, low_cpu_mem_usage=False)
 
         self.model.to(self.device)
+        # mBART decoder creates _float_tensor lazily on CPU; force it to the right device now.
+        for m in self.model.modules():
+            if hasattr(m, '_float_tensor'):
+                m._float_tensor = m._float_tensor.to(self.device)
         self.model.eval()
 
         print("Model loaded successfully!")

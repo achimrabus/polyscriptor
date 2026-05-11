@@ -429,11 +429,13 @@ class Qwen3Engine(HTREngine):
 
             adapter = config.get("adapter")
             max_image_size = config.get("max_image_size", 1536)
+            device = config.get("device", "auto")
 
             self.model = Qwen3VLMInference(
                 base_model=base_model,
                 adapter_model=adapter,
-                max_image_size=max_image_size
+                max_image_size=max_image_size,
+                device=device,
             )
 
             return True

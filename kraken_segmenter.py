@@ -309,13 +309,18 @@ class KrakenLineSegmenter:
         # region_id -> {'lines': [...], 'blla_region': ...}
         regions_dict: Dict[str, dict] = {}
 
+        # Extract blla region bounding boxes for cross-column line splitting.
+        # blla sometimes draws baselines that span multiple columns at the same
+        # vertical position.  Using region boundaries we can clip or split such
+        # lines so that each crop stays within one column.
+        blla_boxes = self._extract_blla_region_boxes(baseline_seg, text_direction)
+        if blla_boxes:
+            print(f"[KrakenSegmenter] blla detected {len(blla_boxes)} text regions "
+                  f"— will clip lines to region boundaries")
+
         for idx, line in enumerate(baseline_seg.lines):
             bbox = self._extract_bbox(line)
             if bbox is None:
-                continue
-
-            # Filter tiny lines
-            if (bbox[3] - bbox[1]) < min_line_height:
                 continue
 
             baseline = (
@@ -324,17 +329,44 @@ class KrakenLineSegmenter:
                 else None
             )
 
-            line_img = image.crop(bbox)
-            seg_line = LineSegment(image=line_img, bbox=bbox, baseline=baseline)
-            seg_lines.append(seg_line)
+            if blla_boxes:
+                # Find which detected regions this line's bbox overlaps.
+                overlapping = self._overlapping_blla_boxes(bbox, blla_boxes)
+            else:
+                overlapping = []
 
-            # Assign to region
-            region_id, blla_region = self._find_region_for_line(
-                bbox, line, baseline_seg
-            )
-            if region_id not in regions_dict:
-                regions_dict[region_id] = {'lines': [], 'blla_region': blla_region}
-            regions_dict[region_id]['lines'].append((len(seg_lines) - 1, seg_line))
+            if not overlapping:
+                # No region overlap or no regions at all — fall back to
+                # centre-based assignment and keep the original bbox.
+                region_id, blla_region = self._find_region_for_line(
+                    bbox, line, baseline_seg
+                )
+                sub_bboxes = [(bbox, region_id, blla_region)]
+            else:
+                # Clip / split the line at each overlapping region boundary.
+                sub_bboxes = []
+                for rx1, ry1, rx2, ry2, region_obj, region_key in overlapping:
+                    clipped = (
+                        max(bbox[0], rx1), max(bbox[1], ry1),
+                        min(bbox[2], rx2), min(bbox[3], ry2),
+                    )
+                    sub_bboxes.append((clipped, region_key, region_obj))
+
+            for clipped_bbox, region_key, region_obj in sub_bboxes:
+                cx1, cy1, cx2, cy2 = clipped_bbox
+                if cx2 <= cx1 or cy2 <= cy1:
+                    continue
+                # Filter tiny lines (after possible clamping)
+                if (cy2 - cy1) < min_line_height:
+                    continue
+
+                line_img = image.crop(clipped_bbox)
+                seg_line = LineSegment(image=line_img, bbox=clipped_bbox, baseline=baseline)
+                seg_lines.append(seg_line)
+
+                if region_key not in regions_dict:
+                    regions_dict[region_key] = {'lines': [], 'blla_region': region_obj}
+                regions_dict[region_key]['lines'].append((len(seg_lines) - 1, seg_line))
 
         # Sub-split wide regions that likely contain multiple columns.
         # blla often detects "left page" and "right page" as two regions on a
@@ -431,6 +463,52 @@ class KrakenLineSegmenter:
                             return f"{rtype}_{ri}", region
 
         return 'r_1', None
+
+    @staticmethod
+    def _extract_blla_region_boxes(
+        baseline_seg,
+        text_direction: str = 'horizontal-lr',
+    ) -> List[Tuple[int, int, int, int, object, str]]:
+        """
+        Build a sorted list of (x1, y1, x2, y2, region_obj, region_key) tuples
+        from blla's detected regions.  Used to clip / split lines that cross
+        column boundaries.  Returns an empty list when no region boundaries are
+        available.
+        """
+        boxes: List[Tuple[int, int, int, int, object, str]] = []
+        if not (hasattr(baseline_seg, 'regions') and baseline_seg.regions):
+            return boxes
+        for rtype, region_list in baseline_seg.regions.items():
+            for ri, region in enumerate(region_list):
+                if not (hasattr(region, 'boundary') and region.boundary):
+                    continue
+                bxs = [p[0] for p in region.boundary]
+                bys = [p[1] for p in region.boundary]
+                boxes.append((
+                    int(min(bxs)), int(min(bys)),
+                    int(max(bxs)), int(max(bys)),
+                    region, f"{rtype}_{ri}",
+                ))
+        rtl = text_direction.endswith('-rl')
+        boxes.sort(key=lambda t: t[0], reverse=rtl)
+        return boxes
+
+    @staticmethod
+    def _overlapping_blla_boxes(
+        bbox: Tuple[int, int, int, int],
+        blla_boxes: List[Tuple[int, int, int, int, object, str]],
+    ) -> List[Tuple[int, int, int, int, object, str]]:
+        """
+        Return the blla region boxes whose bbox overlaps with *bbox*.
+        Overlap requires intersection in both x and y.
+        """
+        x1, y1, x2, y2 = bbox
+        result = []
+        for rb in blla_boxes:
+            rx1, ry1, rx2, ry2 = rb[0], rb[1], rb[2], rb[3]
+            if rx1 < x2 and rx2 > x1 and ry1 < y2 and ry2 > y1:
+                result.append(rb)
+        return result
 
     @staticmethod
     def _estimate_columns(

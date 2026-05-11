@@ -114,7 +114,7 @@ def test_kraken_presets_returns_list():
     data = resp.json()
     assert "presets" in data
     presets = data["presets"]
-    assert len(presets) == 13  # 1 local + 12 Zenodo
+    assert len(presets) == 3   # 1 local + 2 verified Zenodo (hallucinated IDs removed in f1ac6a3)
 
 
 def test_kraken_presets_local_first():
@@ -124,7 +124,7 @@ def test_kraken_presets_local_first():
     zenodo = [p for p in presets if p["source"] == "zenodo"]
     assert len(local) == 1
     assert local[0]["id"] == "blla-local"
-    assert len(zenodo) == 12
+    assert len(zenodo) == 2   # catmus-print + arabic-muharaf (10 hallucinated IDs removed)
 
 
 def test_kraken_presets_schema():

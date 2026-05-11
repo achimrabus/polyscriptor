@@ -3,7 +3,8 @@
  * Caches static assets for faster startup; API calls always go to network.
  */
 
-const CACHE = 'polyscriptor-pwa-v1';
+const SW_VERSION = new URL(self.location.href).searchParams.get('v') || 'dev';
+const CACHE = `polyscriptor-pwa-${SW_VERSION}`;
 const STATIC = [
   '/demo',
   '/static/pwa/demo.html',
@@ -16,7 +17,12 @@ const STATIC = [
 
 self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(STATIC)).then(() => self.skipWaiting())
+    caches.open(CACHE)
+      .then(async c => {
+        const freshRequests = STATIC.map(url => new Request(url, { cache: 'reload' }));
+        await c.addAll(freshRequests);
+      })
+      .then(() => self.skipWaiting())
   );
 });
 

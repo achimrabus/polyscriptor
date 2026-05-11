@@ -168,17 +168,14 @@ class PyLaiaDataset(Dataset):
         # Apply transforms
         image = self.transform(image)
         
-        # Convert text to indices
+        # Convert text to indices.
+        # Use char2idx directly for all characters including space.
+        # Old code special-cased ' ' → '<SPACE>'/'<space>' but our vocab stores
+        # literal ' ' at index 1, so that fallback silently mapped every space to
+        # index 0 (the CTC blank), corrupting the training signal for spaces.
         target = []
         for char in text:
-            if char == ' ':
-                # Try both <SPACE> and <space> to handle different vocab formats
-                space_idx = self.char2idx.get('<SPACE>')
-                if space_idx is None:
-                    space_idx = self.char2idx.get('<space>', 0)
-                target.append(space_idx)
-            else:
-                target.append(self.char2idx.get(char, 0))
+            target.append(self.char2idx.get(char, 0))
 
         return image, torch.LongTensor(target), text, img_rel_path
 

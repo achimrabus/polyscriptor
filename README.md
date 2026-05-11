@@ -142,7 +142,11 @@ python3 train_pylaia.py \
 
 ## 🤖 Pre-trained Models
 
-Ready-to-use CRNN-CTC models for Cyrillic and Glagolitic manuscripts are published on HuggingFace:
+Polyscriptor works with models from several sources. The table below lists tested, ready-to-use options for each engine.
+
+### CRNN-CTC
+
+Ready-to-use models for Cyrillic and Glagolitic manuscripts, trained with Polyscriptor, are published on HuggingFace:
 
 **[https://huggingface.co/achimrabus](https://huggingface.co/achimrabus)**
 
@@ -153,7 +157,35 @@ Ready-to-use CRNN-CTC models for Cyrillic and Glagolitic manuscripts are publish
 | [crnn-ctc-ukrainian](https://huggingface.co/achimrabus/crnn-ctc-ukrainian) | Ukrainian (Cyrillic) | 4.76% | 19th–20th c. manuscripts (MultiHTR) |
 | [crnn-ctc-glagolitic](https://huggingface.co/achimrabus/crnn-ctc-glagolitic) | Croatian Glagolitic | 5.33% | Outputs Latin transliteration |
 
-All models run on CPU (no GPU required) and can be loaded directly in the CRNN-CTC engine — either in the GUI or the web UI.
+All models run on CPU (no GPU required) and can be loaded directly in the CRNN-CTC engine.
+
+### TrOCR
+
+A collection of TrOCR models for Cyrillic handwriting (Russian, Ukrainian, Church Slavonic) is maintained here:
+
+**[https://huggingface.co/cyrillic-trocr](https://huggingface.co/cyrillic-trocr)**
+
+These can be loaded in the TrOCR engine by entering the HuggingFace model ID (e.g. `cyrillic-trocr/trocr-base-handwritten-ru`).
+
+### Qwen3-VL
+
+Vision-language models fine-tuned for historical Slavic manuscripts (Church Slavonic, Glagolitic):
+
+**[https://huggingface.co/wjbmattingly](https://huggingface.co/wjbmattingly)**
+
+Load any compatible Qwen3-VL model via its HuggingFace ID in the Qwen3-VL engine.
+
+### Kraken
+
+Segmentation and recognition models for historical manuscripts are available on Zenodo. The default `blla` layout analysis model for neural line segmentation:
+
+**[https://zenodo.org/records/7755483](https://zenodo.org/records/7755483)**
+
+### Party
+
+Party OCR models with Church Slavonic in the pretraining data:
+
+**[https://zenodo.org/records/15075344](https://zenodo.org/records/15075344)**
 
 ---
 

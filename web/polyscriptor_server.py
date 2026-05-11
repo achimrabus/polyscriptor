@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 from PIL import Image, ImageOps
-from fastapi import Cookie, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Cookie, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -292,12 +292,26 @@ def _cleanup_expired_sessions() -> int:
     return len(expired)
 
 
+_SESSION_PASSTHROUGH_PATHS = {"/api/gpu", "/api/engines", "/api/kraken/presets"}
+
+
 @app.middleware("http")
 async def session_middleware(request: Request, call_next):
-    """Inject session into request.state; set session cookie on new sessions."""
+    """Inject session into request.state; set session cookie on new sessions.
+
+    Pure status/discovery routes (GPU poll, engine list) are excluded from
+    last_active updates so that background browser polling cannot keep a session
+    alive indefinitely and prevent engine-slot eviction.
+    """
     session_id = request.cookies.get(_SESSION_COOKIE)
     session, created = _get_or_create_session(session_id)
     request.state.session = session
+
+    # Don't update last_active for polling-only routes
+    if request.url.path in _SESSION_PASSTHROUGH_PATHS:
+        session.last_active  # read only — no write
+    else:
+        session.last_active = time.time()
 
     response = await call_next(request)
 
@@ -338,14 +352,42 @@ def _cleanup_old_uploads() -> int:
     return deleted
 
 
+_SLOT_IDLE_TTL_SECONDS = 6 * 3600  # evict loaded engines idle for 6h, regardless of ref_count
+
+
+def _evict_idle_slots() -> int:
+    """Evict engine slots that have not been used for _SLOT_IDLE_TTL_SECONDS.
+
+    Called under no lock — must only be called from _periodic_cleanup (single-threaded).
+    The GPU-status poll (/api/gpu) keeps sessions alive indefinitely, so we cannot rely
+    on session expiry alone to release VRAM. This independently caps engine residency.
+    """
+    cutoff = time.time() - _SLOT_IDLE_TTL_SECONDS
+    stale = [k for k, s in engine_pool.items() if s.last_used < cutoff
+             and s.engine_name not in _NO_GPU_ENGINES]
+    for key in stale:
+        slot = engine_pool.pop(key)
+        log.info(f"Idle eviction: '{slot.engine_name}' (idle {(time.time() - slot.last_used)/3600:.1f}h)")
+        try:
+            slot.engine.unload_model()
+        except Exception as e:
+            log.warning(f"unload_model() failed for '{slot.engine_name}': {e}")
+        # Invalidate all sessions pointing at this slot
+        for session in sessions.values():
+            if session.pool_key == key:
+                session.pool_key = None
+    return len(stale)
+
+
 async def _periodic_cleanup():
-    """Background task: clean up uploads + expired sessions every hour."""
+    """Background task: clean up uploads + expired sessions + idle engine slots every hour."""
     while True:
         await asyncio.sleep(3600)
         n = _cleanup_old_uploads()
         m = _cleanup_expired_sessions()
-        if n or m:
-            log.info(f"Periodic cleanup: {n} old file(s), {m} expired session(s).")
+        p = _evict_idle_slots()
+        if n or m or p:
+            log.info(f"Periodic cleanup: {n} upload(s), {m} session(s), {p} idle engine slot(s).")
 
 
 # ---------------------------------------------------------------------------
@@ -732,6 +774,19 @@ ENGINE_SCHEMAS = {
              "hint": "Leave blank to use the default prompt shown above"},
         ]
     },
+    "LightOnOCR": lambda: {
+        "fields": [
+            {"key": "model_path", "type": "select", "label": "Model",
+             "options": (lambda: [
+                 {"label": f"{name} — {info.get('description','')}", "value": info["id"]}
+                 for name, info in __import__('lighton_models', fromlist=['LIGHTON_MODELS']).LIGHTON_MODELS.items()
+             ] + [{"label": "Custom HuggingFace ID…", "value": "__custom__"}])(),
+             "custom_key": "custom_model_path",
+             "custom_placeholder": "HuggingFace model ID, e.g. lightonai/LightOnOCR-2-1B-base"},
+            {"key": "max_new_tokens", "type": "number", "label": "Max new tokens",
+             "min": 32, "max": 512, "default": 128},
+        ]
+    },
     "PaddleOCR": lambda: {
         "fields": [
             {"key": "lang", "type": "select", "label": "Language / Script",
@@ -792,6 +847,22 @@ async def index():
 @app.get("/demo")
 async def pwa_demo():
     return FileResponse(str(STATIC_DIR / "pwa" / "demo.html"))
+
+
+@app.get("/manifest.json")
+async def pwa_manifest():
+    """Serve the PWA manifest from root so scope / start_url are valid."""
+    from fastapi.responses import FileResponse as _FR
+    return _FR(str(STATIC_DIR / "pwa" / "manifest.json"), media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+async def pwa_service_worker():
+    """Serve the PWA service worker from root scope so it can control /demo."""
+    from fastapi.responses import FileResponse as _FR
+    resp = _FR(str(STATIC_DIR / "pwa" / "sw.js"), media_type="application/javascript")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 
 @app.get("/api/engines")
@@ -1102,6 +1173,31 @@ async def list_keys():
     return {}
 
 
+@app.post("/api/admin/evict-all")
+async def admin_evict_all(request: Request):
+    """Force-evict all engine slots from VRAM (localhost admin only)."""
+    if request.client and request.client.host not in ("127.0.0.1", "::1"):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="localhost only")
+    async with pool_lock:
+        evicted = []
+        for key, slot in list(engine_pool.items()):
+            try:
+                slot.engine.unload_model()
+            except Exception as e:
+                log.warning(f"admin evict failed for '{key}': {e}")
+            del engine_pool[key]
+            evicted.append(key)
+        for session in sessions.values():
+            session.pool_key = None
+        global loaded_engine, loaded_engine_name, loaded_config
+        loaded_engine = None
+        loaded_engine_name = ""
+        loaded_config = {}
+    log.info(f"Admin force-evict: cleared {len(evicted)} slot(s): {evicted}")
+    return {"evicted": evicted}
+
+
 @app.post("/api/engine/unload")
 async def unload_engine(request: Request):
     global loaded_engine, loaded_engine_name, loaded_config
@@ -1144,7 +1240,11 @@ def _register_image(session: UserSession, pil_image: Image.Image, filename: str,
 
 
 @app.post("/api/image/upload")
-async def upload_image(request: Request, file: UploadFile = File(...)):
+async def upload_image(
+    request: Request,
+    file: UploadFile = File(...),
+    max_dim: Optional[int] = Query(default=None, ge=100, description="Resize long edge to this many pixels (mobile upload only)"),
+):
     session = _get_session(request)
     filename = file.filename or "upload"
     is_pdf = (
@@ -1210,6 +1310,9 @@ async def upload_image(request: Request, file: UploadFile = File(...)):
         pil_image = Image.open(save_path)
         pil_image = ImageOps.exif_transpose(pil_image)
         pil_image = pil_image.convert("RGB")
+        if max_dim and max(pil_image.width, pil_image.height) > max_dim:
+            pil_image.thumbnail((max_dim, max_dim), Image.LANCZOS)
+            pil_image.save(save_path)
     except Exception as e:
         save_path.unlink(missing_ok=True)
         raise HTTPException(400, f"Invalid image: {e}")
@@ -1600,6 +1703,7 @@ async def transcribe(request: Request, req: TranscribeRequest):
             yield _sse("complete", complete_data)
 
         except Exception as e:
+            log.exception("Transcription error")
             yield _sse("error", {"message": str(e)})
         finally:
             # Clean up this request's cancel event

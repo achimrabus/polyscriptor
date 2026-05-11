@@ -204,6 +204,13 @@ class TranskribusParser:
         tree = ET.parse(xml_path)
         root = tree.getroot()
 
+        # Support PAGE XML schema variants (e.g. 2013-07-15, 2019-07-15)
+        # by reading the namespace URI directly from the document root.
+        ns = self.NS
+        if root.tag.startswith('{') and '}' in root.tag:
+            ns_uri = root.tag[1:].split('}', 1)[0]
+            ns = {'page': ns_uri}
+
         lines_data = []
 
         # Open the full page image
@@ -238,14 +245,14 @@ class TranskribusParser:
             return lines_data
 
         # Find all TextLine elements
-        for region in root.findall('.//page:TextRegion', self.NS):
+        for region in root.findall('.//page:TextRegion', ns):
             region_id = region.get('id', 'unknown')
 
-            for idx, text_line in enumerate(region.findall('.//page:TextLine', self.NS)):
+            for idx, text_line in enumerate(region.findall('.//page:TextLine', ns)):
                 line_id = text_line.get('id', f'{region_id}_line_{idx}')
 
                 # Get coordinates
-                coords_elem = text_line.find('page:Coords', self.NS)
+                coords_elem = text_line.find('page:Coords', ns)
                 if coords_elem is None:
                     continue
 
@@ -257,7 +264,7 @@ class TranskribusParser:
                 x1, y1, x2, y2 = self.get_bounding_box(coords)
 
                 # Get text content
-                text_equiv = text_line.find('page:TextEquiv/page:Unicode', self.NS)
+                text_equiv = text_line.find('page:TextEquiv/page:Unicode', ns)
                 if text_equiv is None or not text_equiv.text:
                     continue
 

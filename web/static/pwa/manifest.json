@@ -3,6 +3,7 @@
   "short_name": "Polyscriptor",
   "description": "Handwritten Text Recognition — capture a photo and transcribe it instantly",
   "start_url": "/demo",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#111827",

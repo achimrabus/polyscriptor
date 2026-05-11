@@ -145,7 +145,6 @@ Documentation/
 CLAUDE.md
 
 # Internal planning documents (not for public repo)
-*-handoff.md
 *_PLAN.md
 *_PLAN_*.md
 IMPLEMENTATION_SUMMARY.md
@@ -243,3 +242,9 @@ inspect_*.ipynb
 # Gabelsberger shorthand preparation (work in progress)
 prepare_gabelsberger_shorthand.py
 *.gitlab-token
+
+# Internal handoff / briefing documents (not for public repo)
+*_HANDOFF.md
+
+# Runtime PID files (created by training/process scripts)
+*.pid

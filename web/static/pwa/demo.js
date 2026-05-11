@@ -16,6 +16,7 @@ const state = {
   lines:          [],     // [{index, text, confidence, bbox}, …]
   engines:        [],     // from /api/engines
   loadedEngine:   null,   // currently active engine name in pool
+  engineChangeSeq: 0,     // guards against stale async schema responses
   isSegmenting:   false,
   isTranscribing: false,
   sseAbort:       null,   // AbortController for active SSE
@@ -57,6 +58,29 @@ const el = {
   lineCount:        $('line-count'),
   btnCopy:          $('btn-copy'),
   btnExportTxt:     $('btn-export-txt'),
+
+  // Photo review overlay
+  photoReview:      $('photo-review'),
+  reviewImg:        $('review-img'),
+  reviewCropCanvas: $('review-crop-canvas'),
+  reviewWarn:       $('review-warn'),
+  btnRotateCCW:     $('btn-rotate-ccw'),
+  btnRotateCW:      $('btn-rotate-cw'),
+  btnAutoCrop:      $('btn-auto-crop'),
+  btnCropStart:     $('btn-crop-start'),
+  btnCropApply:     $('btn-crop-apply'),
+  btnCropCancel:    $('btn-crop-cancel'),
+  btnRetake:        $('btn-retake'),
+  btnUsePhoto:      $('btn-use-photo'),
+};
+
+// ── Photo Review State ─────────────────────────────────────────────────
+const reviewState = {
+  canvas:      null,   // off-screen working canvas (rotated / cropped)
+  cropMode:    false,
+  cropStart:   null,   // image-coord pointer-down position
+  cropRect:    null,   // {x, y, w, h} in image coords
+  srcFilename: '',
 };
 
 // ── Toast ──────────────────────────────────────────────────────────────
@@ -162,6 +186,7 @@ async function loadEngines() {
 async function onEngineChange() {
   const name = el.engineSelect.value;
   if (!name) return;
+  const requestSeq = ++state.engineChangeSeq;
   localStorage.setItem(LS_ENGINE, name);
 
   // If this engine is already the loaded one, hide load controls
@@ -181,6 +206,10 @@ async function onEngineChange() {
     // Use config-schema (same as main app) — it has the full model option list
     const resp = await api(`/api/engine/${encodeURIComponent(name)}/config-schema`);
     const schema = await resp.json();
+
+    if (requestSeq !== state.engineChangeSeq || el.engineSelect.value !== name) {
+      return;
+    }
 
     // Find first non-dynamic select field → that's the model selector
     const selectField = (schema.fields || []).find(
@@ -215,6 +244,9 @@ async function onEngineChange() {
 
     el.btnLoadModel.disabled = false;
   } catch {
+    if (requestSeq !== state.engineChangeSeq || el.engineSelect.value !== name) {
+      return;
+    }
     el.modelSelect.innerHTML = '<option value="">Default</option>';
     state.modelFieldKey = 'model_path';
     el.btnLoadModel.disabled = false;
@@ -283,7 +315,7 @@ async function uploadFile(file) {
   setProgress(0);
 
   try {
-    const resp = await fetch('/api/image/upload', { method: 'POST', body: fd });
+    const resp = await fetch('/api/image/upload?max_dim=2400', { method: 'POST', body: fd });
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({ detail: resp.statusText }));
       throw new Error(err.detail || 'Upload failed');
@@ -651,22 +683,340 @@ function onImageResize() {
   if (state.bboxes.length > 0) drawBboxes(state.bboxes);
 }
 
+// ── Photo Review ────────────────────────────────────────────────────────
+
+function openPhotoReview(file) {
+  reviewState.srcFilename = file.name || 'photo.jpg';
+  reviewState.cropMode    = false;
+  reviewState.cropStart   = null;
+  reviewState.cropRect    = null;
+
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const canvas = document.createElement('canvas');
+    canvas.width  = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    reviewState.canvas = canvas;
+    updateReviewDisplay();
+    el.photoReview.hidden = false;
+    document.body.style.overflow = 'hidden';
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    toast('Could not load photo', 'error');
+  };
+  img.src = url;
+}
+
+function closePhotoReview() {
+  el.photoReview.hidden = true;
+  document.body.style.overflow = '';
+  reviewState.canvas   = null;
+  reviewState.cropMode = false;
+  reviewState.cropRect = null;
+  resetCropUI();
+}
+
+function updateReviewDisplay() {
+  if (!reviewState.canvas) return;
+  el.reviewImg.onload = () => {
+    syncCropCanvas();
+    checkReviewOrientation();
+  };
+  el.reviewImg.src = reviewState.canvas.toDataURL('image/jpeg', 0.9);
+}
+
+function checkReviewOrientation() {
+  const landscape = reviewState.canvas.width > reviewState.canvas.height;
+  el.reviewWarn.hidden = !landscape;
+}
+
+function syncCropCanvas() {
+  const c    = el.reviewCropCanvas;
+  const rect = el.reviewImg.getBoundingClientRect();
+  if (!rect.width) return;
+  c.width  = Math.round(rect.width);
+  c.height = Math.round(rect.height);
+  c.getContext('2d').clearRect(0, 0, c.width, c.height);
+}
+
+// ── Auto-Crop (adaptive page detection) ────────────────────────────────
+
+function autoDetectAndCrop() {
+  if (!reviewState.canvas) return;
+  exitCropMode();
+
+  const canvas = reviewState.canvas;
+  const { width, height } = canvas;
+  const data = canvas.getContext('2d').getImageData(0, 0, width, height).data;
+
+  // Single pass: accumulate page-likelihood per row and per column.
+  // Heuristic: white paper is typically bright with low saturation.
+  const rowSum = new Float32Array(height);
+  const colSum = new Float32Array(width);
+  let borderSum = 0;
+  let borderCount = 0;
+
+  const borderBandY = Math.max(1, Math.floor(height * 0.08));
+  const borderBandX = Math.max(1, Math.floor(width * 0.08));
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      const v = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const s = v === 0 ? 0 : (v - min) / v;
+
+      const pageScore = v - (s * 90);
+      rowSum[y] += pageScore;
+      colSum[x] += pageScore;
+
+      const isBorderPixel = y < borderBandY || y >= (height - borderBandY) || x < borderBandX || x >= (width - borderBandX);
+      if (isBorderPixel) {
+        borderSum += pageScore;
+        borderCount += 1;
+      }
+    }
+  }
+
+  const borderMean = borderCount > 0 ? (borderSum / borderCount) : 40;
+  const THRESHOLD = Math.min(230, borderMean + 14);
+  const PAD       = 12;
+
+  let top = 0, bottom = height - 1, left = 0, right = width - 1;
+  for (let y = 0;          y < height; y++) { if (rowSum[y] / width  > THRESHOLD) { top    = y; break; } }
+  for (let y = height - 1; y >= 0;    y--) { if (rowSum[y] / width  > THRESHOLD) { bottom = y; break; } }
+  for (let x = 0;          x < width; x++) { if (colSum[x] / height > THRESHOLD) { left   = x; break; } }
+  for (let x = width - 1;  x >= 0;    x--) { if (colSum[x] / height > THRESHOLD) { right  = x; break; } }
+
+  // Apply padding and clamp
+  top    = Math.max(0,         top    - PAD);
+  bottom = Math.min(height - 1, bottom + PAD);
+  left   = Math.max(0,         left   - PAD);
+  right  = Math.min(width - 1, right  + PAD);
+
+  const w = right - left;
+  const h = bottom - top;
+
+  // Sanity check: don't crop to less than 20% of original
+  if (w < width * 0.2 || h < height * 0.2) {
+    toast('Page not detected clearly - please crop manually', 'warn');
+    return;
+  }
+
+  const dst = document.createElement('canvas');
+  dst.width  = w;
+  dst.height = h;
+  dst.getContext('2d').drawImage(canvas, left, top, w, h, 0, 0, w, h);
+  reviewState.canvas = dst;
+  updateReviewDisplay();
+}
+
+// ── Rotate ─────────────────────────────────────────────────────────────
+
+function rotateReview(angle) {
+  if (!reviewState.canvas) return;
+  exitCropMode();
+  const src = reviewState.canvas;
+  const dst = document.createElement('canvas');
+  dst.width  = src.height;
+  dst.height = src.width;
+  const ctx = dst.getContext('2d');
+  ctx.translate(dst.width / 2, dst.height / 2);
+  ctx.rotate(angle * Math.PI / 180);
+  ctx.drawImage(src, -src.width / 2, -src.height / 2);
+  reviewState.canvas = dst;
+  updateReviewDisplay();
+}
+
+// ── Crop ───────────────────────────────────────────────────────────────
+
+function enterCropMode() {
+  reviewState.cropMode  = true;
+  reviewState.cropRect  = null;
+  reviewState.cropStart = null;
+  el.btnCropStart.hidden  = true;
+  el.btnCropApply.hidden  = true;
+  el.btnCropCancel.hidden = false;
+  el.reviewCropCanvas.style.pointerEvents = 'auto';
+  syncCropCanvas();
+}
+
+function exitCropMode() {
+  reviewState.cropMode  = false;
+  reviewState.cropStart = null;
+  reviewState.cropRect  = null;
+  el.reviewCropCanvas.style.pointerEvents = 'none';
+  resetCropUI();
+  syncCropCanvas();
+}
+
+function resetCropUI() {
+  el.btnCropStart.hidden  = false;
+  el.btnCropApply.hidden  = true;
+  el.btnCropCancel.hidden = true;
+}
+
+function pointerToImageCoords(e) {
+  const c    = el.reviewCropCanvas;
+  const rect = c.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(reviewState.canvas.width,  (e.clientX - rect.left) * (reviewState.canvas.width  / rect.width))),
+    y: Math.max(0, Math.min(reviewState.canvas.height, (e.clientY - rect.top)  * (reviewState.canvas.height / rect.height))),
+  };
+}
+
+function onCropPointerDown(e) {
+  if (!reviewState.cropMode) return;
+  e.preventDefault();
+  el.reviewCropCanvas.setPointerCapture(e.pointerId);
+  reviewState.cropStart = pointerToImageCoords(e);
+  reviewState.cropRect  = null;
+  el.btnCropApply.hidden = true;
+}
+
+function onCropPointerMove(e) {
+  if (!reviewState.cropMode || !reviewState.cropStart) return;
+  e.preventDefault();
+  const cur = pointerToImageCoords(e);
+  reviewState.cropRect = {
+    x: Math.min(reviewState.cropStart.x, cur.x),
+    y: Math.min(reviewState.cropStart.y, cur.y),
+    w: Math.abs(cur.x - reviewState.cropStart.x),
+    h: Math.abs(cur.y - reviewState.cropStart.y),
+  };
+  drawCropOverlay();
+}
+
+function onCropPointerUp(e) {
+  if (!reviewState.cropMode) return;
+  e.preventDefault();
+  reviewState.cropStart = null;
+  const r = reviewState.cropRect;
+  if (r && r.w > 20 && r.h > 20) {
+    el.btnCropApply.hidden = false;
+  }
+}
+
+function drawCropOverlay() {
+  const c    = el.reviewCropCanvas;
+  const ctx  = c.getContext('2d');
+  const r    = reviewState.cropRect;
+  if (!r) return;
+
+  const scaleX = c.width  / reviewState.canvas.width;
+  const scaleY = c.height / reviewState.canvas.height;
+  const rx = r.x * scaleX, ry = r.y * scaleY;
+  const rw = r.w * scaleX, rh = r.h * scaleY;
+
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.clearRect(rx, ry, rw, rh);
+  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+  ctx.lineWidth   = 2;
+  ctx.strokeRect(rx, ry, rw, rh);
+}
+
+function applyReviewCrop() {
+  const r = reviewState.cropRect;
+  if (!r || r.w < 20 || r.h < 20) return;
+  const dst = document.createElement('canvas');
+  dst.width  = Math.round(r.w);
+  dst.height = Math.round(r.h);
+  dst.getContext('2d').drawImage(
+    reviewState.canvas,
+    Math.round(r.x), Math.round(r.y), Math.round(r.w), Math.round(r.h),
+    0, 0, Math.round(r.w), Math.round(r.h)
+  );
+  reviewState.canvas = dst;
+  exitCropMode();
+  updateReviewDisplay();
+}
+
+// ── Confirm / Retake ────────────────────────────────────────────────────
+
+function retakePhoto() {
+  closePhotoReview();
+  el.fileCamera.value = '';
+  el.fileCamera.click();
+}
+
+function confirmPhoto() {
+  if (!reviewState.canvas) return;
+  el.btnUsePhoto.disabled = true;
+  reviewState.canvas.toBlob(blob => {
+    if (!blob) {
+      toast('Error while processing photo', 'error');
+      el.btnUsePhoto.disabled = false;
+      return;
+    }
+    const baseName = reviewState.srcFilename.replace(/\.[^.]+$/, '');
+    const file = new File([blob], baseName + '.jpg', { type: 'image/jpeg' });
+    closePhotoReview();
+    el.btnUsePhoto.disabled = false;
+    uploadFile(file);
+  }, 'image/jpeg', 0.92);
+}
+
 // ── Register service worker ─────────────────────────────────────────────
+async function detectPwaVersion() {
+  try {
+    const resp = await fetch('/static/pwa/demo.js', {
+      method: 'HEAD',
+      cache: 'no-store',
+    });
+    const lastModified = resp.headers.get('last-modified');
+    if (lastModified) {
+      const ts = Date.parse(lastModified);
+      if (Number.isFinite(ts) && ts > 0) return String(ts);
+    }
+  } catch {
+    // Fallback below
+  }
+  return 'dev';
+}
+
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/static/pwa/sw.js')
-      .catch(e => console.warn('SW registration failed:', e));
+  window.addEventListener('load', async () => {
+    try {
+      const version = await detectPwaVersion();
+      const reg = await navigator.serviceWorker.register(`/sw.js?v=${encodeURIComponent(version)}`, { scope: '/' });
+      reg.update().catch(() => {});
+    } catch (e) {
+      console.warn('SW registration failed:', e);
+    }
   });
 }
 
 // ── Init ───────────────────────────────────────────────────────────────
 function init() {
-  // Camera button
+  // Camera button — open review overlay instead of uploading directly
   el.btnCamera.addEventListener('click', () => el.fileCamera.click());
   el.fileCamera.addEventListener('change', () => {
-    if (el.fileCamera.files[0]) uploadFile(el.fileCamera.files[0]);
+    if (el.fileCamera.files[0]) openPhotoReview(el.fileCamera.files[0]);
     el.fileCamera.value = '';
   });
+
+  // Photo review
+  el.btnRotateCCW.addEventListener('click',  () => rotateReview(-90));
+  el.btnRotateCW.addEventListener('click',   () => rotateReview(90));
+  el.btnAutoCrop.addEventListener('click',   autoDetectAndCrop);
+  el.btnCropStart.addEventListener('click',  enterCropMode);
+  el.btnCropApply.addEventListener('click',  applyReviewCrop);
+  el.btnCropCancel.addEventListener('click', exitCropMode);
+  el.btnRetake.addEventListener('click',     retakePhoto);
+  el.btnUsePhoto.addEventListener('click',   confirmPhoto);
+  el.reviewCropCanvas.addEventListener('pointerdown', onCropPointerDown);
+  el.reviewCropCanvas.addEventListener('pointermove', onCropPointerMove);
+  el.reviewCropCanvas.addEventListener('pointerup',   onCropPointerUp);
 
   // File picker button
   el.btnFile.addEventListener('click', () => el.filePicker.click());
