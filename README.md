@@ -161,11 +161,11 @@ All models run on CPU (no GPU required) and can be loaded directly in the CRNN-C
 
 ### TrOCR
 
-A collection of TrOCR models for Cyrillic handwriting (Russian, Ukrainian, Church Slavonic) is maintained here:
+A collection of TrOCR models for Cyrillic handwriting (Church Slavonic, Ukrainian, Russian) is maintained here:
 
 **[https://huggingface.co/cyrillic-trocr](https://huggingface.co/cyrillic-trocr)**
 
-These can be loaded in the TrOCR engine by entering the HuggingFace model ID (e.g. `cyrillic-trocr/trocr-base-handwritten-ru`).
+These can be loaded in the TrOCR engine by entering the HuggingFace model ID (e.g. `cyrillic-trocr/trocr-handwritten-cyrillic`).
 
 ### Qwen3-VL
 
@@ -177,7 +177,7 @@ Load any compatible Qwen3-VL model via its HuggingFace ID in the Qwen3-VL engine
 
 ### Kraken
 
-Segmentation and recognition models for historical manuscripts are available on Zenodo. The default `blla` layout analysis model for neural line segmentation:
+A recognition model for pre-modern Slavic (Cyrillic) is available on Zenodo:
 
 **[https://zenodo.org/records/7755483](https://zenodo.org/records/7755483)**
 
