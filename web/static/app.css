@@ -1,3 +1,14 @@
+/* ── Self-hosted fonts ─── */
+@font-face {
+    font-family: 'Monomakh';
+    src: url('fonts/MonomakhUnicode-Regular.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+    unicode-range: U+0000-007F, U+0080-00FF, U+0300-036F, U+0400-04FF,
+        U+0500-052F, U+1C80-1C8F, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+
 /* ── Design tokens ───────────────────────────────────────────────────── */
 :root {
     --bg:          #111827;

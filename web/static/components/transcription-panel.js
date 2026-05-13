@@ -11,7 +11,7 @@ const LS_FONT = 'polyscriptor_results_font';
 
 const FONTS = [
     { label: 'Monospace (default)',  value: '' },
-    { label: 'Monomakh Unicode ✦',  value: 'Monomakh',         gf: 'Monomakh'         },
+    { label: 'Monomakh Unicode ✦',  value: 'Monomakh',         local: true            },
     { label: 'Old Standard TT',     value: 'Old Standard TT',  gf: 'Old+Standard+TT'  },
     { label: 'Noto Serif',          value: 'Noto Serif',       gf: 'Noto+Serif'        },
     { label: 'Crimson Pro',         value: 'Crimson Pro',      gf: 'Crimson+Pro'       },
