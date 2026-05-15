@@ -166,6 +166,8 @@ check_*.py
 test_*.py
 # Exception: web API test suite is a proper test, not a throwaway script
 !web/tests/test_server.py
+# Exception: kaggle competition test suite (proper pytest tests)
+!kaggle/tests/*.py
 
 # Accidentally created files
 =*
@@ -242,6 +244,12 @@ inspect_*.ipynb
 # Gabelsberger shorthand preparation (work in progress)
 prepare_gabelsberger_shorthand.py
 *.gitlab-token
+
+# Kaggle competition data and credentials (must never be committed)
+kaggle_handwritten_to_data/
+.kaggle/
+kaggle.json
+*.kaggle-token
 
 # Internal handoff / briefing documents (not for public repo)
 *_HANDOFF.md

@@ -1,12 +1,22 @@
-/* ── Self-hosted fonts ─── */
+/* ── Self-hosted fonts ───────────────────────────────────────────────── */
 @font-face {
     font-family: 'Monomakh';
     src: url('fonts/MonomakhUnicode-Regular.woff2') format('woff2');
     font-weight: normal;
     font-style: normal;
     font-display: swap;
-    unicode-range: U+0000-007F, U+0080-00FF, U+0300-036F, U+0400-04FF,
-        U+0500-052F, U+1C80-1C8F, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+    /* Full Unicode coverage including Church Slavonic superscripts,
+       Cyrillic Extended-A/B, Combining Cyrillic, titlos, etc. */
+    unicode-range:
+        U+0000-007F,   /* Basic Latin */
+        U+0080-00FF,   /* Latin-1 Supplement */
+        U+0300-036F,   /* Combining Diacritical Marks */
+        U+0400-04FF,   /* Cyrillic */
+        U+0500-052F,   /* Cyrillic Supplement */
+        U+1C80-1C8F,   /* Cyrillic Extended-C */
+        U+2DE0-2DFF,   /* Cyrillic Extended-A */
+        U+A640-A69F,   /* Cyrillic Extended-B */
+        U+FE2E-FE2F;   /* Combining half marks */
 }
 
 /* ── Design tokens ───────────────────────────────────────────────────── */

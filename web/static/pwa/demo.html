@@ -172,33 +172,6 @@
 
   </main>
 
-  <!-- Photo Review Overlay — shown after camera capture, before upload -->
-  <div id="photo-review" hidden>
-    <div id="review-inner">
-      <div id="review-warn" hidden>
-        Landscape photo detected - for line segmentation, please rotate to portrait (↺ or ↻)
-      </div>
-      <div id="review-img-outer">
-        <div id="review-img-wrap">
-          <img id="review-img" alt="Photo preview">
-          <canvas id="review-crop-canvas"></canvas>
-        </div>
-      </div>
-      <div id="review-toolbar">
-        <button id="btn-rotate-ccw" class="btn btn-secondary btn-icon" title="Rotate 90° left">↺</button>
-        <button id="btn-rotate-cw"  class="btn btn-secondary btn-icon" title="Rotate 90° right">↻</button>
-        <button id="btn-auto-crop"   class="btn btn-secondary">Auto crop page</button>
-        <button id="btn-crop-start"  class="btn btn-secondary">✂ Manual crop</button>
-        <button id="btn-crop-apply"  class="btn btn-primary"   hidden>Apply crop</button>
-        <button id="btn-crop-cancel" class="btn btn-ghost btn-small" hidden>Cancel</button>
-      </div>
-      <div id="review-actions">
-        <button id="btn-retake"    class="btn btn-secondary">Retake</button>
-        <button id="btn-use-photo" class="btn btn-primary">Use photo →</button>
-      </div>
-    </div>
-  </div>
-
   <script src="/static/pwa/demo.js" type="module"></script>
 </body>
 </html>

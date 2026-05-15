@@ -506,6 +506,7 @@ class Qwen3Engine(HTREngine):
                 generation_kwargs["do_sample"] = config.get("do_sample", False)
                 generation_kwargs["temperature"] = config.get("temperature", 1.0) if config.get("do_sample") else None
                 generation_kwargs["max_new_tokens"] = config.get("max_new_tokens", 2048)
+                generation_kwargs["enable_thinking"] = config.get("enable_thinking", False)
                 # Note: repetition_penalty is already set in inference_qwen3.py
 
             result = self.model.transcribe_page(pil_image, prompt=prompt, return_confidence=True, **generation_kwargs)
@@ -565,6 +566,7 @@ class Qwen3Engine(HTREngine):
                     generation_kwargs["do_sample"] = config.get("do_sample", False)
                     generation_kwargs["temperature"] = config.get("temperature", 1.0) if config.get("do_sample") else None
                     generation_kwargs["max_new_tokens"] = config.get("max_new_tokens", 2048)
+                    generation_kwargs["enable_thinking"] = config.get("enable_thinking", False)
 
                 result = self.model.transcribe_page(pil_img, prompt=prompt, return_confidence=True, **generation_kwargs)
 

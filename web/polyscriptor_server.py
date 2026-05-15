@@ -292,26 +292,12 @@ def _cleanup_expired_sessions() -> int:
     return len(expired)
 
 
-_SESSION_PASSTHROUGH_PATHS = {"/api/gpu", "/api/engines", "/api/kraken/presets"}
-
-
 @app.middleware("http")
 async def session_middleware(request: Request, call_next):
-    """Inject session into request.state; set session cookie on new sessions.
-
-    Pure status/discovery routes (GPU poll, engine list) are excluded from
-    last_active updates so that background browser polling cannot keep a session
-    alive indefinitely and prevent engine-slot eviction.
-    """
+    """Inject session into request.state; set session cookie on new sessions."""
     session_id = request.cookies.get(_SESSION_COOKIE)
     session, created = _get_or_create_session(session_id)
     request.state.session = session
-
-    # Don't update last_active for polling-only routes
-    if request.url.path in _SESSION_PASSTHROUGH_PATHS:
-        session.last_active  # read only — no write
-    else:
-        session.last_active = time.time()
 
     response = await call_next(request)
 
@@ -352,42 +338,14 @@ def _cleanup_old_uploads() -> int:
     return deleted
 
 
-_SLOT_IDLE_TTL_SECONDS = 6 * 3600  # evict loaded engines idle for 6h, regardless of ref_count
-
-
-def _evict_idle_slots() -> int:
-    """Evict engine slots that have not been used for _SLOT_IDLE_TTL_SECONDS.
-
-    Called under no lock — must only be called from _periodic_cleanup (single-threaded).
-    The GPU-status poll (/api/gpu) keeps sessions alive indefinitely, so we cannot rely
-    on session expiry alone to release VRAM. This independently caps engine residency.
-    """
-    cutoff = time.time() - _SLOT_IDLE_TTL_SECONDS
-    stale = [k for k, s in engine_pool.items() if s.last_used < cutoff
-             and s.engine_name not in _NO_GPU_ENGINES]
-    for key in stale:
-        slot = engine_pool.pop(key)
-        log.info(f"Idle eviction: '{slot.engine_name}' (idle {(time.time() - slot.last_used)/3600:.1f}h)")
-        try:
-            slot.engine.unload_model()
-        except Exception as e:
-            log.warning(f"unload_model() failed for '{slot.engine_name}': {e}")
-        # Invalidate all sessions pointing at this slot
-        for session in sessions.values():
-            if session.pool_key == key:
-                session.pool_key = None
-    return len(stale)
-
-
 async def _periodic_cleanup():
-    """Background task: clean up uploads + expired sessions + idle engine slots every hour."""
+    """Background task: clean up uploads + expired sessions every hour."""
     while True:
         await asyncio.sleep(3600)
         n = _cleanup_old_uploads()
         m = _cleanup_expired_sessions()
-        p = _evict_idle_slots()
-        if n or m or p:
-            log.info(f"Periodic cleanup: {n} upload(s), {m} session(s), {p} idle engine slot(s).")
+        if n or m:
+            log.info(f"Periodic cleanup: {n} old file(s), {m} expired session(s).")
 
 
 # ---------------------------------------------------------------------------
@@ -1171,31 +1129,6 @@ async def list_keys():
     This endpoint returns an empty dict — it exists for backwards compatibility.
     """
     return {}
-
-
-@app.post("/api/admin/evict-all")
-async def admin_evict_all(request: Request):
-    """Force-evict all engine slots from VRAM (localhost admin only)."""
-    if request.client and request.client.host not in ("127.0.0.1", "::1"):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=403, detail="localhost only")
-    async with pool_lock:
-        evicted = []
-        for key, slot in list(engine_pool.items()):
-            try:
-                slot.engine.unload_model()
-            except Exception as e:
-                log.warning(f"admin evict failed for '{key}': {e}")
-            del engine_pool[key]
-            evicted.append(key)
-        for session in sessions.values():
-            session.pool_key = None
-        global loaded_engine, loaded_engine_name, loaded_config
-        loaded_engine = None
-        loaded_engine_name = ""
-        loaded_config = {}
-    log.info(f"Admin force-evict: cleared {len(evicted)} slot(s): {evicted}")
-    return {"evicted": evicted}
 
 
 @app.post("/api/engine/unload")
