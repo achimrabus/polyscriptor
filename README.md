@@ -51,6 +51,8 @@ git clone https://github.com/achimrabus/polyscriptor.git
 cd polyscriptor
 
 # Create virtual environment
+# Requires Python 3.10–3.12 (Python 3.13+ may lack prebuilt wheels for some
+# packages; check your version with: python --version)
 python3 -m venv htr_env
 source htr_env/bin/activate  # Linux/Mac
 # or: htr_env\Scripts\activate  # Windows
@@ -90,8 +92,7 @@ python transcription_gui_plugin.py
 
 **Remote server usage (GUI over X11):**
 ```bash
-# See REMOTE_GUI_GUIDE.md for detailed setup
-# Quick test: X11 forwarding with MobaXterm
+# X11 forwarding (e.g. with MobaXterm or ssh -X)
 ssh -X user@server
 cd ~/htr_gui/dhlab-slavistik
 source htr_env/bin/activate
@@ -108,14 +109,14 @@ python3 batch_processing.py \
     --use-pagexml
 ```
 
-📖 **See [REMOTE_GUI_GUIDE.md](REMOTE_GUI_GUIDE.md)** for comprehensive remote access options (X11, VNC, CLI workflows)
-
 ### 3. Train a Model (CLI, CRNN-CTC Example)
 
 ```bash
-# Step 1: Parse Transkribus PAGE XML export → CSV format
+# Step 1: Parse PAGE XML export → CSV format
+# Works with Transkribus exports (namespace 2013-07-15) and
+# eScriptorium/Kraken exports (namespace 2019-07-15) — both are auto-detected.
 python3 transkribus_parser.py \
-    --input_dir /path/to/transkribus_export \
+    --input_dir /path/to/pagexml_export \
     --output_dir ./data/my_dataset \
     --preserve-aspect-ratio \
     --target-height 128
@@ -166,6 +167,16 @@ A collection of TrOCR models for Cyrillic handwriting (Russian, Ukrainian, Churc
 **[https://huggingface.co/cyrillic-trocr](https://huggingface.co/cyrillic-trocr)**
 
 These can be loaded in the TrOCR engine by entering the HuggingFace model ID (e.g. `cyrillic-trocr/trocr-base-handwritten-ru`).
+
+### LightOnOCR
+
+Lightweight VLM models (~4 GB VRAM) for line-level HTR, compatible with the LightOnOCR engine:
+
+| Model | Script / Language | Description |
+|-------|-------------------|-------------|
+| [wjbmattingly/LightOnOCR-2-1B-old-church-slavonic-line](https://huggingface.co/wjbmattingly/LightOnOCR-2-1B-old-church-slavonic-line) | Church Slavonic | Fine-tuned on QuantiSlav + Polyscriptor training data |
+
+Load via HuggingFace model ID in the LightOnOCR engine.
 
 ### Qwen3-VL
 
