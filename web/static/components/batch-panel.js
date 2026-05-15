@@ -188,44 +188,56 @@ function handleMultipleFiles(files) {
     if (batch.items.length > 0) { renderQueue(); previewFirstBatchItem(); }
 }
 
-// Auto-preview the first batch item (upload if needed) so the viewer isn't blank
+// Auto-preview all batch items (upload if needed), expanding PDFs into pages immediately
 async function previewFirstBatchItem() {
-    if (state.imageId || batch.running) return;
-    const first = batch.items[0];
-    if (!first) return;
-    if (first.preUploaded && first.imageId) {
-        batch.currentIndex = 0;
-        emit('batch-item-start', { imageId: first.imageId, filename: first.filename });
-        updateNavButtons();
-    } else if (first.file) {
-        try {
-            const fd = new FormData();
-            fd.append('file', first.file);
-            const resp = await fetch('/api/image/upload', { method: 'POST', body: fd });
-            if (!resp.ok) return;
-            const data = await resp.json();
-            if (data.is_pdf) {
-                // Expand PDF into page items immediately (same as processSingleItem does)
-                const newItems = data.pages.map(p => ({
-                    file: null, imageId: p.image_id, status: 'pending',
-                    lines: [], filename: p.filename, preUploaded: true,
-                }));
-                batch.items.splice(0, 1, ...newItems);
+    if (batch.running) return;
+
+    let i = 0;
+    let safetyCounter = 0;
+    while (i < batch.items.length && safetyCounter < 100) {
+        safetyCounter++;
+        const item = batch.items[i];
+
+        if (item.preUploaded && item.imageId) {
+            i++;
+            continue;
+        }
+
+        if (item.file) {
+            try {
+                const fd = new FormData();
+                fd.append('file', item.file);
+                const resp = await fetch('/api/image/upload', { method: 'POST', body: fd });
+                if (!resp.ok) { i++; continue; }
+                const data = await resp.json();
+
+                if (data.is_pdf) {
+                    const newItems = data.pages.map(p => ({
+                        file: null, imageId: p.image_id, status: 'pending',
+                        lines: [], filename: p.filename, preUploaded: true,
+                    }));
+                    batch.items.splice(i, 1, ...newItems);
+                    renderQueue();
+                    continue;
+                }
+
+                item.imageId = data.image_id;
+                item.preUploaded = true;
                 renderQueue();
-                const firstPage = batch.items[0];
-                if (firstPage) {
+
+                if (i === 0 && !state.imageId) {
                     batch.currentIndex = 0;
-                    emit('batch-item-start', { imageId: firstPage.imageId, filename: firstPage.filename });
+                    emit('batch-item-start', { imageId: item.imageId, filename: item.filename });
                     updateNavButtons();
                 }
-                return;
+                i++;
+            } catch (err) {
+                console.error('Error pre-uploading batch item:', err);
+                i++;
             }
-            first.imageId = data.image_id;
-            first.preUploaded = true;
-            batch.currentIndex = 0;
-            emit('batch-item-start', { imageId: first.imageId, filename: first.filename });
-            updateNavButtons();
-        } catch { /* non-fatal */ }
+        } else {
+            i++;
+        }
     }
 }
 

@@ -34,14 +34,13 @@ LIGHTON_MODELS: Dict[str, Dict[str, Any]] = {
         "vram": "~4GB",
         "type": "line",
     },
-    # Easy to add new models:
-    # "Church Slavonic": {
-    #     "id": "username/LightOnOCR-2-1B-church-slavonic",
-    #     "description": "Fine-tuned for Church Slavonic manuscripts",
-    #     "language": "cu",
-    #     "vram": "~4GB",
-    #     "type": "line",
-    # },
+    "Church Slavonic (wjbmattingly)": {
+        "id": "wjbmattingly/LightOnOCR-2-1B-old-church-slavonic-line",
+        "description": "Fine-tuned for Old Church Slavonic manuscript lines.",
+        "language": "cu",
+        "vram": "~4GB",
+        "type": "line",
+    },
 }
 
 

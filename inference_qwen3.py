@@ -206,8 +206,7 @@ class Qwen3VLMInference:
         do_sample: bool = False,
         num_beams: int = 1,
         temperature: Optional[float] = None,
-        return_confidence: bool = False,
-        enable_thinking: bool = False,
+        return_confidence: bool = False
     ) -> PageTranscription:
         """
         Transcribe an entire page image.
@@ -242,16 +241,12 @@ class Qwen3VLMInference:
         ]
 
         # Apply chat template and tokenize
-        # enable_thinking=False disables Qwen3's extended reasoning mode, which
-        # was not the default when the code was originally written and produces
-        # much longer outputs that hurt CER for short-text regions.
         inputs = self.processor.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
             return_dict=True,
-            return_tensors="pt",
-            enable_thinking=enable_thinking,
+            return_tensors="pt"
         )
 
         # Move to correct device

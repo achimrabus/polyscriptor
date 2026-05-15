@@ -33,7 +33,6 @@ function _loadGoogleFont(gfParam) {
 function applyFont(value) {
     const f = FONTS.find(f => f.value === value);
     if (!f) return;
-    // local fonts are declared via @font-face in app.css — no dynamic loading needed
     if (f.gf) _loadGoogleFont(f.gf);
     if (f.value) {
         document.documentElement.style.setProperty(
