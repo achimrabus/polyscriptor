@@ -600,11 +600,10 @@ select:focus {
   inset: 0;
   background: #0a0a0a;
   z-index: 500;
+  /* Use block layout instead of flex to avoid the iOS Safari flex+overflow-y scroll bug */
+  display: block;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
 }
 
 #photo-review[hidden] {
@@ -614,7 +613,8 @@ select:focus {
 #review-inner {
   width: 100%;
   max-width: 600px;
-  padding: 14px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  margin: 0 auto;
+  padding: max(14px, env(safe-area-inset-top, 0px)) 14px calc(14px + env(safe-area-inset-bottom, 0px));
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -651,7 +651,8 @@ select:focus {
 #review-img {
   display: block;
   max-width: 100%;
-  max-height: 54vh;
+  max-height: 45vh;  /* fallback */
+  max-height: 45svh; /* small viewport height: excludes browser chrome on iOS/Android */
   width: auto;
   height: auto;
 }
@@ -687,4 +688,11 @@ select:focus {
 
 #review-actions .btn {
   flex: 1;
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  #review-img {
+    max-height: 30vh;
+    max-height: 30svh;
+  }
 }

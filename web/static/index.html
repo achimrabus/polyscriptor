@@ -183,6 +183,7 @@
                 <div class="results-header-row">
                     <h2>Transcription</h2>
                     <div class="results-header-controls">
+                        <button id="btn-compare-toggle" class="btn btn-small btn-outline hidden" title="Compare this transcription against another engine">⇄ Compare</button>
                         <select id="font-select" class="font-select" title="Transcription font"></select>
                         <button id="btn-col-layout" class="btn-icon hidden" title="Toggle column layout">⊞</button>
                     </div>
@@ -213,6 +214,26 @@
                     <button id="btn-export-xml" class="btn btn-small hidden">XML</button>
                 </div>
             </div>
+            <section id="comparison-panel" class="comparison-panel hidden">
+                <div class="comparison-panel-header">
+                    <div>
+                        <h3>Compare</h3>
+                        <p id="comparison-base-summary" class="muted"></p>
+                    </div>
+                    <span id="comparison-status-badge" class="status-badge hidden"></span>
+                </div>
+                <p id="comparison-help" class="comparison-help muted">
+                    After the base transcription is ready, switch to another engine on the left, load its model, and run a comparison on the same segmented lines.
+                </p>
+                <div class="comparison-controls">
+                    <button id="btn-run-comparison" class="btn btn-outline btn-small" disabled>Run Comparison</button>
+                    <label for="comparison-slot-select" class="comparison-select-label hidden">View</label>
+                    <select id="comparison-slot-select" class="hidden"></select>
+                </div>
+                <p id="comparison-status" class="muted"></p>
+                <div id="comparison-summary" class="comparison-summary hidden"></div>
+                <div id="comparison-lines" class="comparison-lines hidden"></div>
+            </section>
         </section>
     </main>
 

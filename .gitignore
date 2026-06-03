@@ -166,6 +166,7 @@ check_*.py
 test_*.py
 # Exception: web API test suite is a proper test, not a throwaway script
 !web/tests/test_server.py
+!web/tests/test_comparison_metrics.py
 
 # Accidentally created files
 =*

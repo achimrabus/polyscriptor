@@ -120,6 +120,7 @@ async function onEngineSelected() {
     const name = $('engine-select').value;
     const eng = state.engines.find(e => e.name === name);
     state.currentEngine = eng;
+    state.engineLoaded = !!(state.loadedEngineName && state.loadedEngineName === name);
 
     // Description
     $('engine-description').textContent = eng?.description || '';
@@ -132,6 +133,9 @@ async function onEngineSelected() {
     configForm.innerHTML = '';
 
     if (!eng) return;
+
+    updateTranscribeBtn();
+    updateSegmentBtn();
 
     try {
         const resp = await api(`/api/engine/${encodeURIComponent(name)}/config-schema`);
@@ -630,6 +634,8 @@ async function onLoadModel() {
         const data = await resp.json();
 
         state.engineLoaded = true;
+        state.loadedEngineName = data.engine_name || name;
+        state.loadedPoolKey = data.pool_key || null;
         status.className = 'status-badge status-loaded';
         status.textContent = `${name} loaded (${data.load_time_s}s)`;
 
@@ -642,6 +648,8 @@ async function onLoadModel() {
         status.style.color = 'var(--danger)';
         status.textContent = `Error: ${err.message}`;
         state.engineLoaded = false;
+        state.loadedEngineName = null;
+        state.loadedPoolKey = null;
     } finally {
         btn.classList.remove('loading');
         btn.textContent = 'Load Model';

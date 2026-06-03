@@ -1,6 +1,7 @@
 /**
  * Polyscriptor PWA Demo — App Logic
  * Self-contained (no imports from main app.js).
+ * Cache-bust: 2026-05-18 (photo review CSS fix)
  */
 
 // ── LocalStorage keys ──────────────────────────────────────────────────

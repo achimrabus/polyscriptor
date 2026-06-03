@@ -9,17 +9,26 @@ import { initEnginePanel } from './components/engine-panel.js';
 import { initImageViewer } from './components/image-viewer.js';
 import { initTranscriptionPanel } from './components/transcription-panel.js';
 import { initBatchPanel } from './components/batch-panel.js';
+import { initComparisonPanel } from './components/comparison-panel.js';
 
 // ── Global state ───────────────────────────────────────────────────────
 export const state = {
     engines: [],
     currentEngine: null,
     engineLoaded: false,
+    loadedEngineName: null,
+    loadedPoolKey: null,
     imageId: null,
     imageInfo: null,
     lines: [],           // [{index, text, confidence, bbox, region}]
     regions: [],         // [{id, bbox, num_lines}] — from latest segmentation
     isProcessing: false,
+    comparison: {
+        base: null,
+        runs: [],
+        selectedSlotId: null,
+        isRunning: false,
+    },
 };
 
 // ── Event bus ──────────────────────────────────────────────────────────
@@ -283,6 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initEnginePanel();
     initImageViewer();
     initTranscriptionPanel();
+    initComparisonPanel();
     initBatchPanel();
     initZoomControls();
     initResizablePanels();
@@ -295,4 +305,5 @@ document.addEventListener('DOMContentLoaded', () => {
     on('image-uploaded',        () => mobileActivateTab('image'));
     on('segment-preview',       () => mobileActivateTab('image'));
     on('transcription-start',   () => mobileActivateTab('results'));
+    on('comparison-start',      () => mobileActivateTab('results'));
 });

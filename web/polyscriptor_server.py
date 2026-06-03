@@ -50,6 +50,7 @@ except ImportError:
     pass  # python-dotenv not installed — env vars must be set externally
 
 from htr_engine_base import get_global_registry, HTREngine, TranscriptionResult
+from transcription_metrics import ComparisonMode, TranscriptionMetrics
 
 # PDF support via PyMuPDF
 try:
@@ -233,7 +234,11 @@ _UPLOAD_TTL_SECONDS = 86400
 _SESSION_TTL_SECONDS = 7200
 
 # Cookie name for session tracking
-_SESSION_COOKIE = "polyscriptor_session"
+# Cookie name is configurable so multiple instances on the same host (e.g. a
+# long-running server plus a dev/test instance on another port) don't clobber
+# each other's session cookie — browser cookies are scoped per host, not per
+# port. Default is unchanged for existing deployments.
+_SESSION_COOKIE = os.environ.get("POLYSCRIPTOR_SESSION_COOKIE", "polyscriptor_session")
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +251,7 @@ class UserSession:
     image_cache: Dict[str, dict] = field(default_factory=dict)
     cancel_events: Dict[str, asyncio.Event] = field(default_factory=dict)
     pool_key: Optional[str] = None  # Reference into engine_pool
+    comparison_pool_keys: Dict[str, str] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
 
@@ -271,18 +277,9 @@ def _cleanup_expired_sessions() -> int:
     expired = [sid for sid, s in sessions.items() if s.last_active < cutoff]
     for sid in expired:
         session = sessions.pop(sid)
-        # Release pool reference
-        if session.pool_key and session.pool_key in engine_pool:
-            slot = engine_pool[session.pool_key]
-            slot.ref_count = max(0, slot.ref_count - 1)
-            if slot.ref_count == 0:
-                log.info(f"Immediate eviction (session expiry): '{slot.engine_name}'")
-                try:
-                    slot.engine.unload_model()
-                except Exception as e:
-                    log.warning(f"unload_model() failed for '{slot.engine_name}': {e}")
-                if session.pool_key in engine_pool:
-                    del engine_pool[session.pool_key]
+        # Release pool references (primary + comparison)
+        for pool_key in _iter_session_pool_keys(session):
+            _release_pool_reference(pool_key, reason="session expiry")
         # Clean up upload files belonging to this session
         for iid, img_data in session.image_cache.items():
             p = img_data.get("path")
@@ -352,6 +349,7 @@ def _cleanup_old_uploads() -> int:
             p = session.image_cache[iid].get("path")
             if p and not Path(p).exists():
                 del session.image_cache[iid]
+        _prune_stale_comparison_pool_references(session)
     return deleted
 
 
@@ -379,7 +377,74 @@ def _evict_idle_slots() -> int:
         for session in sessions.values():
             if session.pool_key == key:
                 session.pool_key = None
+            for slot_label, pool_key in list(session.comparison_pool_keys.items()):
+                if pool_key == key:
+                    del session.comparison_pool_keys[slot_label]
     return len(stale)
+
+
+def _iter_session_pool_keys(session: UserSession) -> List[str]:
+    """Return all pool keys referenced by this session, including duplicates."""
+    refs: List[str] = []
+    if session.pool_key:
+        refs.append(session.pool_key)
+    refs.extend(session.comparison_pool_keys.values())
+    return refs
+
+
+def _release_pool_reference(pool_key: Optional[str], reason: str) -> None:
+    """Decrement a slot ref_count and evict immediately when it reaches zero."""
+    if not pool_key or pool_key not in engine_pool:
+        return
+    slot = engine_pool[pool_key]
+    slot.ref_count = max(0, slot.ref_count - 1)
+    if slot.ref_count == 0:
+        log.info(f"Immediate eviction ({reason}): '{slot.engine_name}'")
+        try:
+            slot.engine.unload_model()
+        except Exception as e:
+            log.warning(f"unload_model() failed for '{slot.engine_name}': {e}")
+        if pool_key in engine_pool:
+            del engine_pool[pool_key]
+
+
+def _attach_comparison_pool_reference(session: UserSession, slot_label: str, pool_key: Optional[str]) -> None:
+    """Track a loaded engine slot for comparison use in the current session."""
+    if not pool_key:
+        return
+
+    previous = session.comparison_pool_keys.get(slot_label)
+    if previous == pool_key:
+        return
+
+    if previous:
+        _release_pool_reference(previous, reason="comparison slot switch")
+
+    if pool_key in engine_pool:
+        engine_pool[pool_key].ref_count += 1
+        engine_pool[pool_key].last_used = time.time()
+    session.comparison_pool_keys[slot_label] = pool_key
+
+
+def _release_all_comparison_pool_references(session: UserSession, reason: str) -> None:
+    """Release every comparison-slot reference held by the session."""
+    for slot_label, pool_key in list(session.comparison_pool_keys.items()):
+        _release_pool_reference(pool_key, reason=reason)
+        session.comparison_pool_keys.pop(slot_label, None)
+
+
+def _prune_stale_comparison_pool_references(session: UserSession) -> None:
+    """Release comparison references whose stored result slots no longer exist."""
+    active_slot_ids = set()
+    for img_data in session.image_cache.values():
+        for slot_id, slot in (img_data.get("result_slots") or {}).items():
+            if slot.get("kind") == "comparison" and slot.get("pool_key"):
+                active_slot_ids.add(slot_id)
+
+    for slot_label, pool_key in list(session.comparison_pool_keys.items()):
+        if slot_label not in active_slot_ids:
+            _release_pool_reference(pool_key, reason="stale comparison cleanup")
+            session.comparison_pool_keys.pop(slot_label, None)
 
 
 async def _periodic_cleanup():
@@ -837,6 +902,12 @@ class TranscribeRequest(BaseModel):
     engine_config_overrides: Dict[str, Any] = {}  # live form values merged into stored config at transcription time
 
 
+class CompareRunRequest(BaseModel):
+    image_id: str
+    engine_config_overrides: Dict[str, Any] = {}
+    label: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -908,13 +979,48 @@ async def engine_status(request: Request):
             "loaded": slot.engine.is_model_loaded(),
             "engine_name": slot.engine_name,
             "config": slot.config,
+            "pool_key": session.pool_key,
         }
     # Fallback: compat shim for tests / startup
     return {
         "loaded": loaded_engine is not None and loaded_engine.is_model_loaded(),
         "engine_name": loaded_engine_name,
         "config": loaded_config,
+        "pool_key": None,
     }
+
+
+def _resolve_effective_engine(
+    session: UserSession,
+    engine_config_overrides: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[EngineSlot], HTREngine, Dict[str, Any], str, Optional[str]]:
+    """Resolve the currently loaded engine and apply safe live overrides."""
+    if not session.pool_key or session.pool_key not in engine_pool:
+        if not loaded_engine or not loaded_engine.is_model_loaded():
+            raise HTTPException(400, "No engine loaded")
+    slot = engine_pool.get(session.pool_key) if session.pool_key else None
+    eff_engine = slot.engine if slot else loaded_engine
+    base_config = slot.config if slot else loaded_config
+    effective_pool_key = session.pool_key if slot else None
+
+    reload_only_keys = {
+        "api_key", "provider", "model", "model_path", "model_source",
+        "base_model", "adapter", "model_name", "preset_id", "lang",
+        "use_gpu", "venv_path",
+    }
+    if engine_config_overrides:
+        eff_config = dict(base_config)
+        for key, value in engine_config_overrides.items():
+            if key not in reload_only_keys:
+                eff_config[key] = value
+    else:
+        eff_config = base_config
+
+    eff_engine_name = slot.engine_name if slot else loaded_engine_name
+    if not eff_engine or not eff_engine.is_model_loaded():
+        raise HTTPException(400, "No engine loaded")
+
+    return slot, eff_engine, eff_config, eff_engine_name, effective_pool_key
 
 
 @app.get("/api/engine/{name}/models")
@@ -1102,17 +1208,9 @@ async def load_engine(request: Request, req: EngineLoadRequest):
 
     async with pool_lock:
         # Release previous engine reference for this session
-        if session.pool_key and session.pool_key in engine_pool:
-            prev_slot = engine_pool[session.pool_key]
-            prev_slot.ref_count = max(0, prev_slot.ref_count - 1)
-            if prev_slot.ref_count == 0:
-                log.info(f"Immediate eviction (engine switch): '{prev_slot.engine_name}'")
-                try:
-                    prev_slot.engine.unload_model()
-                except Exception as e:
-                    log.warning(f"unload_model() failed for '{prev_slot.engine_name}': {e}")
-                if session.pool_key in engine_pool:
-                    del engine_pool[session.pool_key]
+        if session.pool_key:
+            _release_pool_reference(session.pool_key, reason="engine switch")
+            session.pool_key = None
 
         # Check if this exact engine+model is already loaded
         if pool_key in engine_pool:
@@ -1126,7 +1224,7 @@ async def load_engine(request: Request, req: EngineLoadRequest):
             loaded_config = slot.config
             log.info(f"Pool hit: reusing '{pool_key}' (ref_count={slot.ref_count})")
             return {"success": True, "load_time_s": 0.0,
-                    "engine_name": req.engine_name, "reused": True}
+                    "engine_name": req.engine_name, "reused": True, "pool_key": pool_key}
 
         # Need new slot — evict if VRAM tight
         await _maybe_evict(req.engine_name)
@@ -1170,7 +1268,7 @@ async def load_engine(request: Request, req: EngineLoadRequest):
 
     log.info(f"Pool miss: loaded '{pool_key}' in {elapsed:.1f}s (pool size={len(engine_pool)})")
     return {"success": True, "load_time_s": round(elapsed, 2),
-            "engine_name": req.engine_name, "reused": False}
+            "engine_name": req.engine_name, "reused": False, "pool_key": pool_key}
 
 
 @app.get("/api/keys")
@@ -1199,6 +1297,7 @@ async def admin_evict_all(request: Request):
             evicted.append(key)
         for session in sessions.values():
             session.pool_key = None
+            session.comparison_pool_keys.clear()
         global loaded_engine, loaded_engine_name, loaded_config
         loaded_engine = None
         loaded_engine_name = ""
@@ -1213,18 +1312,10 @@ async def unload_engine(request: Request):
     session = _get_session(request)
 
     async with pool_lock:
-        if session.pool_key and session.pool_key in engine_pool:
-            slot = engine_pool[session.pool_key]
-            slot.ref_count = max(0, slot.ref_count - 1)
-            if slot.ref_count == 0:
-                log.info(f"Immediate eviction (explicit unload): '{slot.engine_name}'")
-                try:
-                    slot.engine.unload_model()
-                except Exception as e:
-                    log.warning(f"unload_model() failed for '{slot.engine_name}': {e}")
-                if session.pool_key in engine_pool:
-                    del engine_pool[session.pool_key]
+        if session.pool_key:
+            _release_pool_reference(session.pool_key, reason="explicit unload")
         session.pool_key = None
+        _release_all_comparison_pool_references(session, reason="explicit unload")
         # Update compat shims
         loaded_engine = None
         loaded_engine_name = ""
@@ -1244,8 +1335,162 @@ def _register_image(session: UserSession, pil_image: Image.Image, filename: str,
         "height": pil_image.height,
         "filename": filename,
         "lines": None,
+        "results": None,
+        "result_slots": {},
+        "primary_result_slot": None,
     }
     return image_id
+
+
+def _describe_model_config(config: Dict[str, Any]) -> str:
+    """Return a short model/config label for display in comparison slots."""
+    for key in ("model", "model_path", "base_model", "model_name", "preset_id", "lang"):
+        value = config.get(key)
+        if not value:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        return Path(text).name or text
+    return ""
+
+
+def _make_result_slot_label(engine_name: str, config: Dict[str, Any], custom_label: Optional[str] = None) -> str:
+    """Build a human-readable label for a stored result slot."""
+    if custom_label and custom_label.strip():
+        return custom_label.strip()
+    model_label = _describe_model_config(config)
+    if model_label and model_label != engine_name:
+        return f"{engine_name} - {model_label}"
+    return engine_name
+
+
+def _make_result_slot_id(prefix: str, engine_name: str, config: Dict[str, Any], pool_key: Optional[str]) -> str:
+    """Build a stable result-slot ID for one engine/config combination."""
+    basis = pool_key or _make_pool_key(engine_name, config)
+    digest = hashlib.sha256(basis.encode("utf-8")).hexdigest()[:10]
+    return f"{prefix}-{digest}"
+
+
+def _serialize_result_slot(slot: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the frontend-safe subset of a stored result slot."""
+    return {
+        "slot_id": slot.get("slot_id"),
+        "label": slot.get("label"),
+        "engine_name": slot.get("engine_name"),
+        "seg_source": slot.get("seg_source"),
+        "line_count": slot.get("line_count", 0),
+        "pool_key": slot.get("pool_key"),
+        "kind": slot.get("kind", "comparison"),
+    }
+
+
+def _store_result_slot(
+    img_data: Dict[str, Any],
+    *,
+    slot_id: str,
+    label: str,
+    engine_name: str,
+    seg_source: str,
+    lines: List[Dict[str, Any]],
+    pool_key: Optional[str],
+    kind: str,
+) -> Dict[str, Any]:
+    """Persist a named transcription result set for later comparison."""
+    slot = {
+        "slot_id": slot_id,
+        "label": label,
+        "engine_name": engine_name,
+        "seg_source": seg_source,
+        "line_count": len(lines),
+        "pool_key": pool_key,
+        "kind": kind,
+        "created_at": time.time(),
+        "lines": lines,
+    }
+    img_data.setdefault("result_slots", {})[slot_id] = slot
+    if kind == "primary":
+        img_data["primary_result_slot"] = slot_id
+    return slot
+
+
+def _build_disagreement_payload(base_slot: Dict[str, Any], comparison_slot: Dict[str, Any]) -> Dict[str, Any]:
+    """Build frontend-ready disagreement metrics for two stored result slots."""
+    base_lines = base_slot.get("lines", [])
+    comparison_lines = comparison_slot.get("lines", [])
+    line_count = min(len(base_lines), len(comparison_lines))
+    labels = TranscriptionMetrics.get_display_labels(ComparisonMode.ENGINE_COMPARISON)
+
+    base_texts = [base_lines[i].get("text", "") for i in range(line_count)]
+    comparison_texts = [comparison_lines[i].get("text", "") for i in range(line_count)]
+    summary = TranscriptionMetrics.calculate_summary_metrics(
+        base_texts,
+        comparison_texts,
+        ComparisonMode.ENGINE_COMPARISON,
+    )
+
+    rows = []
+    for i in range(line_count):
+        base_line = base_lines[i]
+        comparison_line = comparison_lines[i]
+        raw_metrics = TranscriptionMetrics.compare_lines(
+            base_line.get("text", ""),
+            comparison_line.get("text", ""),
+        )
+        display = TranscriptionMetrics.get_display_metrics(
+            raw_metrics,
+            ComparisonMode.ENGINE_COMPARISON,
+        )
+        has_disagreement = display.edit_distance > 0
+        # Only ship char-level diff ops for lines that actually differ — keeps the
+        # payload small while still letting the client highlight changes.
+        diff_ops = (
+            [
+                {"op": op.operation, "r": op.ref_char, "h": op.hyp_char}
+                for op in raw_metrics.diff_ops
+            ]
+            if has_disagreement
+            else []
+        )
+        rows.append({
+            "index": i,
+            "region": base_line.get("region", comparison_line.get("region", 0)),
+            "bbox": base_line.get("bbox") or comparison_line.get("bbox"),
+            "base_text": base_line.get("text", ""),
+            "comparison_text": comparison_line.get("text", ""),
+            "metrics": {
+                "char_rate": round(display.char_rate, 4),
+                "word_rate": round(display.word_rate, 4),
+                "match_percent": round(display.match_percent, 4),
+                "edit_distance": display.edit_distance,
+            },
+            "has_disagreement": has_disagreement,
+            "diff_ops": diff_ops,
+        })
+
+    return {
+        "base_slot": _serialize_result_slot(base_slot),
+        "comparison_slot": _serialize_result_slot(comparison_slot),
+        "labels": {
+            "char_rate": labels.char_rate,
+            "word_rate": labels.word_rate,
+            "match_rate": labels.match_rate,
+            "macro_char_rate": labels.macro_char_rate,
+            "micro_char_rate": labels.micro_char_rate,
+            "macro_word_rate": labels.macro_word_rate,
+            "color_thresholds": list(labels.color_thresholds),
+        },
+        "summary": {
+            "line_count": summary.line_count,
+            "total_edit_distance": summary.total_edit_distance,
+            "macro_char_rate": round(summary.macro_char_rate, 4),
+            "micro_char_rate": round(summary.micro_char_rate, 4),
+            "macro_word_rate": round(summary.macro_word_rate, 4),
+            "avg_match_percent": round(summary.avg_match_percent, 4),
+            "identical_lines": sum(1 for row in rows if not row["has_disagreement"]),
+        },
+        "lines": rows,
+    }
 
 
 @app.post("/api/image/upload")
@@ -1534,33 +1779,10 @@ async def segment_image(
 async def transcribe(request: Request, req: TranscribeRequest):
     session = _get_session(request)
 
-    # Resolve engine from session's pool slot
-    if not session.pool_key or session.pool_key not in engine_pool:
-        # Fallback: check compat shims (e.g. auto-loaded engine, no session yet)
-        if not loaded_engine or not loaded_engine.is_model_loaded():
-            raise HTTPException(400, "No engine loaded")
-    slot = engine_pool.get(session.pool_key) if session.pool_key else None
-    # Build effective engine/config references
-    eff_engine = slot.engine if slot else loaded_engine
-    _base_config = slot.config if slot else loaded_config
-    # Merge live form overrides into a copy of the stored config so changes to
-    # runtime-only fields (custom_prompt, thinking_mode, temperature, …) take
-    # effect without requiring a model reload.  Never overwrite security-sensitive
-    # keys that were set during load (api_key, provider, model, model_path, …).
-    _RELOAD_ONLY_KEYS = {"api_key", "provider", "model", "model_path", "model_source",
-                         "base_model", "adapter", "model_name", "preset_id", "lang",
-                         "use_gpu", "venv_path"}
-    if req.engine_config_overrides:
-        eff_config = dict(_base_config)
-        for k, v in req.engine_config_overrides.items():
-            if k not in _RELOAD_ONLY_KEYS:
-                eff_config[k] = v
-    else:
-        eff_config = _base_config
-    eff_engine_name = slot.engine_name if slot else loaded_engine_name
-
-    if not eff_engine or not eff_engine.is_model_loaded():
-        raise HTTPException(400, "No engine loaded")
+    slot, eff_engine, eff_config, eff_engine_name, effective_pool_key = _resolve_effective_engine(
+        session,
+        req.engine_config_overrides,
+    )
 
     if req.image_id not in session.image_cache:
         raise HTTPException(404, "Image not found — upload first")
@@ -1700,12 +1922,24 @@ async def transcribe(request: Request, req: TranscribeRequest):
 
             # Store completed results in session image_cache for export
             img_data["results"] = results
+            primary_slot = _store_result_slot(
+                img_data,
+                slot_id="primary",
+                label=_make_result_slot_label(eff_engine_name, eff_config),
+                engine_name=eff_engine_name,
+                seg_source=img_data.get("seg_source", "unknown"),
+                lines=results,
+                pool_key=effective_pool_key,
+                kind="primary",
+            )
 
             elapsed = time.time() - start_time
             complete_data: Dict[str, Any] = {
                 "lines": results,
                 "total_time_s": round(elapsed, 2),
                 "engine": eff_engine_name,
+                "seg_source": img_data.get("seg_source", "unknown"),
+                "result_slot": _serialize_result_slot(primary_slot),
             }
             if token_usage:
                 complete_data["token_usage"] = token_usage
@@ -1724,6 +1958,120 @@ async def transcribe(request: Request, req: TranscribeRequest):
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # Disable nginx buffering if behind proxy
+        },
+    )
+
+
+@app.post("/api/compare/run")
+async def compare_run(request: Request, req: CompareRunRequest):
+    """Run a second transcription on cached line segments and store it as a comparison slot."""
+    session = _get_session(request)
+    slot, eff_engine, eff_config, eff_engine_name, effective_pool_key = _resolve_effective_engine(
+        session,
+        req.engine_config_overrides,
+    )
+
+    if req.image_id not in session.image_cache:
+        raise HTTPException(404, "Image not found — upload first")
+
+    img_data = session.image_cache[req.image_id]
+    base_slot_id = img_data.get("primary_result_slot")
+    result_slots = img_data.get("result_slots") or {}
+    base_slot = result_slots.get(base_slot_id) if base_slot_id else None
+    if not base_slot or not base_slot.get("lines"):
+        raise HTTPException(400, "Run a base transcription first before starting a comparison")
+
+    if img_data.get("seg_source") == "page" or not img_data.get("lines"):
+        raise HTTPException(400, "Comparison requires cached line segmentation from the base transcription")
+
+    pil_image = img_data["pil_image"]
+    lines = img_data["lines"]
+    line_regions = img_data.get("line_regions") or ([0] * len(lines))
+
+    request_id = str(uuid.uuid4())
+    cancel_evt = asyncio.Event()
+    session.cancel_events[request_id] = cancel_evt
+
+    async def event_stream():
+        try:
+            yield _sse("status", {
+                "message": f"Running comparison with {eff_engine_name} on cached line segments...",
+            })
+
+            results = []
+            start_time = time.time()
+            for i, line in enumerate(lines):
+                if cancel_evt.is_set():
+                    yield _sse("cancelled", {})
+                    return
+
+                line_img = line.image if line.image is not None else pil_image.crop(line.bbox)
+                img_array = np.array(line_img.convert("RGB"))
+
+                if slot:
+                    async with slot.lock:
+                        slot.last_used = time.time()
+                        result = await asyncio.to_thread(
+                            eff_engine.transcribe_line,
+                            img_array,
+                            eff_config,
+                        )
+                else:
+                    result = await asyncio.to_thread(
+                        eff_engine.transcribe_line,
+                        img_array,
+                        eff_config,
+                    )
+
+                text = str(result.text) if hasattr(result, "text") else str(result)
+                confidence = None
+                if hasattr(result, "confidence") and result.confidence is not None:
+                    confidence = float(result.confidence)
+                    if confidence > 1:
+                        confidence = confidence / 100.0
+
+                line_data = {
+                    "index": i,
+                    "text": text,
+                    "confidence": confidence,
+                    "bbox": list(line.bbox),
+                    "region": line_regions[i] if i < len(line_regions) else 0,
+                }
+                results.append(line_data)
+                yield _sse("progress", {
+                    "current": i + 1,
+                    "total": len(lines),
+                    "line": line_data,
+                })
+
+            slot_id = _make_result_slot_id("compare", eff_engine_name, eff_config, effective_pool_key)
+            comparison_slot = _store_result_slot(
+                img_data,
+                slot_id=slot_id,
+                label=_make_result_slot_label(eff_engine_name, eff_config, req.label),
+                engine_name=eff_engine_name,
+                seg_source=img_data.get("seg_source", "unknown"),
+                lines=results,
+                pool_key=effective_pool_key,
+                kind="comparison",
+            )
+            _attach_comparison_pool_reference(session, slot_id, effective_pool_key)
+
+            payload = _build_disagreement_payload(base_slot, comparison_slot)
+            payload["total_time_s"] = round(time.time() - start_time, 2)
+            yield _sse("complete", payload)
+        except Exception as e:
+            log.exception("Comparison run error")
+            yield _sse("error", {"message": str(e)})
+        finally:
+            session.cancel_events.pop(request_id, None)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -1912,6 +2260,7 @@ async def session_info(request: Request):
         "images": len(session.image_cache),
         "active_transcriptions": len(session.cancel_events),
         "pool_key": session.pool_key,
+        "comparison_pool_keys": dict(session.comparison_pool_keys),
         "created_at": session.created_at,
         "last_active": session.last_active,
         "total_sessions": len(sessions),

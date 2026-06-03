@@ -29,7 +29,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QColor, QTextCharFormat, QFont
 
-from transcription_metrics import TranscriptionMetrics, LineMetrics
+from transcription_metrics import (
+    ComparisonMode,
+    TranscriptionMetrics,
+    LineMetrics,
+)
 from htr_engine_base import HTREngine, TranscriptionResult, get_global_registry
 
 
@@ -290,7 +294,9 @@ class ComparisonWidget(QWidget):
         self.right_label = QLabel("Load comparison engine or ground truth")
         self.right_label.setStyleSheet("font-weight: bold;")
         self.right_text = ComparisonTextEdit()
-        self.right_metrics_label = QLabel("CER: - | WER: - | Match: -")
+        self.right_metrics_label = QLabel(
+            self._placeholder_metrics_text(ComparisonMode.ENGINE_COMPARISON)
+        )
         self.right_metrics_label.setStyleSheet("color: #666; font-size: 9pt;")
         right_col.addWidget(self.right_label)
         right_col.addWidget(self.right_text, 1)
@@ -379,6 +385,35 @@ class ComparisonWidget(QWidget):
         """Handle mode change between Engine vs Engine and Engine vs GT."""
         self.mode_stack.setCurrentIndex(0 if self.engine_mode_radio.isChecked() else 1)
         self.update_display()
+
+    def _active_comparison_mode(self) -> ComparisonMode:
+        """Return the semantic mode that matches the currently active data."""
+        if self.gt_mode_radio.isChecked() and self.ground_truth:
+            return ComparisonMode.GROUND_TRUTH
+        return ComparisonMode.ENGINE_COMPARISON
+
+    def _display_labels(self, mode: Optional[ComparisonMode] = None):
+        return TranscriptionMetrics.get_display_labels(mode or self._active_comparison_mode())
+
+    def _placeholder_metrics_text(self, mode: Optional[ComparisonMode] = None) -> str:
+        labels = self._display_labels(mode)
+        return f"{labels.char_rate}: - | {labels.word_rate}: - | {labels.match_rate}: -"
+
+    def _format_display_metrics(self, metrics, mode: ComparisonMode) -> str:
+        labels = self._display_labels(mode)
+        return (
+            f"{labels.char_rate}: {metrics.char_rate:.2f}% | "
+            f"{labels.word_rate}: {metrics.word_rate:.2f}% | "
+            f"{labels.match_rate}: {metrics.match_percent:.2f}%"
+        )
+
+    def _metric_color(self, value: float, mode: ComparisonMode) -> str:
+        green_cutoff, amber_cutoff = self._display_labels(mode).color_thresholds
+        if value < green_cutoff:
+            return "#007700"
+        if value < amber_cutoff:
+            return "#cc7700"
+        return "#cc0000"
 
     def _refresh_line_images_from_parent(self):
         """Re-read line segments and images from parent GUI (handles late layout analysis)."""
@@ -523,7 +558,7 @@ class ComparisonWidget(QWidget):
 
             self.right_label.setText("Load comparison engine or ground truth")
             self.right_text.clear()
-            self.right_metrics_label.setText("CER: - | WER: - | Match: -")
+            self.right_metrics_label.setText(self._placeholder_metrics_text())
 
             self.unload_engine_btn.setEnabled(False)
             self.status_message.emit("Comparison engine unloaded")
@@ -572,10 +607,10 @@ class ComparisonWidget(QWidget):
     def _normalize_text(text: str) -> str:
         """Remove blank lines and join content lines with a single space.
 
-        Joining with space (not \\n) means CER/WER are computed on flat text,
-        matching standard HTR evaluation practice and avoiding inflation from
-        misaligned newline positions between page-level and line-level engines.
-        QTextEdit word-wraps the flat text for display automatically.
+        Joining with space (not \\n) keeps line-level comparison metrics on flat
+        text, avoiding inflation from misaligned newline positions between
+        page-level and line-level engines. QTextEdit word-wraps the flat text
+        for display automatically.
         """
         return " ".join(line for line in text.splitlines() if line.strip())
 
@@ -644,7 +679,9 @@ class ComparisonWidget(QWidget):
             return
 
         # Calculate metrics
+        mode = self._active_comparison_mode()
         metrics = TranscriptionMetrics.compare_lines(reference, hypothesis)
+        display_metrics = TranscriptionMetrics.get_display_metrics(metrics, mode)
 
         # Display texts with diff highlighting
         self.left_text.display_with_diff(reference, metrics, is_reference=True)
@@ -652,19 +689,18 @@ class ComparisonWidget(QWidget):
 
         # Update metrics labels
         self.left_metrics_label.setText(f"Length: {len(reference)} chars")
-        self.right_metrics_label.setText(
-            f"CER: {metrics.cer:.2f}% | WER: {metrics.wer:.2f}% | "
-            f"Match: {metrics.match_percent:.2f}%"
-        )
+        self.right_metrics_label.setText(self._format_display_metrics(display_metrics, mode))
 
     def export_csv(self):
-        """Export comparison metrics to CSV with metadata header and micro-CER."""
+        """Export comparison metrics with GT-aware / GT-free terminology."""
         data = self._get_comparison_data()
         if not data:
             QMessageBox.warning(self, "Error",
                                 "Load comparison engine or ground truth first!")
             return
         references, hypotheses, ref_label, hyp_label = data
+        mode = self._active_comparison_mode()
+        labels = self._display_labels(mode)
 
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Export Comparison CSV", "", "CSV Files (*.csv)"
@@ -684,12 +720,15 @@ class ComparisonWidget(QWidget):
                 )
                 for i in range(line_count)
             ]
-            total_edit = sum(m.edit_distance for m in all_metrics)
-            total_ref_chars = sum(len(references[i]) for i in range(line_count) if i < len(references))
-            micro_cer = (total_edit / total_ref_chars * 100) if total_ref_chars else 0.0
-            macro_cer = sum(m.cer for m in all_metrics) / line_count if line_count else 0.0
-            macro_wer = sum(m.wer for m in all_metrics) / line_count if line_count else 0.0
-            avg_match = sum(m.match_percent for m in all_metrics) / line_count if line_count else 0.0
+            display_metrics = [
+                TranscriptionMetrics.get_display_metrics(metric, mode)
+                for metric in all_metrics
+            ]
+            summary = TranscriptionMetrics.calculate_summary_metrics(
+                references[:line_count],
+                hypotheses[:line_count],
+                mode,
+            )
 
             with open(file_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
@@ -697,26 +736,31 @@ class ComparisonWidget(QWidget):
                 writer.writerow(["# Generated", datetime.datetime.now().strftime('%Y-%m-%d %H:%M')])
                 writer.writerow(["# Reference", ref_label])
                 writer.writerow(["# Hypothesis", hyp_label])
-                writer.writerow(["# Lines", line_count])
-                writer.writerow(["# Macro CER (%)", f"{macro_cer:.4f}"])
-                writer.writerow(["# Micro CER (%)", f"{micro_cer:.4f}",
-                                  "(total edits / total ref chars)"])
-                writer.writerow(["# Macro WER (%)", f"{macro_wer:.4f}"])
-                writer.writerow(["# Avg Match (%)", f"{avg_match:.4f}"])
+                writer.writerow(["# Lines", summary.line_count])
+                writer.writerow([f"# {labels.macro_char_rate} (%)", f"{summary.macro_char_rate:.4f}"])
+                writer.writerow([
+                    f"# {labels.micro_char_rate} (%)",
+                    f"{summary.micro_char_rate:.4f}",
+                    labels.micro_char_rate_note,
+                ])
+                writer.writerow([f"# {labels.macro_word_rate} (%)", f"{summary.macro_word_rate:.4f}"])
+                writer.writerow([f"# Avg {labels.match_rate} (%)", f"{summary.avg_match_percent:.4f}"])
                 writer.writerow([])
                 # Per-line data
                 writer.writerow([
                     "Line", ref_label, hyp_label,
                     "Ref_Chars", "Hyp_Chars", "Edit_Distance",
-                    "CER (%)", "WER (%)", "Match (%)"
+                    labels.char_rate_column, labels.word_rate_column, f"{labels.match_rate} (%)"
                 ])
-                for i, m in enumerate(all_metrics):
+                for i, (raw_metrics, display) in enumerate(zip(all_metrics, display_metrics)):
                     ref = references[i] if i < len(references) else ""
                     hyp = hypotheses[i] if i < len(hypotheses) else ""
                     writer.writerow([
                         i + 1, ref, hyp,
-                        len(ref), len(hyp), m.edit_distance,
-                        f"{m.cer:.4f}", f"{m.wer:.4f}", f"{m.match_percent:.4f}"
+                        len(ref), len(hyp), raw_metrics.edit_distance,
+                        f"{display.char_rate:.4f}",
+                        f"{display.word_rate:.4f}",
+                        f"{display.match_percent:.4f}",
                     ])
 
             self.status_message.emit(f"CSV exported: {Path(file_path).name}")
@@ -801,7 +845,7 @@ class ComparisonWidget(QWidget):
         return ''.join(parts)
 
     def export_html(self):
-        """Export a self-contained HTML report with colored diffs and summary statistics."""
+        """Export a self-contained HTML report with GT-aware / GT-free terminology."""
         import datetime
         import html as _html
 
@@ -811,6 +855,8 @@ class ComparisonWidget(QWidget):
                                 "Load comparison engine or ground truth first!")
             return
         references, hypotheses, ref_label, hyp_label = data
+        mode = self._active_comparison_mode()
+        labels = self._display_labels(mode)
 
         file_path, _ = QFileDialog.getSaveFileName(
             self, "Export Comparison HTML", "", "HTML Files (*.html);;All Files (*)"
@@ -829,28 +875,28 @@ class ComparisonWidget(QWidget):
                 )
                 for i in range(line_count)
             ]
-            total_edit = sum(m.edit_distance for m in all_metrics)
-            total_ref_chars = sum(len(references[i]) for i in range(line_count) if i < len(references))
-            micro_cer = (total_edit / total_ref_chars * 100) if total_ref_chars else 0.0
-            macro_cer = sum(m.cer for m in all_metrics) / line_count if line_count else 0.0
-            macro_wer = sum(m.wer for m in all_metrics) / line_count if line_count else 0.0
-            avg_match = sum(m.match_percent for m in all_metrics) / line_count if line_count else 0.0
-
-            def cer_color(cer: float) -> str:
-                return "#007700" if cer < 5 else ("#cc7700" if cer < 20 else "#cc0000")
+            display_metrics = [
+                TranscriptionMetrics.get_display_metrics(metric, mode)
+                for metric in all_metrics
+            ]
+            summary = TranscriptionMetrics.calculate_summary_metrics(
+                references[:line_count],
+                hypotheses[:line_count],
+                mode,
+            )
 
             # Build per-line HTML blocks
             line_blocks = []
-            for i, m in enumerate(all_metrics):
+            for i, (raw_metrics, display) in enumerate(zip(all_metrics, display_metrics)):
                 ref = references[i] if i < len(references) else ""
                 hyp = hypotheses[i] if i < len(hypotheses) else ""
-                left_html = self._diff_to_html(ref, m, is_reference=True)
-                right_html = self._diff_to_html(hyp, m, is_reference=False)
-                color = cer_color(m.cer)
+                left_html = self._diff_to_html(ref, raw_metrics, is_reference=True)
+                right_html = self._diff_to_html(hyp, raw_metrics, is_reference=False)
+                color = self._metric_color(display.char_rate, mode)
                 line_blocks.append(f"""  <div class="line-block">
     <div class="line-header">
       <span>Line {i + 1}</span>
-      <span style="color:{color};font-weight:bold">CER {m.cer:.1f}%&nbsp;&nbsp;WER {m.wer:.1f}%&nbsp;&nbsp;Match {m.match_percent:.1f}%&nbsp;&nbsp;ED {m.edit_distance}</span>
+      <span style="color:{color};font-weight:bold">{_html.escape(labels.char_rate)} {display.char_rate:.1f}%&nbsp;&nbsp;{_html.escape(labels.word_rate)} {display.word_rate:.1f}%&nbsp;&nbsp;{_html.escape(labels.match_rate)} {display.match_percent:.1f}%&nbsp;&nbsp;ED {display.edit_distance}</span>
     </div>
     <div class="line-body">
       <div class="panel"><div class="panel-label">{_html.escape(ref_label)}</div>{left_html}</div>
@@ -859,8 +905,8 @@ class ComparisonWidget(QWidget):
   </div>""")
 
             timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
-            macro_color = cer_color(macro_cer)
-            micro_color = cer_color(micro_cer)
+            macro_color = self._metric_color(summary.macro_char_rate, mode)
+            micro_color = self._metric_color(summary.micro_char_rate, mode)
 
             html_doc = f"""<!DOCTYPE html>
 <html lang="en">
@@ -891,7 +937,7 @@ class ComparisonWidget(QWidget):
 </head>
 <body>
 <h1>Transcription Comparison: {_html.escape(ref_label)} vs {_html.escape(hyp_label)}</h1>
-<p class="meta">Generated {timestamp} &nbsp;·&nbsp; {line_count} lines &nbsp;·&nbsp; {total_ref_chars} reference characters</p>
+<p class="meta">Generated {timestamp} &nbsp;·&nbsp; {summary.line_count} lines &nbsp;·&nbsp; {summary.total_char_units} {_html.escape(labels.char_unit_label)}</p>
 
 <div class="summary">
   <table>
@@ -901,28 +947,28 @@ class ComparisonWidget(QWidget):
       <th>Notes</th>
     </tr>
     <tr>
-      <th>Macro CER</th>
-      <td class="val" style="color:{macro_color}">{macro_cer:.2f}%</td>
-      <td style="color:#888;font-size:0.9em">mean of per-line CERs</td>
+      <th>{_html.escape(labels.macro_char_rate)}</th>
+      <td class="val" style="color:{macro_color}">{summary.macro_char_rate:.2f}%</td>
+      <td style="color:#888;font-size:0.9em">{_html.escape(labels.macro_char_rate_note)}</td>
     </tr>
     <tr>
-      <th>Micro CER</th>
-      <td class="val" style="color:{micro_color}">{micro_cer:.2f}%</td>
-      <td style="color:#888;font-size:0.9em">total edits / total ref chars (standard HTR metric)</td>
+      <th>{_html.escape(labels.micro_char_rate)}</th>
+      <td class="val" style="color:{micro_color}">{summary.micro_char_rate:.2f}%</td>
+      <td style="color:#888;font-size:0.9em">{_html.escape(labels.micro_char_rate_note)}</td>
     </tr>
     <tr>
-      <th>Macro WER</th>
-      <td class="val">{macro_wer:.2f}%</td>
-      <td style="color:#888;font-size:0.9em">mean of per-line WERs</td>
+      <th>{_html.escape(labels.macro_word_rate)}</th>
+      <td class="val">{summary.macro_word_rate:.2f}%</td>
+      <td style="color:#888;font-size:0.9em">{_html.escape(labels.macro_word_rate_note)}</td>
     </tr>
     <tr>
-      <th>Avg Match</th>
-      <td class="val">{avg_match:.2f}%</td>
+      <th>Avg {_html.escape(labels.match_rate)}</th>
+      <td class="val">{summary.avg_match_percent:.2f}%</td>
       <td style="color:#888;font-size:0.9em">mean of per-line match rates</td>
     </tr>
     <tr>
       <th>Total edit distance</th>
-      <td class="val">{total_edit}</td>
+      <td class="val">{summary.total_edit_distance}</td>
       <td style="color:#888;font-size:0.9em">Levenshtein operations across all lines</td>
     </tr>
   </table>

@@ -13,6 +13,7 @@ No GPU or loaded HTR models are required — engine-heavy endpoints
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -22,6 +23,7 @@ from fastapi.testclient import TestClient
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import web.polyscriptor_server as server_mod
 from web.polyscriptor_server import app
 
 client = TestClient(app)
@@ -306,6 +308,127 @@ def test_transcribe_nonexistent_image_returns_error():
     assert "error" in body.lower() or "not found" in body.lower() or "detail" in body.lower()
 
 
+class _FakeCompareEngine:
+    def __init__(self, outputs):
+        self._outputs = list(outputs)
+        self._idx = 0
+
+    def is_model_loaded(self):
+        return True
+
+    def transcribe_line(self, _img_array, _config=None):
+        text = self._outputs[self._idx]
+        self._idx += 1
+        return SimpleNamespace(text=text, confidence=0.91)
+
+
+class _FakeUnloadableEngine:
+    def __init__(self):
+        self.unload_calls = 0
+
+    def unload_model(self):
+        self.unload_calls += 1
+
+    def is_model_loaded(self):
+        return self.unload_calls == 0
+
+
+def test_compare_without_base_transcription_returns_400(monkeypatch):
+    data = _upload_image()
+    image_id = data["image_id"]
+    monkeypatch.setattr(server_mod, "loaded_engine", _FakeCompareEngine(["alpha"]), raising=False)
+    monkeypatch.setattr(server_mod, "loaded_engine_name", "FakeCompare", raising=False)
+    monkeypatch.setattr(server_mod, "loaded_config", {"model": "fake-compare"}, raising=False)
+
+    resp = client.post("/api/compare/run", json={"image_id": image_id})
+    assert resp.status_code == 400
+    assert "base transcription" in resp.json()["detail"].lower()
+
+
+def test_compare_run_uses_cached_base_results(monkeypatch):
+    data = _upload_image()
+    image_id = data["image_id"]
+    session_id = client.cookies.get("polyscriptor_session")
+    session = server_mod.sessions[session_id]
+    img_data = session.image_cache[image_id]
+
+    img_data["seg_source"] = "kraken"
+    img_data["lines"] = [
+        SimpleNamespace(bbox=(0, 0, 50, 20), image=None),
+        SimpleNamespace(bbox=(0, 20, 50, 40), image=None),
+    ]
+    img_data["line_regions"] = [0, 0]
+
+    base_lines = [
+        {"index": 0, "text": "alpha", "confidence": 0.95, "bbox": [0, 0, 50, 20], "region": 0},
+        {"index": 1, "text": "beta", "confidence": 0.95, "bbox": [0, 20, 50, 40], "region": 0},
+    ]
+    img_data["results"] = base_lines
+    server_mod._store_result_slot(
+        img_data,
+        slot_id="primary",
+        label="Base Engine",
+        engine_name="Base Engine",
+        seg_source="kraken",
+        lines=base_lines,
+        pool_key=None,
+        kind="primary",
+    )
+
+    monkeypatch.setattr(server_mod, "loaded_engine", _FakeCompareEngine(["alpha", "theta"]), raising=False)
+    monkeypatch.setattr(server_mod, "loaded_engine_name", "FakeCompare", raising=False)
+    monkeypatch.setattr(server_mod, "loaded_config", {"model": "fake-compare"}, raising=False)
+
+    resp = client.post("/api/compare/run", json={"image_id": image_id})
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: complete" in body
+    assert "Char disagreement" in body
+    assert "FakeCompare" in body
+
+
+def test_unload_engine_releases_primary_and_comparison_slots(monkeypatch):
+    data = _upload_image()
+    _ = data["image_id"]
+    session_id = client.cookies.get("polyscriptor_session")
+    session = server_mod.sessions[session_id]
+
+    primary_engine = _FakeUnloadableEngine()
+    compare_engine = _FakeUnloadableEngine()
+
+    monkeypatch.setattr(server_mod, "engine_pool", {
+        "primary-slot": server_mod.EngineSlot(
+            engine=primary_engine,
+            engine_name="Primary",
+            config={},
+            pool_key="primary-slot",
+            ref_count=1,
+        ),
+        "compare-slot": server_mod.EngineSlot(
+            engine=compare_engine,
+            engine_name="Compare",
+            config={},
+            pool_key="compare-slot",
+            ref_count=1,
+        ),
+    }, raising=False)
+    monkeypatch.setattr(server_mod, "loaded_engine", primary_engine, raising=False)
+    monkeypatch.setattr(server_mod, "loaded_engine_name", "Primary", raising=False)
+    monkeypatch.setattr(server_mod, "loaded_config", {"model": "primary"}, raising=False)
+
+    session.pool_key = "primary-slot"
+    session.comparison_pool_keys = {"compare-abc": "compare-slot"}
+
+    resp = client.post("/api/engine/unload")
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert primary_engine.unload_calls == 1
+    assert compare_engine.unload_calls == 1
+    assert session.pool_key is None
+    assert session.comparison_pool_keys == {}
+    assert server_mod.engine_pool == {}
+
+
 # ── Region deletion ───────────────────────────────────────────────────────────
 
 def test_delete_region_on_image_without_segmentation_returns_404_or_error():
@@ -407,3 +530,45 @@ def test_model_upload_accepts_mlmodel(tmp_path):
     uploaded = PROJECT_ROOT / data["path"]
     assert uploaded.exists()
     uploaded.unlink()  # cleanup
+
+
+def _slot(slot_id, label, texts):
+    lines = [
+        {"index": i, "text": t, "confidence": 0.9, "bbox": [0, i * 20, 50, i * 20 + 20], "region": 0}
+        for i, t in enumerate(texts)
+    ]
+    return {
+        "slot_id": slot_id,
+        "label": label,
+        "engine_name": label,
+        "seg_source": "kraken",
+        "line_count": len(lines),
+        "pool_key": None,
+        "kind": "primary" if slot_id == "primary" else "comparison",
+        "lines": lines,
+    }
+
+
+def test_disagreement_payload_ships_diff_ops_only_for_differing_lines():
+    base = _slot("primary", "Base", ["alpha", "beta", "gamma"])
+    comp = _slot("compare", "Comp", ["alpha", "betax", "gamma"])
+
+    payload = server_mod._build_disagreement_payload(base, comp)
+
+    assert payload["summary"]["identical_lines"] == 2
+    assert payload["summary"]["line_count"] == 3
+
+    rows = payload["lines"]
+    # Identical lines: no disagreement, empty diff_ops (payload kept small).
+    assert rows[0]["has_disagreement"] is False
+    assert rows[0]["diff_ops"] == []
+    assert rows[2]["has_disagreement"] is False
+    assert rows[2]["diff_ops"] == []
+
+    # Differing line: disagreement flagged, diff_ops present with an insert op.
+    assert rows[1]["has_disagreement"] is True
+    assert rows[1]["diff_ops"], "differing line must carry diff ops"
+    ops = {op["op"] for op in rows[1]["diff_ops"]}
+    assert "insert" in ops  # "betax" adds an 'x' over "beta"
+    inserted = [op["h"] for op in rows[1]["diff_ops"] if op["op"] == "insert"]
+    assert inserted == ["x"]

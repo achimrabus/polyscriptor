@@ -627,6 +627,7 @@ input[disabled] { opacity: 0.45; cursor: not-allowed; }
     gap: 5px;
 }
 .btn-icon.active { border-color: var(--primary); color: var(--primary); background: rgba(59,130,246,0.1); }
+#btn-compare-toggle.active { border-color: var(--primary); color: var(--primary); background: rgba(59,130,246,0.12); }
 
 /* Font selector in results header */
 .font-select {
@@ -1031,6 +1032,218 @@ details[open] > .thinking-toggle::before { content: '▼ '; }
     flex-shrink: 0;
 }
 
+.comparison-panel {
+    border-top: 1px solid var(--border);
+    padding: 10px 12px 12px;
+    background: color-mix(in srgb, var(--bg-panel) 88%, black);
+    flex-shrink: 0;
+}
+.comparison-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+.comparison-panel-header h3 {
+    margin: 0 0 4px;
+    font-size: 0.95rem;
+}
+.comparison-help {
+    margin: 8px 0 10px;
+    font-size: 0.76rem;
+    line-height: 1.45;
+}
+.comparison-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+}
+.comparison-select-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+#comparison-slot-select {
+    flex: 1 1 220px;
+    max-width: 100%;
+}
+#comparison-status {
+    min-height: 1.2em;
+    font-size: 0.76rem;
+    margin-bottom: 8px;
+}
+.comparison-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.comparison-summary-card {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 9px;
+}
+.comparison-summary-card .label {
+    display: block;
+    margin-bottom: 3px;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.comparison-summary-card .value {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+.comparison-summary-card .note {
+    display: block;
+    margin-top: 3px;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+}
+/* When active, the comparison panel fills the results column and lets only its
+   line list scroll. */
+.comparison-panel:not(.hidden) {
+    flex: 2 1 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+.comparison-panel:not(.hidden) > :not(.comparison-lines) {
+    flex: 0 0 auto;
+}
+
+/* Full-height "compare mode": the plain transcription list is redundant while
+   comparing (its text is the base column), so it yields the whole results
+   column to the comparison workspace. */
+#results-panel.compare-mode #transcription-lines,
+#results-panel.compare-mode #results-footer,
+#results-panel.compare-mode #results-search-row,
+#results-panel.compare-mode #conf-filter-row,
+#results-panel.compare-mode #progress-container {
+    display: none !important;
+}
+#results-panel.compare-mode .comparison-panel {
+    flex: 1 1 auto;
+    border-top: none;
+}
+
+.comparison-lines {
+    --cmp-gutter: 44px;
+    flex: 1 1 auto;
+    min-height: 120px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--bg-input) 86%, black);
+}
+
+/* Shared 3-column track: gutter (line # + mismatch %) | base | comparison.
+   Header and rows use the same grid so columns stay aligned. */
+.comparison-col-header,
+.comparison-line {
+    display: grid;
+    grid-template-columns: var(--cmp-gutter) 1fr 1fr;
+    gap: 10px;
+}
+.comparison-col-header {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--bg-input) 94%, black);
+    border-bottom: 1px solid var(--border);
+}
+.comparison-col-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.comparison-gutter-title { text-align: center; }
+
+.comparison-line {
+    padding: 3px 10px;
+    align-items: start;
+    border-left: 3px solid transparent;
+    border-bottom: 1px solid rgba(45,63,89,0.32);
+}
+.comparison-line:last-child { border-bottom: none; }
+.comparison-line:hover { background: var(--bg-hover); }
+.comparison-line-disagree {
+    border-left-color: color-mix(in srgb, var(--warning) 85%, white);
+}
+.comparison-line-match {
+    border-left-color: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+/* Left gutter: stacked line number + colour-coded per-line mismatch %. */
+.comparison-gutter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    padding-top: 2px;
+    cursor: pointer;
+    user-select: none;
+}
+.comparison-line-num {
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    color: var(--text-muted);
+    line-height: 1.2;
+}
+.comparison-mismatch {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    line-height: 1.1;
+}
+.comparison-mismatch.good { color: var(--success); }
+.comparison-mismatch.warn { color: var(--warning); }
+.comparison-mismatch.bad  { color: var(--danger); }
+
+.comparison-cell {
+    min-width: 0;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.018);
+}
+.comparison-cell-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: var(--font-results, var(--font-mono));
+    font-size: 0.82rem;
+    line-height: 1.4;
+    cursor: pointer;
+}
+.comparison-cell-text.empty {
+    color: var(--text-muted);
+    font-style: italic;
+}
+/* Char-level diff highlighting (differences only). */
+.diff-ins {
+    background: color-mix(in srgb, var(--success) 30%, transparent);
+    border-radius: 2px;
+}
+.diff-del {
+    background: color-mix(in srgb, var(--danger) 28%, transparent);
+    text-decoration: line-through;
+    border-radius: 2px;
+}
+.diff-sub {
+    background: color-mix(in srgb, var(--warning) 34%, transparent);
+    border-radius: 2px;
+}
+
 /* ── Progress bar ───────────────────────────────────────────────────── */
 .progress-row {
     display: flex;
@@ -1260,6 +1473,10 @@ details[open] > .thinking-toggle::before { content: '▼ '; }
 
     /* Upload area takes less vertical space */
     .upload-area { padding: 14px 10px; }
+
+    .comparison-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* Keep the comparison side-by-side even on mobile so the sticky column
+       header stays aligned with the base/comparison cells. */
 
     /* Full-width help modal */
     #help-modal { width: 100vw; max-height: 90vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
