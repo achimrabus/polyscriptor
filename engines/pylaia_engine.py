@@ -279,8 +279,25 @@ class PyLaiaEngine(HTREngine):
             if model_path in PYLAIA_MODELS:
                 preset_info = PYLAIA_MODELS[model_path]
                 if isinstance(preset_info, dict):
-                    model_path = preset_info.get("checkpoint", preset_info.get("path", model_path))
-                    syms_path = preset_info.get("syms")
+                    if preset_info.get("repo_id"):
+                        try:
+                            from huggingface_hub import hf_hub_download
+                        except ImportError as exc:
+                            raise RuntimeError(
+                                "huggingface_hub is required for Hugging Face model presets"
+                            ) from exc
+                        repo_id = preset_info["repo_id"]
+                        model_path = hf_hub_download(
+                            repo_id=repo_id,
+                            filename=preset_info.get("checkpoint", "best_model.pt"),
+                        )
+                        syms_path = hf_hub_download(
+                            repo_id=repo_id,
+                            filename=preset_info.get("syms", "symbols.txt"),
+                        )
+                    else:
+                        model_path = preset_info.get("checkpoint", preset_info.get("path", model_path))
+                        syms_path = preset_info.get("syms")
                 # If preset_info is just a string, use it as the path
                 elif isinstance(preset_info, str):
                     model_path = preset_info

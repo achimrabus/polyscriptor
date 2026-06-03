@@ -14,6 +14,8 @@ Design principles:
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
+import importlib
+import os
 import numpy as np
 
 try:
@@ -22,6 +24,35 @@ try:
 except ImportError:
     PYQT_AVAILABLE = False
     QWidget = object
+
+
+_runtime_profile = None
+_runtime_profile_loaded = False
+
+
+def load_runtime_profile():
+    """Return the optional deployment-profile module named by POLYSCRIPTOR_PROFILE.
+
+    A deployment may point this env var at an importable module that customises
+    engine discovery, model presets and segmentation (see the optional hooks
+    consumed in ``discover_engines``, ``inference_pylaia_native`` and the web
+    server). This keeps environment-specific behaviour out of the core code.
+
+    Returns None when the variable is unset or the module cannot be imported.
+    The result is cached after the first call.
+    """
+    global _runtime_profile, _runtime_profile_loaded
+    if _runtime_profile_loaded:
+        return _runtime_profile
+    _runtime_profile_loaded = True
+    name = os.environ.get("POLYSCRIPTOR_PROFILE", "").strip()
+    if name:
+        try:
+            _runtime_profile = importlib.import_module(name)
+        except ImportError as e:
+            print(f"Warning: runtime profile '{name}' could not be imported: {e}")
+            _runtime_profile = None
+    return _runtime_profile
 
 
 @dataclass
@@ -243,6 +274,11 @@ class HTREngineRegistry:
 
         Tries to import each engine module and registers it if available.
         """
+        profile = load_runtime_profile()
+        if profile is not None and hasattr(profile, "discover_engines"):
+            if profile.discover_engines(self):
+                return
+
         # Import and register TrOCR engine
         try:
             from engines.trocr_engine import TrOCREngine

@@ -49,8 +49,12 @@ try:
 except ImportError:
     pass  # python-dotenv not installed — env vars must be set externally
 
-from htr_engine_base import get_global_registry, HTREngine, TranscriptionResult
+from htr_engine_base import get_global_registry, HTREngine, TranscriptionResult, load_runtime_profile
 from transcription_metrics import ComparisonMode, TranscriptionMetrics
+
+# Optional deployment profile — lets a deployment customise segmentation
+# without baking environment-specific logic into the server. None in normal use.
+_RUNTIME_PROFILE = load_runtime_profile()
 
 # PDF support via PyMuPDF
 try:
@@ -1628,9 +1632,18 @@ async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
     Also populates img_data["line_regions"] with a per-line region index list
     so the transcription loop can tag each line with its column.
     """
-    _import_segmenters()
+    profile = _RUNTIME_PROFILE
+    if profile is not None and hasattr(profile, "segmentation_overrides"):
+        method, device = profile.segmentation_overrides(method, device)
     pil_image = img_data["pil_image"]
     xml_path  = img_data.get("xml_path")
+
+    if profile is not None and hasattr(profile, "run_segmentation"):
+        result = await asyncio.to_thread(profile.run_segmentation, img_data, method, device)
+        if result is not None:
+            return result
+
+    _import_segmenters()
 
     regions: list = []
     lines: list   = []

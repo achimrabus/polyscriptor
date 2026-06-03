@@ -13,6 +13,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 import logging
 import json
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -414,5 +415,19 @@ def _scan_pylaia_models(models_dir: str = "models") -> None:
         logger.debug(f"Auto-discovered CRNN-CTC model: {folder_name}")
 
 
-# Populate registry with any models not hard-coded above
-_scan_pylaia_models()
+def _populate_pylaia_models() -> None:
+    """Let an optional runtime profile define presets, else scan local models/.
+
+    A deployment profile (POLYSCRIPTOR_PROFILE) may replace the preset registry
+    and return True to claim the full set, in which case the local model scan is
+    skipped.
+    """
+    from htr_engine_base import load_runtime_profile
+    profile = load_runtime_profile()
+    if profile is not None and hasattr(profile, "register_pylaia_models"):
+        if profile.register_pylaia_models(PYLAIA_MODELS):
+            return
+    _scan_pylaia_models()
+
+
+_populate_pylaia_models()
