@@ -1,0 +1,30 @@
+# Optional: PaddleOCR-VL whole-page engine (subprocess mode)
+#
+# PaddleOCR-VL is a 0.9B vision-language document parser. It needs paddlepaddle
+# plus paddleocr[doc-parser] (which pulls in transformers), a stack that
+# conflicts with the pins in requirements.txt. It therefore runs in its OWN
+# isolated venv and is called as a subprocess — it is NOT installed into the
+# main venv.
+#
+# NOTE: paddlepaddle-gpu is served from PaddlePaddle's own index, not PyPI, so
+# it cannot be a plain `pip install -r` line. Follow the two-step setup below.
+#
+# Setup (one-time):
+#   export POLYSCRIPTOR_PADDLE_VL_VENV="$HOME/paddle_vl/venv_paddle_vl"
+#   python3.12 -m venv "$POLYSCRIPTOR_PADDLE_VL_VENV"
+#   source "$POLYSCRIPTOR_PADDLE_VL_VENV/bin/activate"
+#   pip install paddlepaddle-gpu==3.2.1 \
+#       -i https://www.paddlepaddle.org.cn/packages/stable/cu126/   # CPU: paddlepaddle==3.2.1
+#   pip install -r requirements-paddle-vl.txt
+#   deactivate
+#
+# Point Polyscriptor at the venv via POLYSCRIPTOR_PADDLE_VL_VENV, the engine's
+# `venv_path` config field, or the GUI "Browse…" button. To keep model weights
+# off a near-full root filesystem, set POLYSCRIPTOR_PADDLE_VL_CACHE (defaults to
+# the venv's parent directory).
+#
+# Caveat: PaddleOCR-VL targets multilingual document parsing and does NOT handle
+# Cyrillic/Slavic handwriting well — use TrOCR or CRNN-CTC for those. It is
+# strong on Chinese/Latin printed documents.
+
+paddleocr[doc-parser]>=3.4.0

@@ -425,7 +425,10 @@ async function processBatch() {
     const textDirection = $('seg-text-direction')?.value || 'horizontal-lr';
     const usePageXml  = $('batch-use-pagexml').checked;
     const resume      = $('batch-resume').checked;
-    const pending = batch.items.filter(i => resume ? i.status === 'pending' : i.status !== 'done').length;
+    // Resume = only still-pending items. Otherwise "Process All" really means
+    // all: items already transcribed (e.g. with a different engine) are
+    // reprocessed, so switching engine + re-running works as users expect.
+    const pending = batch.items.filter(i => resume ? i.status === 'pending' : true).length;
     let doneThisRun = 0;
     updateOverallProgress(0, pending);
 
@@ -436,8 +439,8 @@ async function processBatch() {
         }
 
         const item = batch.items[i];
-        if (item.status === 'done') {
-            // Resume mode: skip done; non-resume mode: also skip done
+        if (resume && item.status !== 'pending') {
+            // Resume mode: keep finished/errored items untouched, only fill gaps.
             continue;
         }
 

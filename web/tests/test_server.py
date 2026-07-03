@@ -572,3 +572,113 @@ def test_disagreement_payload_ships_diff_ops_only_for_differing_lines():
     assert "insert" in ops  # "betax" adds an 'x' over "beta"
     inserted = [op["h"] for op in rows[1]["diff_ops"] if op["op"] == "insert"]
     assert inserted == ["x"]
+
+
+# ── Ground-truth (CER/WER) evaluation ────────────────────────────────────────
+
+_GT_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15">
+  <Page imageFilename="t.png" imageWidth="200" imageHeight="100">
+    <TextRegion id="r1">
+      <TextLine id="l1"><Coords points="0,0 10,0 10,10 0,10"/>
+        <TextEquiv><Unicode>\xd0\xb8 \xd0\xb8\xd0\xb4\xd1\xa3\xd1\x88\xd0\xb5</Unicode></TextEquiv></TextLine>
+      <TextLine id="l2"><Coords points="0,20 10,20 10,30 0,30"/>
+        <TextEquiv><Unicode>\xd0\xbf\xd0\xbe\xd1\x83\xd1\x82\xd0\xb5\xd0\xbc\xd1\x8c</Unicode></TextEquiv></TextLine>
+    </TextRegion>
+  </Page>
+</PcGts>"""
+
+
+def _session_for_image(image_id):
+    for s in server_mod.sessions.values():
+        if image_id in s.image_cache:
+            return s
+    return None
+
+
+def test_extract_pagexml_line_texts():
+    texts = server_mod._extract_pagexml_line_texts(_GT_XML)
+    assert texts == ["и идѣше", "поутемь"]
+
+
+def test_extract_pagexml_line_texts_handles_missing_text():
+    xml = b"""<?xml version="1.0"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15">
+  <Page><TextRegion id="r1">
+    <TextLine id="l1"><TextEquiv><Unicode>only line</Unicode></TextEquiv></TextLine>
+    <TextLine id="l2"/>
+  </TextRegion></Page></PcGts>"""
+    assert server_mod._extract_pagexml_line_texts(xml) == ["only line", ""]
+
+
+def test_ground_truth_payload_uses_cer_labels_and_is_asymmetric():
+    gt_slot = {"slot_id": "ground_truth", "label": "GT",
+               "lines": [{"text": "hello"}, {"text": "world"}]}
+    hyp_slot = {"slot_id": "e1", "label": "Engine",
+                "lines": [{"text": "helo"}, {"text": "world"}]}
+    payload = server_mod._build_disagreement_payload(
+        gt_slot, hyp_slot, server_mod.ComparisonMode.GROUND_TRUTH,
+    )
+    assert payload["labels"]["char_rate"] == "CER"
+    assert payload["labels"]["word_rate"] == "WER"
+    # "hello" vs "helo" → 1 edit / 5 ref chars = 20% CER; "world" identical = 0%.
+    assert payload["lines"][0]["metrics"]["char_rate"] == pytest.approx(20.0)
+    assert payload["lines"][1]["metrics"]["char_rate"] == pytest.approx(0.0)
+    assert payload["summary"]["macro_char_rate"] == pytest.approx(10.0)
+
+
+def test_upload_ground_truth_returns_line_count():
+    image_id = _upload_image()["image_id"]
+    resp = client.post(
+        f"/api/image/{image_id}/ground-truth",
+        files={"file": ("gt.xml", _GT_XML, "text/xml")},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["line_count"] == 2
+
+
+def test_upload_ground_truth_rejects_empty_xml():
+    image_id = _upload_image()["image_id"]
+    empty = b"""<?xml version="1.0"?>
+<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2013-07-15">
+  <Page imageFilename="t.png" imageWidth="200" imageHeight="100"/>
+</PcGts>"""
+    resp = client.post(
+        f"/api/image/{image_id}/ground-truth",
+        files={"file": ("gt.xml", empty, "text/xml")},
+    )
+    assert resp.status_code == 400
+
+
+def test_compare_ground_truth_requires_gt_first():
+    image_id = _upload_image()["image_id"]
+    resp = client.post("/api/compare/ground-truth", json={"image_id": image_id})
+    assert resp.status_code == 400
+
+
+def test_compare_ground_truth_scores_and_ranks_slots():
+    image_id = _upload_image()["image_id"]
+    session = _session_for_image(image_id)
+    assert session is not None
+    session.image_cache[image_id]["ground_truth"] = {
+        "lines": ["hello", "world"], "filename": "gt.xml",
+    }
+    session.image_cache[image_id]["result_slots"] = {
+        "good": {"slot_id": "good", "label": "Good", "engine_name": "E1",
+                 "kind": "primary", "lines": [{"text": "hello"}, {"text": "world"}]},
+        "bad": {"slot_id": "bad", "label": "Bad", "engine_name": "E2",
+                "kind": "comparison", "lines": [{"text": "helo"}, {"text": "wrld"}]},
+    }
+    resp = client.post("/api/compare/ground-truth", json={"image_id": image_id})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ground_truth"]["line_count"] == 2
+    assert len(data["leaderboard"]) == 2
+    # Perfect match ranks first with micro CER 0.
+    assert data["leaderboard"][0]["slot_id"] == "good"
+    assert data["leaderboard"][0]["micro_cer"] == pytest.approx(0.0)
+    assert data["leaderboard"][1]["slot_id"] == "bad"
+    assert data["leaderboard"][1]["micro_cer"] > 0
+    assert data["runs"][0]["labels"]["char_rate"] == "CER"

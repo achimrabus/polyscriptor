@@ -699,6 +699,10 @@ input[disabled] { opacity: 0.45; cursor: not-allowed; }
     display: inline;
     outline: none;
     border-radius: 2px;
+    /* Preserve newlines from page-level engines that return multi-block text
+       (e.g. PaddleOCR-VL emits one paragraph/region per line). Line-by-line
+       engines have no newlines, so this has no effect on them. */
+    white-space: pre-wrap;
 }
 .line-text[contenteditable="true"] {
     background: rgba(58, 134, 255, 0.08);
@@ -1067,6 +1071,52 @@ details[open] > .thinking-toggle::before { content: '▼ '; }
 #comparison-slot-select {
     flex: 1 1 220px;
     max-width: 100%;
+}
+.comparison-gt {
+    margin-bottom: 10px;
+}
+.comparison-gt-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.comparison-gt-status {
+    font-size: 0.76rem;
+}
+.gt-leaderboard {
+    margin-top: 8px;
+    overflow-x: auto;
+}
+.gt-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+}
+.gt-table th,
+.gt-table td {
+    text-align: left;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+.gt-table th {
+    color: var(--text-muted);
+    font-weight: 600;
+}
+.gt-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.gt-row {
+    cursor: pointer;
+}
+.gt-row:hover {
+    background: var(--bg-input);
+}
+.gt-row-selected {
+    background: var(--bg-input);
+    font-weight: 600;
 }
 #comparison-status {
     min-height: 1.2em;

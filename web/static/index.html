@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Polyscriptor HTR</title>
-    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/app.css?v=20260611-vl">
 </head>
 <body>
     <!-- Header -->
@@ -229,6 +229,15 @@
                     <button id="btn-run-comparison" class="btn btn-outline btn-small" disabled>Run Comparison</button>
                     <label for="comparison-slot-select" class="comparison-select-label hidden">View</label>
                     <select id="comparison-slot-select" class="hidden"></select>
+                </div>
+                <div class="comparison-gt">
+                    <div class="comparison-gt-row">
+                        <label class="btn btn-outline btn-small" for="gt-file-input">Upload Ground Truth XML</label>
+                        <input type="file" id="gt-file-input" accept=".xml,text/xml,application/xml" hidden>
+                        <button id="btn-eval-gt" class="btn btn-outline btn-small" disabled>Evaluate vs Ground Truth</button>
+                        <span id="gt-status" class="muted comparison-gt-status">No ground truth loaded</span>
+                    </div>
+                    <div id="gt-leaderboard" class="gt-leaderboard hidden"></div>
                 </div>
                 <p id="comparison-status" class="muted"></p>
                 <div id="comparison-summary" class="comparison-summary hidden"></div>

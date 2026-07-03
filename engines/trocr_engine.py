@@ -36,6 +36,7 @@ class TrOCREngine(HTREngine):
         self.model: Optional[TrOCRInference] = None
         self._config_widget: Optional[QWidget] = None
         self._current_model_path: Optional[str] = None  # Store loaded model path
+        self._num_beams: int = 4  # Effective decoding beams (set in load_model for headless/batch)
 
         # Widget references (set when config widget is created)
         self._model_source_combo: Optional[QComboBox] = None
@@ -267,6 +268,14 @@ class TrOCREngine(HTREngine):
             model_source = config.get("model_source", "local")
             is_hf = (model_source == "huggingface")
 
+            # Capture effective decoding beams from CLI/batch config so that
+            # transcribe_line() uses it in headless mode (where get_config()
+            # returns {} because there is no Qt widget). Accept both keys:
+            # 'beam_search' (GUI) and 'num_beams' (CLI / batch_processing).
+            self._num_beams = int(config.get("beam_search", config.get("num_beams", 4)))
+            print(f"TrOCR decoding: num_beams={self._num_beams} "
+                  f"({'greedy' if self._num_beams <= 1 else 'beam search'})")
+
             self.model = TrOCRInference(
                 model_path=model_path,
                 normalize_bg=normalize,
@@ -310,7 +319,12 @@ class TrOCREngine(HTREngine):
         if config is None:
             config = self.get_config()
 
-        beam_search = config.get("beam_search", 4)
+        # Prefer an explicit per-call value (GUI passes 'beam_search', CLI may
+        # pass 'num_beams'); otherwise use the value captured at load_model time.
+        # NOTE: in headless/batch mode config is {} (no Qt widget), so without
+        # the self._num_beams fallback this silently defaulted to 4 and ignored
+        # the CLI --num-beams entirely.
+        beam_search = config.get("beam_search", config.get("num_beams", self._num_beams))
 
         try:
             # TrOCRInference expects PIL Image, convert from numpy

@@ -145,6 +145,13 @@ ENGINE_CONFIG = {
         'speed_estimate': 25,
         'warning': 'LINE-LEVEL model (~4GB VRAM). Requires transformers from git source.'
     },
+    'LapaOCR': {
+        'min_device': 'cuda',
+        'default_batch_size': 4,
+        'batch_size_range': (1, 8),
+        'speed_estimate': 6,
+        'warning': '12B VLM + LoRA adapter. For 24GB GPUs prefer 8bit/4bit quantization.'
+    },
     'PaddleOCR': {
         'min_device': 'cpu',
         'default_batch_size': 1,
@@ -188,7 +195,7 @@ Shared Server Notice:
     parser.add_argument('--input-folder', type=Path, required=True,
                        help='Folder containing input images')
     parser.add_argument('--engine', type=str, required=True,
-                       help='HTR engine (crnn-ctc, TrOCR, Churro, Qwen3-VL, Party, Kraken, OpenWebUI, DeepSeek-OCR, LightOnOCR)')
+                       help='HTR engine (crnn-ctc, TrOCR, Churro, Qwen3-VL, Party, Kraken, OpenWebUI, DeepSeek-OCR, LightOnOCR, LapaOCR)')
 
     # Model selection
     model_group = parser.add_mutually_exclusive_group()
@@ -281,6 +288,11 @@ Shared Server Notice:
                        help='LightOnOCR longest edge for image resize (512-1024, default: 700)')
     parser.add_argument('--max-new-tokens', type=int, default=256,
                        help='LightOnOCR max new tokens (64-512, default: 256)')
+
+    # LapaOCR-specific
+    parser.add_argument('--lapa-quantization', type=str, default='none',
+                       choices=['none', '8bit', '4bit'],
+                       help='LapaOCR quantization mode (default: none)')
 
     # PaddleOCR-specific
     parser.add_argument('--paddle-venv', type=Path, default=None,
@@ -725,8 +737,13 @@ class BatchHTRProcessor:
             config['adapter'] = str(self.args.adapter)
 
         # Engine-specific
-        if self.args.num_beams > 1:
-            config['num_beams'] = self.args.num_beams
+        # Always propagate the decoding beams (also greedy=1) under both keys so
+        # the engine can distinguish greedy vs beam search. Previously this was
+        # gated on >1 and only set 'num_beams', which TrOCR's transcribe_line()
+        # never read (it looked up 'beam_search'), so --num-beams was ignored and
+        # TrOCR always ran its hard-coded default of 4.
+        config['num_beams'] = self.args.num_beams
+        config['beam_search'] = self.args.num_beams
 
         if self.args.temperature != 1.0:
             config['temperature'] = self.args.temperature
@@ -786,6 +803,15 @@ class BatchHTRProcessor:
             # Custom prompt support (reuses --prompt flag)
             if self.args.prompt:
                 config['custom_prompt'] = self.args.prompt
+
+        # LapaOCR-specific
+        if self.args.engine == 'LapaOCR':
+            config['base_model'] = config.get('model_id', 'lapa-llm/lapa-v0.1.2-instruct')
+            config['adapter'] = config.get('adapter', 'VmF0x/lapa-ocr-lora')
+            config['quantization'] = self.args.lapa_quantization
+            config['max_new_tokens'] = self.args.max_new_tokens
+            if self.args.prompt:
+                config['prompt'] = self.args.prompt
 
         return config
 

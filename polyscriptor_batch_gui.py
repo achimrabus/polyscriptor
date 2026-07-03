@@ -91,6 +91,15 @@ ENGINES = {
         "has_lighton_options": True,  # Enable LightOnOCR-specific controls
         "warning": "Requires transformers from git: pip install git+https://github.com/huggingface/transformers.git",
     },
+    "LapaOCR": {
+        "needs_model_path": False,
+        "needs_model_id": True,
+        "needs_adapter": True,
+        "default_segmentation": "kraken",  # Crop/line-focused model
+        "supports_beams": False,
+        "has_lapa_options": True,
+        "warning": "12B VLM + LoRA. On 24GB GPUs use 8bit/4bit quantization.",
+    },
     "DeepSeek-OCR": {
         "needs_model_path": False,
         "needs_model_id": False,   # Uses default deepseek-ai/DeepSeek-OCR-2 from HF cache
@@ -198,6 +207,16 @@ BUILTIN_PRESETS = {
         "output_formats": ["txt"],
         "longest_edge": 700,
         "max_new_tokens": 256,
+    },
+    "Ukrainian (LapaOCR + LoRA)": {
+        "engine": "LapaOCR",
+        "model_id": "lapa-llm/lapa-v0.1.2-instruct",
+        "adapter": "VmF0x/lapa-ocr-lora",
+        "segmentation_method": "kraken",
+        "use_pagexml": True,
+        "device": "cuda:0",
+        "output_formats": ["txt"],
+        "lapa_quantization": "none",
     },
 }
 
@@ -456,6 +475,32 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.lighton_group.setLayout(lighton_layout)
         self.lighton_group.setVisible(False)  # Hidden by default
         layout.addWidget(self.lighton_group)
+
+        # LapaOCR-specific controls
+        self.lapa_group = QGroupBox("LapaOCR Settings")
+        lapa_layout = QVBoxLayout()
+
+        quant_layout = QHBoxLayout()
+        quant_layout.addWidget(QLabel("Quantization:"))
+        self.lapa_quant_combo = QComboBox()
+        self.lapa_quant_combo.addItems(["none", "8bit", "4bit"])
+        self.lapa_quant_combo.setToolTip(
+            "none: highest quality, highest VRAM\n"
+            "8bit: lower VRAM, good quality\n"
+            "4bit: lowest VRAM"
+        )
+        quant_layout.addWidget(self.lapa_quant_combo)
+        quant_layout.addStretch()
+        lapa_layout.addLayout(quant_layout)
+
+        lapa_hint = QLabel("Default Base: lapa-llm/lapa-v0.1.2-instruct, Adapter: VmF0x/lapa-ocr-lora")
+        lapa_hint.setStyleSheet("color: gray; font-size: 9pt;")
+        lapa_hint.setWordWrap(True)
+        lapa_layout.addWidget(lapa_hint)
+
+        self.lapa_group.setLayout(lapa_layout)
+        self.lapa_group.setVisible(False)
+        layout.addWidget(self.lapa_group)
 
         # DeepSeek-OCR-specific controls
         self.deepseek_group = QGroupBox("DeepSeek-OCR Settings")
@@ -772,6 +817,17 @@ class PolyscriptorBatchGUI(QMainWindow):
         has_lighton = config.get("has_lighton_options", False)
         self.lighton_group.setVisible(has_lighton)
 
+        # Show/hide LapaOCR-specific controls
+        has_lapa = config.get("has_lapa_options", False)
+        self.lapa_group.setVisible(has_lapa)
+
+        # LapaOCR sensible defaults if user switches to the engine with empty fields
+        if engine_name == "LapaOCR":
+            if not self.model_id_edit.text().strip():
+                self.model_id_edit.setText("lapa-llm/lapa-v0.1.2-instruct")
+            if not self.adapter_edit.text().strip():
+                self.adapter_edit.setText("VmF0x/lapa-ocr-lora")
+
         # Show/hide DeepSeek-OCR-specific controls
         self.deepseek_group.setVisible(config.get("has_deepseek_options", False))
 
@@ -865,6 +921,14 @@ class PolyscriptorBatchGUI(QMainWindow):
             self.lighton_prompt_edit.setText(preset["lighton_prompt"])
         else:
             self.lighton_prompt_edit.clear()
+
+        # LapaOCR-specific
+        if "lapa_quantization" in preset:
+            idx = self.lapa_quant_combo.findText(preset["lapa_quantization"])
+            if idx >= 0:
+                self.lapa_quant_combo.setCurrentIndex(idx)
+        else:
+            self.lapa_quant_combo.setCurrentText("none")
 
         self._update_command_preview()
 
@@ -1001,6 +1065,9 @@ class PolyscriptorBatchGUI(QMainWindow):
             if prompt:
                 config["lighton_prompt"] = prompt
 
+        if config["engine"] == "LapaOCR":
+            config["lapa_quantization"] = self.lapa_quant_combo.currentText()
+
         # DeepSeek-OCR-specific
         if config["engine"] == "DeepSeek-OCR":
             config["deepseek_mode"] = self.deepseek_mode_combo.currentText()
@@ -1087,6 +1154,9 @@ class PolyscriptorBatchGUI(QMainWindow):
             if config.get("lighton_prompt"):
                 cmd += ["--prompt", config["lighton_prompt"]]
 
+        if config.get("engine") == "LapaOCR":
+            cmd += ["--lapa-quantization", config.get("lapa_quantization", "none")]
+
         # DeepSeek-OCR-specific
         if config.get("engine") == "DeepSeek-OCR":
             cmd += ["--ocr-mode", config["deepseek_mode"]]
@@ -1141,6 +1211,9 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.longest_edge_spin.valueChanged.connect(self._update_command_preview)
         self.max_new_tokens_spin.valueChanged.connect(self._update_command_preview)
         self.lighton_prompt_edit.textChanged.connect(self._update_command_preview)
+
+        # LapaOCR-specific
+        self.lapa_quant_combo.currentTextChanged.connect(self._update_command_preview)
 
         # DeepSeek-OCR-specific
         self.deepseek_mode_combo.currentTextChanged.connect(self._update_command_preview)

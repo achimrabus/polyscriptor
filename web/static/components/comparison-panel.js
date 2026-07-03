@@ -10,6 +10,22 @@ import { state, emit, on, api, toast } from '../app.js';
 
 const $ = id => document.getElementById(id);
 
+// Ground-truth evaluation state. Kept separate from state.comparison because it
+// is tied to the image, not the base transcription: re-running the base on the
+// same image must not drop the uploaded ground truth.
+let gtState = { filename: null, lineCount: 0, runs: [], leaderboard: [], selectedSlotId: null };
+
+function resetGtState() {
+    gtState = { filename: null, lineCount: 0, runs: [], leaderboard: [], selectedSlotId: null };
+    renderGt();
+}
+
+function escHtml(s) {
+    return String(s).replace(/[&<>"]/g, c => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+    ));
+}
+
 function resetComparisonState() {
     state.comparison = {
         base: null,
@@ -71,8 +87,8 @@ function updateBaseSummary() {
     }
 
     if (base.segSource === 'page') {
-        summary.textContent = `${base.label} uses a page-level result. Run a segmented base transcription first to enable comparison.`;
-        help.textContent = 'Comparison V1 uses cached line segmentation from the base transcription so all engines can be aligned line-by-line.';
+        summary.textContent = `${base.label} read the whole page at once, so there are no line segments to align.`;
+        help.textContent = 'Page-level engines (Qwen3-VL, OpenWebUI) can still be used as a comparison engine on top of a segmented base. To make one the base instead, click Segment first, then Transcribe — that gives it line segments to compare.';
     } else {
         summary.textContent = `Base result: ${base.label} · ${base.lineCount} lines`;
         help.textContent = 'To add a comparison, switch to another engine on the left, load its model, and run a comparison on the same cached line segments.';
@@ -274,6 +290,7 @@ function updateControls() {
     updateBaseSummary();
     renderSlotSelect();
     renderSelectedRun();
+    renderGt();
 
     const btn = $('btn-run-comparison');
     const base = state.comparison.base;
@@ -344,6 +361,123 @@ async function onRunComparison() {
     }
 }
 
+// ── Ground-truth (CER/WER) evaluation ────────────────────────────────────────
+
+async function onGtFileChosen(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';  // allow re-selecting the same file later
+    if (!file) return;
+    if (!state.imageId) {
+        toast('Upload an image and run a base transcription first.', 'error');
+        return;
+    }
+    try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const resp = await fetch(`/api/image/${state.imageId}/ground-truth`, {
+            method: 'POST',
+            body: fd,
+        });
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+            throw new Error(err.detail || 'Upload failed');
+        }
+        const data = await resp.json();
+        gtState.filename = data.filename;
+        gtState.lineCount = data.line_count;
+        gtState.runs = [];
+        gtState.leaderboard = [];
+        gtState.selectedSlotId = null;
+        toast(`Ground truth loaded: ${data.line_count} lines`, 'info');
+        renderGt();
+        updateControls();
+    } catch (err) {
+        toast(`Ground-truth upload failed: ${err.message}`, 'error');
+    }
+}
+
+async function onEvaluateGt() {
+    if (!state.imageId || !gtState.filename) return;
+    setStatus('Scoring against ground truth…', 'status-loading');
+    try {
+        const resp = await api('/api/compare/ground-truth', {
+            method: 'POST',
+            body: JSON.stringify({ image_id: state.imageId }),
+        });
+        const data = await resp.json();
+        gtState.runs = data.runs || [];
+        gtState.leaderboard = data.leaderboard || [];
+        gtState.selectedSlotId = gtState.leaderboard.length
+            ? gtState.leaderboard[0].slot_id
+            : null;
+        renderGt();
+        renderSelectedGtRun();
+        setStatus(`Scored ${gtState.leaderboard.length} transcription(s) vs ground truth`, 'status-loaded');
+    } catch (err) {
+        setStatus('', '');
+        toast(`Ground-truth scoring failed: ${err.message}`, 'error');
+    }
+}
+
+function renderGt() {
+    const status = $('gt-status');
+    const board = $('gt-leaderboard');
+    const evalBtn = $('btn-eval-gt');
+    if (!status || !board || !evalBtn) return;
+
+    status.textContent = gtState.filename
+        ? `GT: ${gtState.filename} · ${gtState.lineCount} lines`
+        : 'No ground truth loaded';
+
+    const base = state.comparison.base;
+    evalBtn.disabled = !(gtState.filename && base && !state.comparison.isRunning);
+
+    if (!gtState.leaderboard.length) {
+        board.classList.add('hidden');
+        board.innerHTML = '';
+        return;
+    }
+
+    const rows = gtState.leaderboard.map(r => {
+        const selected = r.slot_id === gtState.selectedSlotId ? ' gt-row-selected' : '';
+        const mismatch = r.scored_lines !== r.gt_line_count
+            ? ` title="Scored ${r.scored_lines} of ${r.gt_line_count} ground-truth lines — line counts differ"`
+            : '';
+        const warn = r.scored_lines !== r.gt_line_count ? ' ⚠' : '';
+        return `<tr class="gt-row${selected}" data-slot="${escHtml(r.slot_id)}"${mismatch}>
+            <td class="gt-name">${escHtml(r.label)}${warn}</td>
+            <td class="gt-num">${r.micro_cer.toFixed(2)}%</td>
+            <td class="gt-num">${r.macro_cer.toFixed(2)}%</td>
+            <td class="gt-num">${r.macro_wer.toFixed(2)}%</td>
+        </tr>`;
+    }).join('');
+
+    board.innerHTML = `<table class="gt-table">
+        <thead><tr>
+            <th>Engine</th><th>Micro CER</th><th>Macro CER</th><th>Macro WER</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+    board.querySelectorAll('.gt-row').forEach(tr => {
+        tr.addEventListener('click', () => {
+            gtState.selectedSlotId = tr.dataset.slot;
+            renderGt();
+            renderSelectedGtRun();
+        });
+    });
+    board.classList.remove('hidden');
+}
+
+function renderSelectedGtRun() {
+    const run = gtState.runs.find(
+        r => r.comparison_slot.slot_id === gtState.selectedSlotId,
+    ) || null;
+    if (run) {
+        renderSummary(run);
+        renderLines(run);
+    }
+}
+
 export function initComparisonPanel() {
     resetComparisonState();
 
@@ -360,16 +494,25 @@ export function initComparisonPanel() {
         state.comparison.selectedSlotId = e.target.value;
         renderSelectedRun();
     });
+    $('gt-file-input').addEventListener('change', onGtFileChosen);
+    $('btn-eval-gt').addEventListener('click', onEvaluateGt);
 
     on('image-uploaded', () => {
+        resetGtState();
         resetComparisonState();
         updateControls();
     });
     on('batch-item-start', () => {
+        resetGtState();
         resetComparisonState();
         updateControls();
     });
     on('transcription-start', () => {
+        // Keep the uploaded ground truth (same image), but drop stale scores
+        // that referenced the previous result slots.
+        gtState.runs = [];
+        gtState.leaderboard = [];
+        gtState.selectedSlotId = null;
         resetComparisonState();
         updateControls();
     });

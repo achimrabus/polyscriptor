@@ -119,6 +119,8 @@ _ENGINE_VRAM_GB = {
     "Kraken": 2,
     "Party": 4,
     "PaddleOCR": 2,
+    "LapaOCR": 18,
+    "PaddleOCR-VL": 9,
 }
 _NO_GPU_ENGINES = {"Commercial APIs", "OpenWebUI", "LightOnOCR", "DeepSeek-OCR"}
 _TOTAL_VRAM_GB = 92  # 2x L40S @ 46GB each
@@ -136,7 +138,9 @@ _ENGINE_FACTORY = {
     "OpenWebUI":                    ("engines.openwebui_engine",    "OpenWebUIEngine"),
     "DeepSeek-OCR":                 ("engines.deepseek_ocr_engine", "DeepSeekOCREngine"),
     "LightOnOCR":                   ("engines.lighton_ocr_engine",  "LightOnOCREngine"),
+    "LapaOCR":                      ("engines.lapa_ocr_engine",     "LapaOCREngine"),
     "PaddleOCR":                    ("engines.paddle_engine",       "PaddleOCREngine"),
+    "PaddleOCR-VL":                 ("engines.paddle_vl_engine",    "PaddleOCRVLEngine"),
 }
 
 
@@ -186,6 +190,12 @@ def _make_pool_key(engine_name: str, config: dict) -> str:
 
     if engine_name == "LightOnOCR":
         return f"{engine_name}::{config.get('model_path', 'default')}"
+
+    if engine_name == "LapaOCR":
+        base_model = config.get("base_model") or config.get("model_id") or "default"
+        adapter = config.get("adapter", "")
+        quant = config.get("quantization", "none")
+        return f"{engine_name}::{base_model}::{adapter or 'none'}::{quant}"
 
     # Fallback: hash the config
     config_hash = hashlib.sha256(str(sorted(config.items())).encode()).hexdigest()[:12]
@@ -620,12 +630,15 @@ def _scan_trocr_models() -> list:
         for d in sorted(models_dir.iterdir()):
             if not d.is_dir():
                 continue
-            # Require BOTH preprocessor_config.json AND config.json with
+            # Require a ViT/TrOCR image-processor config AND config.json with
             # model_type == 'vision-encoder-decoder'.
-            # preprocessor_config.json is ViT/TrOCR-specific (not in PyLaia).
+            # transformers <5 writes preprocessor_config.json; transformers >=5
+            # writes a combined processor_config.json instead. Accept either.
+            # Both are ViT/TrOCR-specific (not in PyLaia).
             # config.json model_type disambiguates from Qwen3 adapters that
             # also ship a preprocessor_config but have no config.json.
-            if not (d / "preprocessor_config.json").exists():
+            if not ((d / "preprocessor_config.json").exists()
+                    or (d / "processor_config.json").exists()):
                 continue
             cfg_path = d / "config.json"
             if not cfg_path.exists():
@@ -858,6 +871,32 @@ ENGINE_SCHEMAS = {
              "min": 32, "max": 512, "default": 128},
         ]
     },
+    "LapaOCR": lambda: {
+        "fields": [
+            {"key": "base_model", "type": "text", "label": "Base model",
+             "default": "lapa-llm/lapa-v0.1.2-instruct",
+             "placeholder": "HuggingFace base model ID"},
+            {"key": "adapter", "type": "text", "label": "LoRA adapter",
+             "default": "VmF0x/lapa-ocr-lora",
+             "placeholder": "Adapter model ID or local adapter path"},
+            {"key": "quantization", "type": "select", "label": "Quantization",
+             "default": "none",
+             "options": [
+                 {"label": "none (best quality, high VRAM)", "value": "none"},
+                 {"label": "8bit (lower VRAM)", "value": "8bit"},
+                 {"label": "4bit (lowest VRAM)", "value": "4bit"},
+             ]},
+            {"key": "max_new_tokens", "type": "number", "label": "Max new tokens",
+               "min": 64, "max": 1024, "default": 128,
+               "hint": "Lower values improve latency and reduce runaway generation."},
+              {"key": "max_time_s", "type": "number", "label": "Max generation time per line (s)",
+               "min": 5, "max": 600, "default": 90,
+               "hint": "Safety cap for one line. Prevents very long hangs during generation."},
+            {"key": "prompt", "type": "textarea", "label": "Prompt",
+             "default": "Transcribe Ukrainian text literally. Output only the text, no preamble.",
+             "rows": 3},
+        ]
+    },
     "PaddleOCR": lambda: {
         "fields": [
             {"key": "lang", "type": "select", "label": "Language / Script",
@@ -881,6 +920,27 @@ ENGINE_SCHEMAS = {
              "label": "Text-angle classifier (correct 180° rotation)", "default": True},
             {"key": "use_gpu", "type": "checkbox",
              "label": "Use GPU (requires paddlepaddle-gpu)", "default": False},
+        ]
+    },
+    "PaddleOCR-VL": lambda: {
+        "fields": [
+            {"key": "pipeline_version", "type": "select", "label": "Model version",
+             "default": "v1.5",
+             "options": [
+                 {"label": "v1.5 (benchmarked / published)", "value": "v1.5"},
+                 {"label": "v1.6 (newest)",                  "value": "v1.6"},
+             ],
+             "hint": "0.9B vision-language document parser. Excellent for Chinese and printed/multilingual documents. NOT suitable for Cyrillic/Slavic handwriting (no support — use TrOCR / CRNN-CTC there)."},
+            {"key": "use_gpu", "type": "checkbox",
+             "label": "Use GPU (strongly recommended)", "default": True},
+            {"key": "gpu_index", "type": "number", "label": "GPU index", "default": 0,
+             "hint": "Physical GPU pinned via CUDA_VISIBLE_DEVICES. Dense full pages are slow on the native backend; per-line is fast (~1.4s)."},
+            {"key": "prompt_label", "type": "text", "label": "Task label (advanced)", "default": "",
+             "hint": "Force a recognition task instead of auto-detection. Leave empty for Auto. Advanced: e.g. 'text', 'table', 'formula' — wrong values may error."},
+            {"key": "max_new_tokens", "type": "number", "label": "Max new tokens", "default": 0,
+             "hint": "0 = pipeline default. Cap generation length to curb runaway repetition on dense pages."},
+            {"key": "repetition_penalty", "type": "number", "label": "Repetition penalty", "default": 0,
+             "hint": "0 = pipeline default. >1.0 (e.g. 1.05–1.2) discourages repeated tokens."},
         ]
     },
 }
@@ -910,6 +970,11 @@ class CompareRunRequest(BaseModel):
     image_id: str
     engine_config_overrides: Dict[str, Any] = {}
     label: Optional[str] = None
+
+
+class GroundTruthCompareRequest(BaseModel):
+    image_id: str
+    slot_id: Optional[str] = None  # score this slot only; None = score every slot
 
 
 # ---------------------------------------------------------------------------
@@ -1418,19 +1483,55 @@ def _store_result_slot(
     return slot
 
 
-def _build_disagreement_payload(base_slot: Dict[str, Any], comparison_slot: Dict[str, Any]) -> Dict[str, Any]:
-    """Build frontend-ready disagreement metrics for two stored result slots."""
+def _extract_pagexml_line_texts(content: bytes) -> List[str]:
+    """Extract per-line transcription text from a PAGE XML file, in reading order.
+
+    Returns one string per ``TextLine`` (from ``TextEquiv/Unicode``). Lines
+    without text are kept as empty strings so index alignment with the cached
+    segmentation is preserved. Used for ground-truth CER/WER evaluation.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(content)
+    # The PAGE namespace varies by schema year; read it off the root tag,
+    # e.g. "{http://schema.primaresearch.org/PAGE/.../2013-07-15}PcGts".
+    ns_uri = root.tag[1:root.tag.index("}")] if root.tag.startswith("{") else ""
+    texts: List[str] = []
+    if ns_uri:
+        ns = {"page": ns_uri}
+        for text_line in root.findall(".//page:TextLine", ns):
+            uni = text_line.find("page:TextEquiv/page:Unicode", ns)
+            texts.append((uni.text or "").strip() if uni is not None else "")
+    else:
+        for text_line in root.findall(".//TextLine"):
+            uni = text_line.find("TextEquiv/Unicode")
+            texts.append((uni.text or "").strip() if uni is not None else "")
+    return texts
+
+
+def _build_disagreement_payload(
+    base_slot: Dict[str, Any],
+    comparison_slot: Dict[str, Any],
+    mode: ComparisonMode = ComparisonMode.ENGINE_COMPARISON,
+) -> Dict[str, Any]:
+    """Build frontend-ready comparison metrics for two stored result slots.
+
+    In ``ENGINE_COMPARISON`` mode both slots are engine outputs and metrics are
+    symmetric disagreement rates. In ``GROUND_TRUTH`` mode ``base_slot`` is the
+    reference (ground truth) and ``comparison_slot`` the hypothesis, so metrics
+    are reported as CER/WER.
+    """
     base_lines = base_slot.get("lines", [])
     comparison_lines = comparison_slot.get("lines", [])
     line_count = min(len(base_lines), len(comparison_lines))
-    labels = TranscriptionMetrics.get_display_labels(ComparisonMode.ENGINE_COMPARISON)
+    labels = TranscriptionMetrics.get_display_labels(mode)
 
     base_texts = [base_lines[i].get("text", "") for i in range(line_count)]
     comparison_texts = [comparison_lines[i].get("text", "") for i in range(line_count)]
     summary = TranscriptionMetrics.calculate_summary_metrics(
         base_texts,
         comparison_texts,
-        ComparisonMode.ENGINE_COMPARISON,
+        mode,
     )
 
     rows = []
@@ -1443,7 +1544,7 @@ def _build_disagreement_payload(base_slot: Dict[str, Any], comparison_slot: Dict
         )
         display = TranscriptionMetrics.get_display_metrics(
             raw_metrics,
-            ComparisonMode.ENGINE_COMPARISON,
+            mode,
         )
         has_disagreement = display.edit_distance > 0
         # Only ship char-level diff ops for lines that actually differ — keeps the
@@ -1597,6 +1698,42 @@ async def upload_xml(request: Request, image_id: str, file: UploadFile = File(..
     xml_path.write_bytes(content)
     session.image_cache[image_id]["xml_path"] = xml_path
     return {"success": True, "filename": file.filename}
+
+
+@app.post("/api/image/{image_id}/ground-truth")
+async def upload_ground_truth(request: Request, image_id: str, file: UploadFile = File(...)):
+    """Attach a ground-truth PAGE XML to an image for CER/WER evaluation.
+
+    The line texts are extracted and stored on the image; comparisons can then
+    be scored against this reference via ``/api/compare/ground-truth``.
+    """
+    session = _get_session(request)
+    if image_id not in session.image_cache:
+        raise HTTPException(404, "Image not found — upload image first")
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, "XML too large (max 10MB)")
+    try:
+        gt_lines = _extract_pagexml_line_texts(content)
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse PAGE XML: {e}")
+    if not gt_lines:
+        raise HTTPException(400, "No TextLine transcriptions found in the PAGE XML")
+    session.image_cache[image_id]["ground_truth"] = {
+        "lines": gt_lines,
+        "filename": file.filename or "ground_truth.xml",
+    }
+    return {"success": True, "filename": file.filename, "line_count": len(gt_lines)}
+
+
+@app.delete("/api/image/{image_id}/ground-truth")
+async def clear_ground_truth(request: Request, image_id: str):
+    """Remove a previously attached ground-truth reference."""
+    session = _get_session(request)
+    if image_id not in session.image_cache:
+        raise HTTPException(404, "Image not found")
+    session.image_cache[image_id].pop("ground_truth", None)
+    return {"success": True}
 
 
 @app.get("/api/image/{image_id}")
@@ -1809,13 +1946,24 @@ async def transcribe(request: Request, req: TranscribeRequest):
     session.cancel_events[request_id] = cancel_evt
 
     async def event_stream():
+        # eff_config wird im LapaOCR-Zweig unten neu zugewiesen; ohne nonlocal
+        # würde Python es zur lokalen Variable machen und jeder frühere Lesezugriff
+        # (nicht-Lapa-Engines) liefe in einen UnboundLocalError.
+        nonlocal eff_config
         _import_segmenters()
 
         try:
             # --- Segmentation ---
             xml_path = img_data.get("xml_path") if req.use_pagexml else None
 
-            if not eff_engine.requires_line_segmentation() and not xml_path:
+            # A page-level engine (Qwen3-VL, OpenWebUI, …) normally reads the whole
+            # page as one unit. But if the user explicitly ran Segment first, honour
+            # those cached line segments and transcribe line-by-line: that produces a
+            # segmented base the comparison workspace can align against other engines.
+            cached_source = img_data.get("seg_source")
+            has_explicit_seg = bool(img_data.get("lines")) and cached_source not in (None, "", "page", "unknown")
+
+            if not eff_engine.requires_line_segmentation() and not xml_path and not has_explicit_seg:
                 # Page-level engine with no PAGE XML — send whole page as single line
                 from inference_page import LineSegment
                 lines = [LineSegment(
@@ -1872,11 +2020,20 @@ async def transcribe(request: Request, req: TranscribeRequest):
             start_time = time.time()
             line_regions = img_data.get("line_regions") or ([0] * len(lines))
 
+            # Lapa can occasionally spend very long on one line; cap per-line generation time by default.
+            if eff_engine_name == "LapaOCR" and not eff_config.get("max_time_s"):
+                eff_config = dict(eff_config)
+                eff_config["max_time_s"] = 90
+
             for i, line in enumerate(lines):
                 # Check for cancellation before each line
                 if cancel_evt.is_set():
                     yield _sse("cancelled", {})
                     return
+
+                yield _sse("status", {
+                    "message": f"Generating line {i + 1}/{len(lines)}...",
+                })
 
                 line_img = line.image if line.image is not None else pil_image.crop(line.bbox)
                 img_array = np.array(line_img.convert("RGB"))
@@ -2006,6 +2163,8 @@ async def compare_run(request: Request, req: CompareRunRequest):
     session.cancel_events[request_id] = cancel_evt
 
     async def event_stream():
+        # Siehe transcribe(): nonlocal nötig wegen LapaOCR-Neuzuweisung von eff_config.
+        nonlocal eff_config
         try:
             yield _sse("status", {
                 "message": f"Running comparison with {eff_engine_name} on cached line segments...",
@@ -2013,10 +2172,19 @@ async def compare_run(request: Request, req: CompareRunRequest):
 
             results = []
             start_time = time.time()
+
+            if eff_engine_name == "LapaOCR" and not eff_config.get("max_time_s"):
+                eff_config = dict(eff_config)
+                eff_config["max_time_s"] = 90
+
             for i, line in enumerate(lines):
                 if cancel_evt.is_set():
                     yield _sse("cancelled", {})
                     return
+
+                yield _sse("status", {
+                    "message": f"Generating line {i + 1}/{len(lines)}...",
+                })
 
                 line_img = line.image if line.image is not None else pil_image.crop(line.bbox)
                 img_array = np.array(line_img.convert("RGB"))
@@ -2087,6 +2255,72 @@ async def compare_run(request: Request, req: CompareRunRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/compare/ground-truth")
+async def compare_ground_truth(request: Request, req: GroundTruthCompareRequest):
+    """Score stored transcription slots against an uploaded ground-truth (CER/WER).
+
+    Returns one per-line payload per scored slot (reusing the comparison
+    renderer, with the ground truth as the reference column) plus a leaderboard
+    sorted by micro CER.
+    """
+    session = _get_session(request)
+    if req.image_id not in session.image_cache:
+        raise HTTPException(404, "Image not found")
+    img_data = session.image_cache[req.image_id]
+    gt = img_data.get("ground_truth")
+    if not gt or not gt.get("lines"):
+        raise HTTPException(400, "Upload a ground-truth PAGE XML first")
+    result_slots = img_data.get("result_slots") or {}
+    if not result_slots:
+        raise HTTPException(400, "Run at least one transcription before scoring against ground truth")
+
+    gt_slot = {
+        "slot_id": "ground_truth",
+        "label": f"Ground Truth ({gt.get('filename', 'GT')})",
+        "engine_name": "ground_truth",
+        "seg_source": "ground_truth",
+        "line_count": len(gt["lines"]),
+        "kind": "ground_truth",
+        "lines": [{"text": t} for t in gt["lines"]],
+    }
+
+    if req.slot_id:
+        target_ids = [req.slot_id] if req.slot_id in result_slots else []
+    else:
+        target_ids = list(result_slots.keys())
+
+    runs = []
+    leaderboard = []
+    for sid in target_ids:
+        slot = result_slots.get(sid)
+        if not slot or not slot.get("lines"):
+            continue
+        payload = _build_disagreement_payload(gt_slot, slot, ComparisonMode.GROUND_TRUTH)
+        runs.append(payload)
+        s = payload["summary"]
+        leaderboard.append({
+            "slot_id": sid,
+            "label": slot.get("label", sid),
+            "engine_name": slot.get("engine_name"),
+            "kind": slot.get("kind", "comparison"),
+            "micro_cer": s["micro_char_rate"],
+            "macro_cer": s["macro_char_rate"],
+            "macro_wer": s["macro_word_rate"],
+            "scored_lines": s["line_count"],
+            "gt_line_count": len(gt["lines"]),
+        })
+
+    if not runs:
+        raise HTTPException(400, "No matching transcription slot to score")
+
+    leaderboard.sort(key=lambda r: r["micro_cer"])
+    return {
+        "ground_truth": {"filename": gt.get("filename"), "line_count": len(gt["lines"])},
+        "runs": runs,
+        "leaderboard": leaderboard,
+    }
 
 
 @app.post("/api/transcribe/cancel")

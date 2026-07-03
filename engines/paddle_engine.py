@@ -8,7 +8,7 @@ IMPORTANT: PaddleOCR must be installed in a SEPARATE venv (venv_paddle) to avoid
 opencv-contrib-python conflicting with the main venv's opencv-python.
 
 Setup:
-    python -m venv /home/achimrabus/htr_gui/dhlab-slavistik/venv_paddle
+    python -m venv venv_paddle
     source venv_paddle/bin/activate
     pip install paddlepaddle paddleocr          # CPU
     # OR
