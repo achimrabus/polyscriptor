@@ -195,6 +195,90 @@ def test_upload_rejects_oversized_image(monkeypatch):
     assert "too large" in resp.json()["detail"].lower()
 
 
+# ── Job queue + activity (Phase B3 + C) ──────────────────────────────────────
+
+def _png_bytes():
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (200, 100), "white").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_activity_endpoint_structure():
+    resp = client.get("/api/activity")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data["active"], list)
+    assert isinstance(data["queued_jobs"], int)
+
+
+def test_interactive_priority_gate():
+    assert server_mod._interactive_idle.is_set()
+    server_mod._interactive_begin()
+    assert not server_mod._interactive_idle.is_set()
+    server_mod._interactive_begin()
+    server_mod._interactive_end()
+    assert not server_mod._interactive_idle.is_set()  # one still active
+    server_mod._interactive_end()
+    assert server_mod._interactive_idle.is_set()
+
+
+def test_job_unknown_id_404():
+    assert client.get("/api/v1/jobs/does-not-exist").status_code == 404
+
+
+def test_job_requires_uploaded_image():
+    resp = client.post("/api/v1/jobs", json={"image_id": "nope"})
+    assert resp.status_code == 404
+
+
+def test_job_limit_returns_429(monkeypatch):
+    monkeypatch.setattr(server_mod, "_ANON_MAX_JOBS", 0)
+    up = client.post("/api/image/upload",
+                     files={"file": ("t.png", _png_bytes(), "image/png")})
+    image_id = up.json()["image_id"]
+    resp = client.post("/api/v1/jobs", json={"image_id": image_id})
+    assert resp.status_code == 429
+
+
+def test_job_cancel_queued():
+    # Module-level client has no running worker (no lifespan) -> job stays queued
+    up = client.post("/api/image/upload",
+                     files={"file": ("t.png", _png_bytes(), "image/png")})
+    image_id = up.json()["image_id"]
+    created = client.post("/api/v1/jobs", json={"image_id": image_id})
+    assert created.status_code == 202
+    job_id = created.json()["job_id"]
+    assert client.get(f"/api/v1/jobs/{job_id}").json()["status"] == "queued"
+    cancelled = client.delete(f"/api/v1/jobs/{job_id}")
+    assert cancelled.json()["status"] == "cancelled"
+    assert client.get(f"/api/v1/jobs/{job_id}").json()["status"] == "cancelled"
+
+
+def test_job_lifecycle_errors_without_engine():
+    """Full worker roundtrip: job runs and fails cleanly (no engine loaded)."""
+    import time as _t
+    with TestClient(app) as c:  # context manager runs startup -> worker task
+        up = c.post("/api/image/upload",
+                    files={"file": ("t.png", _png_bytes(), "image/png")})
+        image_id = up.json()["image_id"]
+        created = c.post("/api/v1/jobs", json={"image_id": image_id})
+        assert created.status_code == 202
+        job_id = created.json()["job_id"]
+        status = None
+        for _ in range(100):
+            status = c.get(f"/api/v1/jobs/{job_id}").json()
+            if status["status"] in ("done", "error"):
+                break
+            _t.sleep(0.05)
+        assert status["status"] == "error"
+        assert "No engine loaded" in status["error"]
+        # Own job list contains it
+        listed = c.get("/api/v1/jobs").json()["jobs"]
+        assert any(j["job_id"] == job_id for j in listed)
+
+
 # ── Key generation script ────────────────────────────────────────────────────
 
 def test_generate_api_key_roundtrip(tmp_path):

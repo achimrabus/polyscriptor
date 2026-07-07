@@ -107,6 +107,46 @@ async function updateGpuStatus() {
     }
 }
 
+// ── Activity widget: who is computing right now ────────────────────────
+async function updateActivity() {
+    const widget = document.getElementById('activity-status');
+    if (!widget) return;
+    try {
+        const resp = await api('/api/activity');
+        const data = await resp.json();
+        const n = data.active.length;
+        if (n === 0 && data.queued_jobs === 0) {
+            widget.style.display = 'none';
+            widget.replaceChildren();
+            widget.title = '';
+            return;
+        }
+
+        const parts = [];
+        const first = data.active[0];
+        if (first) {
+            const engine = first.engine ? ` · ${first.engine}` : '';
+            const prog = first.total ? ` ${first.current}/${first.total}` : '';
+            parts.push(`${first.who}${engine}${prog}`);
+            if (n > 1) parts.push(`+${n - 1}`);
+        }
+        if (data.queued_jobs > 0) parts.push(`${data.queued_jobs} queued`);
+
+        const dot = document.createElement('span');
+        dot.className = 'activity-dot';
+        const label = document.createElement('span');
+        label.textContent = parts.join(' · ');
+        widget.replaceChildren(dot, label);
+        widget.title = data.active.map(a =>
+            `${a.who} — ${a.kind}${a.engine ? ' (' + a.engine + ')' : ''}` +
+            (a.total ? ` ${a.current}/${a.total}` : '') + `, ${a.running_s}s`
+        ).join('\n');
+        widget.style.display = '';
+    } catch {
+        widget.style.display = 'none';
+    }
+}
+
 // ── Zoom controls ──────────────────────────────────────────────────────
 let zoomLevel = 1.0;
 const ZOOM_STEP = 0.25;
@@ -300,6 +340,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initGlobalDropBlocker();
     updateGpuStatus();
     setInterval(updateGpuStatus, 15000); // refresh every 15s
+    updateActivity();
+    setInterval(updateActivity, 10000); // who is computing right now
 
     // On mobile: auto-switch tab after key events
     on('image-uploaded',        () => mobileActivateTab('image'));

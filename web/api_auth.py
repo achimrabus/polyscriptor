@@ -42,6 +42,8 @@ class ApiKeyUser:
     """Identity attached to a request that presented a valid API key."""
     name: str
     is_admin: bool = False
+    max_jobs: int = 2                       # max queued+running jobs (Phase B3)
+    daily_page_quota: Optional[int] = None  # max transcribed pages/day; None = unlimited
 
 
 class ApiKeyRegistry:
@@ -70,7 +72,13 @@ class ApiKeyRegistry:
             if not name or len(key_hash) != 64:
                 log.warning(f"API key entry skipped (need name + 64-hex key_sha256): {entry!r}")
                 continue
-            self._by_hash[key_hash] = ApiKeyUser(name=str(name), is_admin=bool(entry.get("admin", False)))
+            quota = entry.get("daily_page_quota")
+            self._by_hash[key_hash] = ApiKeyUser(
+                name=str(name),
+                is_admin=bool(entry.get("admin", False)),
+                max_jobs=int(entry.get("max_jobs", 2)),
+                daily_page_quota=int(quota) if quota is not None else None,
+            )
         self.enabled = bool(self._by_hash)
         if self.enabled:
             log.info(f"API key auth enabled: {len(self._by_hash)} key(s) from {self.keys_file}")

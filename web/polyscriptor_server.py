@@ -320,7 +320,7 @@ def _cleanup_expired_sessions() -> int:
     return len(expired)
 
 
-_SESSION_PASSTHROUGH_PATHS = {"/api/gpu", "/api/engines", "/api/kraken/presets"}
+_SESSION_PASSTHROUGH_PATHS = {"/api/gpu", "/api/engines", "/api/kraken/presets", "/api/activity"}
 
 
 @app.middleware("http")
@@ -512,8 +512,9 @@ async def _periodic_cleanup():
         n = _cleanup_old_uploads()
         m = _cleanup_expired_sessions()
         p = _evict_idle_slots()
-        if n or m or p:
-            log.info(f"Periodic cleanup: {n} upload(s), {m} session(s), {p} idle engine slot(s).")
+        q = _cleanup_finished_jobs()
+        if n or m or p or q:
+            log.info(f"Periodic cleanup: {n} upload(s), {m} session(s), {p} idle engine slot(s), {q} old job(s).")
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +566,9 @@ async def startup_event():
 
     # Schedule periodic cleanup (every hour)
     asyncio.create_task(_periodic_cleanup())
+
+    # Start the batch-job worker (Phase B3) — serial, yields to interactive UI
+    asyncio.create_task(_job_worker())
 
     # Auto-load default engine from server_config.yaml if present
     cfg = _load_startup_config()
@@ -1022,8 +1026,343 @@ class GroundTruthCompareRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Interactive-priority gate + activity registry + job queue (Phase B3 + C)
+# ---------------------------------------------------------------------------
+#
+# Interactive SSE transcriptions (web UI) always take priority over queued
+# batch jobs: the job worker pauses between lines while any interactive
+# transcription is running. Jobs run serially through a single worker task.
+
+_interactive_active = 0
+_interactive_idle = asyncio.Event()
+_interactive_idle.set()
+
+
+def _interactive_begin() -> None:
+    global _interactive_active
+    _interactive_active += 1
+    _interactive_idle.clear()
+
+
+def _interactive_end() -> None:
+    global _interactive_active
+    _interactive_active = max(0, _interactive_active - 1)
+    if _interactive_active == 0:
+        _interactive_idle.set()
+
+
+# Activity registry (Phase C): what is computing right now, visible to everyone.
+_activity: Dict[str, dict] = {}
+
+
+def _request_actor(request: Request) -> str:
+    """Display name for the activity panel: key user or anonymized session."""
+    api_user = getattr(request.state, "api_user", None)
+    if api_user is not None:
+        return api_user.name
+    session = getattr(request.state, "session", None)
+    return f"Gast-{session.session_id[:8]}" if session else "Gast"
+
+
+def _activity_register(entry_id: str, kind: str, who: str, engine: str) -> None:
+    _activity[entry_id] = {
+        "kind": kind,  # transcribe | compare | job
+        "who": who,
+        "engine": engine,
+        "current": 0,
+        "total": 0,
+        "started": time.time(),
+    }
+
+
+def _activity_update(entry_id: str, current: int, total: int) -> None:
+    entry = _activity.get(entry_id)
+    if entry:
+        entry["current"] = current
+        entry["total"] = total
+
+
+def _activity_remove(entry_id: str) -> None:
+    _activity.pop(entry_id, None)
+
+
+@dataclass
+class TranscriptionJob:
+    """One queued batch transcription (Phase B3). Runs against the owner's
+    session state: the image must be uploaded and an engine loaded before
+    submitting; the job uses whatever engine the session has at run time."""
+    job_id: str
+    owner: str          # "key:<name>" or "session:<id>"
+    display_name: str   # key user name or Gast-<sid8>
+    session_id: str
+    params: TranscribeRequest
+    status: str = "queued"  # queued | running | done | error | cancelled
+    created: float = field(default_factory=time.time)
+    started: Optional[float] = None
+    finished: Optional[float] = None
+    current: int = 0
+    total: int = 0
+    results: Optional[List[dict]] = None
+    error: Optional[str] = None
+    engine_name: str = ""
+    cancel_evt: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+jobs: Dict[str, TranscriptionJob] = {}
+job_queue: asyncio.Queue = asyncio.Queue()
+_JOB_RETENTION_SECONDS = 24 * 3600
+_ANON_MAX_JOBS = 2  # per-session job cap when no API key is presented
+
+# Daily page quota bookkeeping: (owner, "YYYY-MM-DD") -> pages transcribed
+_job_pages_today: Dict[tuple, int] = {}
+
+
+def _pages_used_today(owner: str) -> int:
+    return _job_pages_today.get((owner, time.strftime("%Y-%m-%d")), 0)
+
+
+def _count_job_pages(owner: str, pages: int = 1) -> None:
+    today = time.strftime("%Y-%m-%d")
+    # prune other days so the dict cannot grow unbounded
+    for key in [k for k in _job_pages_today if k[1] != today]:
+        del _job_pages_today[key]
+    _job_pages_today[(owner, today)] = _job_pages_today.get((owner, today), 0) + pages
+
+
+def _serialize_job(job: TranscriptionJob, include_results: bool = True) -> dict:
+    out = {
+        "job_id": job.job_id,
+        "status": job.status,
+        "created": job.created,
+        "started": job.started,
+        "finished": job.finished,
+        "progress": {"current": job.current, "total": job.total},
+        "engine": job.engine_name,
+        "error": job.error,
+    }
+    if include_results and job.status == "done":
+        out["lines"] = job.results
+    return out
+
+
+async def _run_job(job: TranscriptionJob) -> None:
+    if job.status == "cancelled":
+        return
+    job.status = "running"
+    job.started = time.time()
+    _activity_register(job.job_id, "job", job.display_name, "")
+    try:
+        session = sessions.get(job.session_id)
+        if session is None:
+            raise RuntimeError("Session expired before the job ran — re-upload and resubmit")
+        img_data = session.image_cache.get(job.params.image_id)
+        if img_data is None:
+            raise RuntimeError("Image no longer cached — re-upload and resubmit")
+
+        slot, eff_engine, eff_config, eff_engine_name, _pool_key = _resolve_effective_engine(
+            session, job.params.engine_config_overrides,
+        )
+        job.engine_name = eff_engine_name
+        _activity[job.job_id]["engine"] = eff_engine_name
+
+        _import_segmenters()
+        pil_image = img_data["pil_image"]
+        req = job.params
+        xml_path = img_data.get("xml_path") if req.use_pagexml else None
+
+        # Segmentation — same decision tree as /api/transcribe
+        if not eff_engine.requires_line_segmentation() and not xml_path and not img_data.get("lines"):
+            from inference_page import LineSegment
+            lines = [LineSegment(image=pil_image,
+                                 bbox=(0, 0, pil_image.width, pil_image.height),
+                                 coords=None)]
+            img_data["lines"] = lines
+            img_data["line_regions"] = [0]
+            img_data["seg_source"] = "page"
+        else:
+            cached_lines = img_data.get("lines")
+            desired_source = "pagexml" if xml_path else req.seg_method
+            if not (cached_lines and img_data.get("seg_source") == desired_source):
+                await _run_segmentation(img_data, "pagexml" if xml_path else req.seg_method,
+                                        req.seg_device, req.max_columns,
+                                        req.split_width_fraction, req.text_direction)
+            lines = img_data["lines"]
+
+        line_regions = img_data.get("line_regions") or ([0] * len(lines))
+        if eff_engine_name == "LapaOCR" and not eff_config.get("max_time_s"):
+            eff_config = dict(eff_config)
+            eff_config["max_time_s"] = 90
+
+        results = []
+        job.total = len(lines)
+        for i, line in enumerate(lines):
+            # Interactive web-UI requests take priority: pause between lines
+            await _interactive_idle.wait()
+            if job.cancel_evt.is_set():
+                job.status = "cancelled"
+                return
+
+            line_img = line.image if line.image is not None else pil_image.crop(line.bbox)
+            img_array = np.array(line_img.convert("RGB"))
+            if slot:
+                async with slot.lock:
+                    slot.last_used = time.time()
+                    result = await asyncio.to_thread(eff_engine.transcribe_line, img_array, eff_config)
+            else:
+                result = await asyncio.to_thread(eff_engine.transcribe_line, img_array, eff_config)
+
+            text = str(result.text) if hasattr(result, "text") else str(result)
+            confidence = None
+            if hasattr(result, "confidence") and result.confidence is not None:
+                confidence = float(result.confidence)
+                if confidence > 1:
+                    confidence = confidence / 100.0
+            results.append({
+                "index": i,
+                "text": text,
+                "confidence": confidence,
+                "bbox": list(line.bbox),
+                "region": line_regions[i] if i < len(line_regions) else 0,
+            })
+            job.current = i + 1
+            _activity_update(job.job_id, i + 1, len(lines))
+
+        job.results = results
+        job.status = "done"
+        _count_job_pages(job.owner)
+    except HTTPException as e:
+        job.status = "error"
+        job.error = str(e.detail)
+    except Exception as e:
+        log.exception(f"Job {job.job_id} failed")
+        job.status = "error"
+        job.error = str(e)
+    finally:
+        job.finished = time.time()
+        _activity_remove(job.job_id)
+
+
+async def _job_worker() -> None:
+    """Single worker: jobs run strictly serially, yielding to interactive use."""
+    while True:
+        job = await job_queue.get()
+        try:
+            await _run_job(job)
+        except Exception:
+            log.exception("Job worker: unexpected error")
+        finally:
+            job_queue.task_done()
+
+
+def _cleanup_finished_jobs() -> int:
+    cutoff = time.time() - _JOB_RETENTION_SECONDS
+    stale = [jid for jid, j in jobs.items()
+             if j.status in ("done", "error", "cancelled") and (j.finished or j.created) < cutoff]
+    for jid in stale:
+        del jobs[jid]
+    return len(stale)
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.post("/api/v1/jobs", status_code=202)
+async def create_job(request: Request, req: TranscribeRequest):
+    """Queue a batch transcription (Phase B3). Same session workflow as
+    /api/transcribe (upload image + load engine first), but returns 202 with a
+    job id for polling instead of holding an SSE stream open. Queued jobs run
+    serially and always yield to interactive web-UI transcriptions."""
+    session = _get_session(request)
+    if req.image_id not in session.image_cache:
+        raise HTTPException(404, "Image not found — upload first")
+
+    api_user = getattr(request.state, "api_user", None)
+    if api_user is not None:
+        owner, display = f"key:{api_user.name}", api_user.name
+        max_jobs, quota = api_user.max_jobs, api_user.daily_page_quota
+    else:
+        owner, display = f"session:{session.session_id}", f"Gast-{session.session_id[:8]}"
+        max_jobs, quota = _ANON_MAX_JOBS, None
+
+    active = sum(1 for j in jobs.values() if j.owner == owner and j.status in ("queued", "running"))
+    if active >= max_jobs:
+        raise HTTPException(429, f"Job limit reached ({max_jobs} queued/running jobs) — wait for jobs to finish")
+    if quota is not None and _pages_used_today(owner) >= quota:
+        raise HTTPException(429, f"Daily page quota reached ({quota} pages/day)")
+
+    job = TranscriptionJob(job_id=str(uuid.uuid4()), owner=owner, display_name=display,
+                           session_id=session.session_id, params=req)
+    jobs[job.job_id] = job
+    job_queue.put_nowait(job)
+    return {"job_id": job.job_id, "status": "queued", "queue_position": job_queue.qsize()}
+
+
+def _get_owned_job(request: Request, job_id: str) -> TranscriptionJob:
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    owner_ids = set()
+    api_user = getattr(request.state, "api_user", None)
+    if api_user is not None:
+        owner_ids.add(f"key:{api_user.name}")
+    session = getattr(request.state, "session", None)
+    if session is not None:
+        owner_ids.add(f"session:{session.session_id}")
+    if job.owner not in owner_ids:
+        raise HTTPException(403, "Not your job")
+    return job
+
+
+@app.get("/api/v1/jobs")
+async def list_jobs(request: Request):
+    """List the caller's own jobs (newest first, without result payloads)."""
+    api_user = getattr(request.state, "api_user", None)
+    session = getattr(request.state, "session", None)
+    owner_ids = set()
+    if api_user is not None:
+        owner_ids.add(f"key:{api_user.name}")
+    if session is not None:
+        owner_ids.add(f"session:{session.session_id}")
+    own = [j for j in jobs.values() if j.owner in owner_ids]
+    own.sort(key=lambda j: j.created, reverse=True)
+    return {"jobs": [_serialize_job(j, include_results=False) for j in own]}
+
+
+@app.get("/api/v1/jobs/{job_id}")
+async def get_job(request: Request, job_id: str):
+    return _serialize_job(_get_owned_job(request, job_id))
+
+
+@app.delete("/api/v1/jobs/{job_id}")
+async def cancel_job(request: Request, job_id: str):
+    job = _get_owned_job(request, job_id)
+    if job.status in ("done", "error", "cancelled"):
+        return {"job_id": job.job_id, "status": job.status}
+    job.cancel_evt.set()
+    if job.status == "queued":
+        job.status = "cancelled"
+        job.finished = time.time()
+    return {"job_id": job.job_id, "status": "cancelling" if job.status == "running" else job.status}
+
+
+@app.get("/api/activity")
+async def activity_status():
+    """Who is computing right now (Phase C) — shown to all users so batch and
+    interactive users can see each other and coordinate."""
+    now = time.time()
+    active = [
+        {
+            "kind": e["kind"],
+            "who": e["who"],
+            "engine": e["engine"],
+            "current": e["current"],
+            "total": e["total"],
+            "running_s": round(now - e["started"]),
+        }
+        for e in sorted(_activity.values(), key=lambda e: e["started"])
+    ]
+    return {"active": active, "queued_jobs": sum(1 for j in jobs.values() if j.status == "queued")}
 
 @app.get("/")
 async def index():
@@ -2003,6 +2342,7 @@ async def transcribe(request: Request, req: TranscribeRequest):
     request_id = str(uuid.uuid4())
     cancel_evt = asyncio.Event()
     session.cancel_events[request_id] = cancel_evt
+    actor = _request_actor(request)
 
     async def event_stream():
         # eff_config wird im LapaOCR-Zweig unten neu zugewiesen; ohne nonlocal
@@ -2010,6 +2350,8 @@ async def transcribe(request: Request, req: TranscribeRequest):
         # (nicht-Lapa-Engines) liefe in einen UnboundLocalError.
         nonlocal eff_config
         _import_segmenters()
+        _interactive_begin()  # batch jobs pause while this runs
+        _activity_register(request_id, "transcribe", actor, eff_engine_name)
 
         try:
             # --- Segmentation ---
@@ -2135,6 +2477,7 @@ async def transcribe(request: Request, req: TranscribeRequest):
                 if thinking_text:
                     line_data["thinking_text"] = thinking_text
                 results.append(line_data)
+                _activity_update(request_id, i + 1, len(lines))
                 progress_data: Dict[str, Any] = {
                     "current": i + 1,
                     "total": len(lines),
@@ -2178,6 +2521,8 @@ async def transcribe(request: Request, req: TranscribeRequest):
             log.exception("Transcription error")
             yield _sse("error", {"message": str(e)})
         finally:
+            _interactive_end()
+            _activity_remove(request_id)
             # Clean up this request's cancel event
             session.cancel_events.pop(request_id, None)
 
@@ -2220,10 +2565,13 @@ async def compare_run(request: Request, req: CompareRunRequest):
     request_id = str(uuid.uuid4())
     cancel_evt = asyncio.Event()
     session.cancel_events[request_id] = cancel_evt
+    actor = _request_actor(request)
 
     async def event_stream():
         # Siehe transcribe(): nonlocal nötig wegen LapaOCR-Neuzuweisung von eff_config.
         nonlocal eff_config
+        _interactive_begin()  # batch jobs pause while this runs
+        _activity_register(request_id, "compare", actor, eff_engine_name)
         try:
             yield _sse("status", {
                 "message": f"Running comparison with {eff_engine_name} on cached line segments...",
@@ -2278,6 +2626,7 @@ async def compare_run(request: Request, req: CompareRunRequest):
                     "region": line_regions[i] if i < len(line_regions) else 0,
                 }
                 results.append(line_data)
+                _activity_update(request_id, i + 1, len(lines))
                 yield _sse("progress", {
                     "current": i + 1,
                     "total": len(lines),
@@ -2304,6 +2653,8 @@ async def compare_run(request: Request, req: CompareRunRequest):
             log.exception("Comparison run error")
             yield _sse("error", {"message": str(e)})
         finally:
+            _interactive_end()
+            _activity_remove(request_id)
             session.cancel_events.pop(request_id, None)
 
     return StreamingResponse(

@@ -131,6 +131,31 @@ body {
 }
 .btn-icon:hover { border-color: var(--primary); color: var(--primary); }
 
+/* ── Activity widget (who is computing right now) ───────────────────── */
+.activity-widget {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    max-width: 260px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.activity-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--warning);
+    flex-shrink: 0;
+    animation: activity-pulse 1.6s ease-in-out infinite;
+}
+@keyframes activity-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+}
+
 /* ── GPU widget ─────────────────────────────────────────────────────── */
 .gpu-widget {
     display: flex;
