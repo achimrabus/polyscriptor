@@ -423,15 +423,38 @@ function createField(field) {
 
                 uploadBtn.addEventListener('click', () => fileInput.click());
 
+                // With server-side key auth enabled, model upload is admin-only:
+                // send the admin key from localStorage; on 401/403 ask once and retry.
+                const _doUpload = (f, adminKey) => {
+                    const fd = new FormData();
+                    fd.append('file', f);
+                    return fetch('/api/models/upload', {
+                        method: 'POST',
+                        body: fd,
+                        headers: adminKey ? { 'X-API-Key': adminKey } : {},
+                    });
+                };
+
                 fileInput.addEventListener('change', async () => {
                     const f = fileInput.files[0];
                     if (!f) return;
                     uploadStatus.textContent = `Uploading ${f.name}…`;
                     uploadBtn.disabled = true;
                     try {
-                        const fd = new FormData();
-                        fd.append('file', f);
-                        const resp = await fetch('/api/models/upload', { method: 'POST', body: fd });
+                        let adminKey = _loadBrowserKey('admin');
+                        let resp = await _doUpload(f, adminKey);
+                        if (resp.status === 401 || resp.status === 403) {
+                            if (adminKey) _saveBrowserKey('admin', '');  // stored key was rejected
+                            const entered = prompt(
+                                'Model upload requires an admin API key on this server.\n' +
+                                'Enter your admin key (stored only in this browser):');
+                            if (!entered || !entered.trim()) {
+                                throw new Error('admin API key required');
+                            }
+                            adminKey = entered.trim();
+                            resp = await _doUpload(f, adminKey);
+                            if (resp.ok) _saveBrowserKey('admin', adminKey);
+                        }
                         if (!resp.ok) {
                             const err = await resp.json().catch(() => ({ detail: resp.statusText }));
                             throw new Error(err.detail || resp.statusText);
