@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from PIL import Image, ImageOps
 from fastapi import Cookie, FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -254,6 +254,20 @@ _SESSION_TTL_SECONDS = 7200
 # port. Default is unchanged for existing deployments.
 _SESSION_COOKIE = os.environ.get("POLYSCRIPTOR_SESSION_COOKIE", "polyscriptor_session")
 
+# API key layer (Phase B1) — opt-in identity for programmatic clients.
+# Without a configured key file the registry is disabled and requests are
+# handled exactly as before. See web/api_auth.py and API_MULTIUSER_ROADMAP.md.
+try:
+    from web.api_auth import load_registry_from_env
+except ImportError:  # server started with web/ as CWD on sys.path
+    from api_auth import load_registry_from_env
+
+api_key_registry = load_registry_from_env()
+
+# Upload pixel cap (Phase B2). Legitimate manuscript facsimiles reach ~180 MP,
+# so the cap is generous — it only stops pathological decompression bombs.
+_MAX_UPLOAD_PIXELS = int(os.environ.get("POLYSCRIPTOR_MAX_UPLOAD_PIXELS", 600_000_000))
+
 
 # ---------------------------------------------------------------------------
 # Per-user sessions — Phase 1 of multi-user refactoring
@@ -317,6 +331,16 @@ async def session_middleware(request: Request, call_next):
     last_active updates so that background browser polling cannot keep a session
     alive indefinitely and prevent engine-slot eviction.
     """
+    # API key check (Phase B1): only rejects when a key is PRESENTED but
+    # invalid. No header → anonymous browser session, unchanged behavior.
+    api_user = None
+    raw_key = request.headers.get("X-API-Key")
+    if raw_key and api_key_registry.enabled:
+        api_user = api_key_registry.verify(raw_key)
+        if api_user is None:
+            return JSONResponse(status_code=401, content={"detail": "Invalid API key"})
+    request.state.api_user = api_user
+
     session_id = request.cookies.get(_SESSION_COOKIE)
     session, created = _get_or_create_session(session_id)
     request.state.session = session
@@ -328,6 +352,9 @@ async def session_middleware(request: Request, call_next):
         session.last_active = time.time()
 
     response = await call_next(request)
+
+    if api_user is not None and request.url.path.startswith("/api/"):
+        api_key_registry.log_usage(api_user, request.method, request.url.path, response.status_code)
 
     if created or session_id != session.session_id:
         response.set_cookie(
@@ -343,6 +370,23 @@ async def session_middleware(request: Request, call_next):
 def _get_session(request: Request) -> UserSession:
     """FastAPI dependency: extract session set by middleware."""
     return request.state.session
+
+
+def _check_admin(request: Request, legacy_localhost_only: bool) -> None:
+    """Guard for dangerous endpoints (Phase B2).
+
+    With key auth enabled, only a valid admin key passes — the localhost-IP
+    check is retired because it is unreliable behind a reverse proxy
+    (request.client.host becomes the proxy IP). Without a key file, each
+    endpoint keeps its exact legacy behavior.
+    """
+    if api_key_registry.enabled:
+        user = getattr(request.state, "api_user", None)
+        if user is None or not user.is_admin:
+            raise HTTPException(status_code=403, detail="Admin API key required (X-API-Key)")
+    elif legacy_localhost_only:
+        if request.client and request.client.host not in ("127.0.0.1", "::1"):
+            raise HTTPException(status_code=403, detail="localhost only")
 
 
 def _cleanup_old_uploads() -> int:
@@ -1351,10 +1395,8 @@ async def list_keys():
 
 @app.post("/api/admin/evict-all")
 async def admin_evict_all(request: Request):
-    """Force-evict all engine slots from VRAM (localhost admin only)."""
-    if request.client and request.client.host not in ("127.0.0.1", "::1"):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=403, detail="localhost only")
+    """Force-evict all engine slots from VRAM (admin key; legacy: localhost only)."""
+    _check_admin(request, legacy_localhost_only=True)
     async with pool_lock:
         evicted = []
         for key, slot in list(engine_pool.items()):
@@ -1667,6 +1709,23 @@ async def upload_image(
 
     try:
         pil_image = Image.open(save_path)
+        width, height = pil_image.size  # lazy — header only, no full decode yet
+    except Exception as e:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(400, f"Invalid image: {e}")
+
+    # Decompression-bomb guard: PIL's own MAX_IMAGE_PIXELS is disabled globally
+    # (inference_page.py) for legitimate huge facsimiles, so uploads must be
+    # capped here BEFORE exif_transpose/convert trigger the full decode.
+    if width * height > _MAX_UPLOAD_PIXELS:
+        save_path.unlink(missing_ok=True)
+        raise HTTPException(
+            400,
+            f"Image too large: {width}x{height} px "
+            f"(max {_MAX_UPLOAD_PIXELS // 1_000_000} megapixels)",
+        )
+
+    try:
         pil_image = ImageOps.exif_transpose(pil_image)
         pil_image = pil_image.convert("RGB")
         if max_dim and max(pil_image.width, pil_image.height) > max_dim:
@@ -2553,8 +2612,13 @@ async def kraken_presets():
 
 
 @app.post("/api/models/upload")
-async def upload_model(file: UploadFile = File(...)):
-    """Upload a Kraken .mlmodel file to the server's models/kraken_uploads/ directory."""
+async def upload_model(request: Request, file: UploadFile = File(...)):
+    """Upload a Kraken .mlmodel file to the server's models/kraken_uploads/ directory.
+
+    Model files are deserialized on load — with key auth enabled this endpoint
+    is admin-only. Legacy (no key file): open, protected only by the perimeter.
+    """
+    _check_admin(request, legacy_localhost_only=False)
     filename = file.filename or "model.mlmodel"
     if not filename.lower().endswith(".mlmodel"):
         raise HTTPException(400, "Only .mlmodel files are accepted")

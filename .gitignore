@@ -166,8 +166,7 @@ monitor_*.sh
 check_*.py
 test_*.py
 # Exception: web API test suite is a proper test, not a throwaway script
-!web/tests/test_server.py
-!web/tests/test_comparison_metrics.py
+!web/tests/test_*.py
 
 # Accidentally created files
 =*
@@ -235,6 +234,8 @@ run_party_*.sh
 
 # Web UI key store (contains API keys — never commit)
 web/api_keys.json
+web/api_keys.yaml
+web/api_usage_log.jsonl
 web/uploads/
 
 # Diagnostic and inspection scripts (temporary)
