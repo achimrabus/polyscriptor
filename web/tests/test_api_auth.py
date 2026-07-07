@@ -310,3 +310,22 @@ def test_generate_api_key_roundtrip(tmp_path):
     assert reg.verify(raw1).is_admin is False
     assert reg.verify(raw2).name == "dave"
     assert reg.verify(raw2).is_admin is True
+
+
+def test_list_and_remove_keys(tmp_path):
+    from web.generate_api_key import generate_key, list_keys, remove_key
+
+    keys_file = tmp_path / "api_keys.yaml"
+    raw_carol = generate_key("carol", keys_file)
+    raw_dave = generate_key("dave", keys_file, admin=True)
+
+    names = [e["name"] for e in list_keys(keys_file)]
+    assert names == ["carol", "dave"]
+
+    assert remove_key("carol", keys_file) == 1
+    assert remove_key("carol", keys_file) == 0  # already gone
+
+    reg = ApiKeyRegistry(keys_file)
+    assert reg.verify(raw_carol) is None       # revoked
+    assert reg.verify(raw_dave).name == "dave"  # untouched
+    assert [e["name"] for e in list_keys(keys_file)] == ["dave"]
