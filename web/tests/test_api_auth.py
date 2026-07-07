@@ -242,6 +242,22 @@ def test_job_limit_returns_429(monkeypatch):
     assert resp.status_code == 429
 
 
+def test_job_requires_key_when_auth_enabled(enabled_registry):
+    up = client.post("/api/image/upload",
+                     files={"file": ("t.png", _png_bytes(), "image/png")})
+    image_id = up.json()["image_id"]
+    # Anonymous: batch jobs are refused while key auth is on
+    resp = client.post("/api/v1/jobs", json={"image_id": image_id})
+    assert resp.status_code == 403
+    # With a valid (non-admin) key: accepted
+    resp = client.post("/api/v1/jobs", json={"image_id": image_id},
+                       headers={"X-API-Key": "alice-key-123"})
+    assert resp.status_code == 202
+    # Clean up: cancel so the queued job never runs
+    job_id = resp.json()["job_id"]
+    client.delete(f"/api/v1/jobs/{job_id}", headers={"X-API-Key": "alice-key-123"})
+
+
 def test_job_cancel_queued():
     # Module-level client has no running worker (no lifespan) -> job stays queued
     up = client.post("/api/image/upload",

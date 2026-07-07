@@ -1274,10 +1274,17 @@ async def create_job(request: Request, req: TranscribeRequest):
     job id for polling instead of holding an SSE stream open. Queued jobs run
     serially and always yield to interactive web-UI transcriptions."""
     session = _get_session(request)
+    api_user = getattr(request.state, "api_user", None)
+
+    # With key auth enabled, batch jobs require identity — otherwise dropping
+    # the key would be the easy way around per-key quotas. Interactive SSE
+    # transcription (the web UI path) stays open as before.
+    if api_key_registry.enabled and api_user is None:
+        raise HTTPException(403, "API key required for batch jobs on this server (X-API-Key header)")
+
     if req.image_id not in session.image_cache:
         raise HTTPException(404, "Image not found — upload first")
 
-    api_user = getattr(request.state, "api_user", None)
     if api_user is not None:
         owner, display = f"key:{api_user.name}", api_user.name
         max_jobs, quota = api_user.max_jobs, api_user.daily_page_quota
