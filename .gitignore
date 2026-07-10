@@ -251,3 +251,9 @@ prepare_gabelsberger_shorthand.py
 
 # Runtime PID files (created by training/process scripts)
 *.pid
+
+# Disabled/archived model weights (large binaries)
+_disabled_models/
+
+# Kaggle competition data (downloaded, reproducible via kaggle CLI)
+kaggle_handwritten_to_data/

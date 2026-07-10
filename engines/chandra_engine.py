@@ -1,41 +1,35 @@
 """
-PaddleOCR-VL Engine Plugin
+Chandra Engine Plugin
 
-Wraps PaddleOCR-VL-1.5 (a 0.9B vision-language document-parsing model) as a
-whole-page OCR engine for Polyscriptor. Unlike the classic PaddleOCR engine,
-this is a VLM: it reads the full page and emits markdown/text directly — no
-pre-segmented lines and no separate detection/recognition models.
+Wraps Chandra 2 (datalab-to/chandra-ocr-2, a 5B vision-language OCR model) as a
+whole-page OCR engine for Polyscriptor. Chandra reads the full page and emits
+HTML directly — no pre-segmented lines. The worker converts the HTML to plain
+text; the raw HTML is kept in the metadata.
 
-IMPORTANT: PaddleOCR-VL lives in its OWN isolated venv so it never disturbs the
-classic PaddleOCR engine in venv_paddle. The classic engine does not need
-`transformers`; the VL pipeline does. Keeping them apart avoids version
-conflicts (paddlex / transformers).
+Strengths: universal OCR — 90+ languages, printed and handwritten text, tables,
+math, forms (SOTA on olmOCR-Bench). Weakness: historical Slavic handwriting —
+specialized models (CRNN-CTC, TrOCR fine-tunes) are far more accurate there;
+see the benchmark notes in the model registry.
 
-The venv location defaults to ``venv_paddle_vl`` in the project root (same
-convention as venv_paddle / venv_deepseek / venv_chandra) and can be pointed
-anywhere via the ``POLYSCRIPTOR_PADDLE_VL_VENV`` environment variable (or the
-``venv_path`` config field / GUI browse button). Model/HF caches default to
-subdirectories inside the venv directory (self-contained); override the cache
-root with ``POLYSCRIPTOR_PADDLE_VL_CACHE``.
+IMPORTANT: Chandra lives in its OWN isolated venv (needs transformers >= 5.x,
+which conflicts with the main venv). Default location is ``venv_chandra`` in
+the project root; override via ``POLYSCRIPTOR_CHANDRA_VENV`` (or the
+``venv_path`` config field).
 
-Setup (one-time; see requirements-paddle-vl.txt):
-    python3.12 -m venv venv_paddle_vl
-    source venv_paddle_vl/bin/activate
-    pip install paddlepaddle-gpu==3.2.1 \
-        -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-    pip install -U "paddleocr[doc-parser]>=3.4.0"
-    deactivate
+Setup (one-time):
+    python3 -m venv venv_chandra
+    source venv_chandra/bin/activate
+    pip install "chandra-ocr[hf]"
+    # if the bundled torch does not match your CUDA driver:
+    pip install --force-reinstall torch torchvision \
+        --index-url https://download.pytorch.org/whl/cu128
 
-This engine calls paddle_vl_worker.py as a subprocess inside that venv. The
-main venv never imports PaddleOCR-VL directly. The worker's model/HF cache is
-redirected to the cache root so a near-full root filesystem stays clean.
-
-Note on Cyrillic: PaddleOCR-VL targets multilingual *document parsing*; Cyrillic
-handwriting is not officially advertised. Treat results as experimental and
-compare against TrOCR / CRNN-CTC for historical Slavic manuscripts.
+This engine calls chandra_worker.py as a subprocess inside that venv. The main
+venv never imports chandra/transformers 5.x directly. License note: code is
+Apache-2.0; model weights are OpenRAIL-M (free for research/personal use).
 
 Batch CLI usage:
-    python batch_processing.py --engine PaddleOCR-VL --input-folder pages/
+    python batch_processing.py --engine Chandra --input-folder pages/
 """
 
 import json
@@ -64,33 +58,19 @@ except ImportError:
     PYQT_AVAILABLE = False
     QWidget = object
 
-# Isolated venv location. Override with POLYSCRIPTOR_PADDLE_VL_VENV (or the
-# venv_path config field). Defaults to venv_paddle_vl in the project root,
-# same convention as the other engine venvs.
-def _default_venv() -> Path:
-    env = os.environ.get("POLYSCRIPTOR_PADDLE_VL_VENV")
-    if env:
-        return Path(env).expanduser()
-    return Path(__file__).resolve().parent.parent / "venv_paddle_vl"
-
-
-# Model / HF cache root. Override with POLYSCRIPTOR_PADDLE_VL_CACHE; otherwise
-# caches live inside the venv directory so the engine stays self-contained.
-def _default_cache_root(venv: Path) -> Path:
-    env = os.environ.get("POLYSCRIPTOR_PADDLE_VL_CACHE")
-    if env:
-        return Path(env).expanduser()
-    return venv
-
-
-_DEFAULT_VENV = _default_venv()
-_DEFAULT_CACHE_ROOT = _default_cache_root(_DEFAULT_VENV)
-
-_DEFAULT_PROMPT = "OCR:"
-_DEFAULT_PIPELINE_VERSION = "v1.5"
+_DEFAULT_MODEL_ID = "datalab-to/chandra-ocr-2"
+_DEFAULT_MAX_NEW_TOKENS = 4096
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Path to the worker script (same engines/ directory)
-_WORKER_SCRIPT = Path(__file__).resolve().parent / "paddle_vl_worker.py"
+_WORKER_SCRIPT = Path(__file__).resolve().parent / "chandra_worker.py"
+
+
+def _default_venv() -> Path:
+    env = os.environ.get("POLYSCRIPTOR_CHANDRA_VENV")
+    if env:
+        return Path(env).expanduser()
+    return _PROJECT_ROOT / "venv_chandra"
 
 
 def _find_venv_python(venv_path: Path) -> Optional[Path]:
@@ -106,31 +86,29 @@ def _find_venv_python(venv_path: Path) -> Optional[Path]:
     return None
 
 
-def _venv_has_paddleocr(venv_path: Path) -> bool:
-    """Check that paddleocr is installed in the venv via filesystem (no subprocess, no import)."""
+def _venv_has_chandra(venv_path: Path) -> bool:
+    """Check that chandra-ocr is installed in the venv (filesystem check, no import)."""
     import sys as _sys
     if _sys.platform == "win32":
-        candidates = [(venv_path / "Lib" / "site-packages" / "paddleocr",)]
+        candidates = [venv_path / "Lib" / "site-packages" / "chandra"]
     else:
-        candidates = list((venv_path / "lib").glob("python*/site-packages/paddleocr"))
+        candidates = list((venv_path / "lib").glob("python*/site-packages/chandra"))
     for sp_dir in candidates:
         if sp_dir.is_dir():
             return True
     return False
 
 
-class PaddleOCRVLEngine(HTREngine):
+class ChandraEngine(HTREngine):
     """
-    PaddleOCR-VL whole-page OCR engine (subprocess mode).
+    Chandra 2 whole-page OCR engine (subprocess mode).
 
-    Calls paddle_vl_worker.py via an isolated venv Python interpreter so the
-    VLM pipeline (paddleocr[doc-parser] + transformers) never conflicts with
-    the classic PaddleOCR engine or the main venv.
+    Calls chandra_worker.py via an isolated venv Python interpreter so the
+    5B VLM stack (transformers >= 5.x) never conflicts with the main venv.
     """
 
     def __init__(self):
-        self._venv_path: Path = _DEFAULT_VENV
-        self._cache_root: Path = _DEFAULT_CACHE_ROOT
+        self._venv_path: Path = _default_venv()
         self._venv_python: Optional[Path] = None
         self._is_loaded: bool = False
 
@@ -139,20 +117,22 @@ class PaddleOCRVLEngine(HTREngine):
         self._venv_edit: Optional[QLineEdit] = None
         self._device_combo: Optional[QComboBox] = None
         self._gpu_index_spin: Optional[QSpinBox] = None
-        self._prompt_edit: Optional[QPlainTextEdit] = None
+        self._prompt_mode_combo: Optional[QComboBox] = None
+        self._custom_prompt_edit: Optional[QPlainTextEdit] = None
+        self._max_tokens_spin: Optional[QSpinBox] = None
 
     # ------------------------------------------------------------------
     # Identity
     # ------------------------------------------------------------------
 
     def get_name(self) -> str:
-        return "PaddleOCR-VL"
+        return "Chandra"
 
     def get_description(self) -> str:
-        return "PaddleOCR-VL-1.5: 0.9B vision-language whole-page document parser (subprocess mode)"
+        return "Chandra 2: 5B vision-language whole-page OCR, 90+ languages (subprocess mode)"
 
     def get_aliases(self) -> List[str]:
-        return ["paddle-vl", "paddleocr-vl", "paddleocrvl"]
+        return ["chandra", "chandra-ocr", "chandra-2"]
 
     # ------------------------------------------------------------------
     # Availability
@@ -161,25 +141,23 @@ class PaddleOCRVLEngine(HTREngine):
     def is_available(self) -> bool:
         if _find_venv_python(self._venv_path) is None:
             return False
-        return _venv_has_paddleocr(self._venv_path)
+        return _venv_has_chandra(self._venv_path)
 
     def get_unavailable_reason(self) -> str:
         if _find_venv_python(self._venv_path) is None:
             return (
-                f"PaddleOCR-VL venv not found at: {self._venv_path}\n\n"
+                f"Chandra venv not found at: {self._venv_path}\n\n"
                 "Create it with:\n"
-                f"  python3.12 -m venv {self._venv_path}\n"
+                f"  python3 -m venv {self._venv_path}\n"
                 f"  source {self._venv_path}/bin/activate\n"
-                "  pip install paddlepaddle-gpu==3.2.1 "
-                "-i https://www.paddlepaddle.org.cn/packages/stable/cu126/\n"
-                "  pip install -U 'paddleocr[doc-parser]>=3.4.0'\n"
+                "  pip install 'chandra-ocr[hf]'\n"
             )
-        if not _venv_has_paddleocr(self._venv_path):
+        if not _venv_has_chandra(self._venv_path):
             return (
-                f"paddleocr not installed in {self._venv_path}\n\n"
+                f"chandra-ocr not installed in {self._venv_path}\n\n"
                 "Install with:\n"
                 f"  source {self._venv_path}/bin/activate\n"
-                "  pip install -U 'paddleocr[doc-parser]>=3.4.0'\n"
+                "  pip install 'chandra-ocr[hf]'\n"
             )
         return ""
 
@@ -195,15 +173,15 @@ class PaddleOCRVLEngine(HTREngine):
         layout = QVBoxLayout()
 
         # Venv path
-        venv_group = QGroupBox("PaddleOCR-VL venv")
+        venv_group = QGroupBox("Chandra venv")
         venv_layout = QVBoxLayout()
         venv_layout.addWidget(QLabel("Path to isolated venv:"))
         venv_row = QHBoxLayout()
         self._venv_edit = QLineEdit(str(self._venv_path))
         self._venv_edit.setToolTip(
-            "Isolated Python venv with paddleocr[doc-parser] installed.\n"
-            f"Default: {_DEFAULT_VENV}\n"
-            "Kept separate from venv_paddle to avoid transformers/paddlex conflicts."
+            "Isolated Python venv with chandra-ocr[hf] installed.\n"
+            f"Default: {_default_venv()}\n"
+            "Kept separate because Chandra needs transformers >= 5.x."
         )
         venv_row.addWidget(self._venv_edit)
         btn_browse = QPushButton("Browse…")
@@ -220,8 +198,8 @@ class PaddleOCRVLEngine(HTREngine):
         self._device_combo = QComboBox()
         self._device_combo.addItems(["GPU", "CPU"])
         self._device_combo.setToolTip(
-            "GPU strongly recommended (needs CC >= 8.0, e.g. RTX 30/40/50, A100, L40S).\n"
-            "CPU works but is very slow for a VLM."
+            "GPU strongly recommended — 5B model, ~12 GB VRAM in bf16.\n"
+            "CPU works but is extremely slow."
         )
         device_layout.addWidget(self._device_combo)
         device_layout.addWidget(QLabel("GPU index:"))
@@ -230,38 +208,49 @@ class PaddleOCRVLEngine(HTREngine):
         self._gpu_index_spin.setValue(0)
         self._gpu_index_spin.setToolTip(
             "Physical GPU index (CUDA_VISIBLE_DEVICES). The worker pins this GPU "
-            "and addresses it as gpu:0 internally."
+            "and addresses it as cuda:0 internally."
         )
         device_layout.addWidget(self._gpu_index_spin)
         device_layout.addStretch()
         device_group.setLayout(device_layout)
         layout.addWidget(device_group)
 
-        # Prompt
-        prompt_group = QGroupBox("Task Prompt")
+        # Prompt mode
+        prompt_group = QGroupBox("Prompt")
         prompt_layout = QVBoxLayout()
-        prompt_layout.addWidget(QLabel("Prompt (default 'OCR:'):"))
-        self._prompt_edit = QPlainTextEdit(_DEFAULT_PROMPT)
-        self._prompt_edit.setMaximumHeight(60)
-        self._prompt_edit.setToolTip(
-            "PaddleOCR-VL task prompt. Common values:\n"
-            "  OCR:                  – plain text recognition (default)\n"
-            "  Table Recognition:    – tables\n"
-            "  Formula Recognition:  – formulas\n"
-            "Leave as 'OCR:' for manuscript transcription."
+        prompt_row = QHBoxLayout()
+        prompt_row.addWidget(QLabel("Mode:"))
+        self._prompt_mode_combo = QComboBox()
+        self._prompt_mode_combo.addItems(["ocr", "ocr_layout", "custom"])
+        self._prompt_mode_combo.setToolTip(
+            "ocr        – plain OCR to HTML (default, recommended)\n"
+            "ocr_layout – HTML with layout blocks and bounding boxes\n"
+            "custom     – use the custom prompt below"
         )
-        prompt_layout.addWidget(self._prompt_edit)
+        prompt_row.addWidget(self._prompt_mode_combo)
+        prompt_row.addWidget(QLabel("Max new tokens:"))
+        self._max_tokens_spin = QSpinBox()
+        self._max_tokens_spin.setRange(64, 16384)
+        self._max_tokens_spin.setValue(_DEFAULT_MAX_NEW_TOKENS)
+        prompt_row.addWidget(self._max_tokens_spin)
+        prompt_row.addStretch()
+        prompt_layout.addLayout(prompt_row)
+        prompt_layout.addWidget(QLabel("Custom prompt (mode = custom):"))
+        self._custom_prompt_edit = QPlainTextEdit("")
+        self._custom_prompt_edit.setMaximumHeight(60)
+        prompt_layout.addWidget(self._custom_prompt_edit)
         prompt_group.setLayout(prompt_layout)
         layout.addWidget(prompt_group)
 
         # Info
         info = QLabel(
-            "PaddleOCR-VL-1.5 runs in an isolated venv (default: venv_paddle_vl in\n"
-            "the project root) to avoid OpenCV / transformers conflicts. First run\n"
-            "downloads model weights (~2 GB) into the venv's cache directory. Each\n"
-            "transcription spawns a subprocess.\n\n"
-            "NOTE: Cyrillic handwriting is experimental — this model targets multilingual\n"
-            "document parsing. Compare against TrOCR / CRNN-CTC for Slavic manuscripts."
+            "Chandra 2 (5B VLM) runs in an isolated venv. First run downloads ~10 GB\n"
+            "of weights to the HF cache. Each transcription spawns a subprocess that\n"
+            "loads the model (~30 s) and OCRs the page.\n\n"
+            "Universal engine: 90+ languages, print + handwriting, tables, math.\n"
+            "Good default for modern documents and materials without a specialized\n"
+            "model; for historical scripts a fine-tuned CRNN-CTC / TrOCR model is\n"
+            "far more accurate."
         )
         info.setStyleSheet("color: gray; font-size: 9pt; padding: 8px;")
         info.setWordWrap(True)
@@ -274,7 +263,7 @@ class PaddleOCRVLEngine(HTREngine):
 
     def _browse_venv(self):
         folder = QFileDialog.getExistingDirectory(
-            self._config_widget, "Select PaddleOCR-VL venv directory", str(self._venv_path)
+            self._config_widget, "Select Chandra venv directory", str(self._venv_path)
         )
         if folder:
             self._venv_edit.setText(folder)
@@ -287,20 +276,21 @@ class PaddleOCRVLEngine(HTREngine):
         if self._config_widget is None:
             return {
                 "venv_path": str(self._venv_path),
+                "model_id": _DEFAULT_MODEL_ID,
                 "use_gpu": True,
                 "gpu_index": 0,
-                "prompt": _DEFAULT_PROMPT,
-                "pipeline_version": _DEFAULT_PIPELINE_VERSION,
-                "prompt_label": None,
-                "max_new_tokens": None,
-                "repetition_penalty": None,
+                "prompt_mode": "ocr",
+                "custom_prompt": "",
+                "max_new_tokens": _DEFAULT_MAX_NEW_TOKENS,
             }
         return {
             "venv_path": self._venv_edit.text().strip(),
+            "model_id": _DEFAULT_MODEL_ID,
             "use_gpu": self._device_combo.currentText() == "GPU",
             "gpu_index": self._gpu_index_spin.value(),
-            "prompt": self._prompt_edit.toPlainText().strip() or _DEFAULT_PROMPT,
-            "pipeline_version": _DEFAULT_PIPELINE_VERSION,
+            "prompt_mode": self._prompt_mode_combo.currentText(),
+            "custom_prompt": self._custom_prompt_edit.toPlainText().strip(),
+            "max_new_tokens": self._max_tokens_spin.value(),
         }
 
     def set_config(self, config: Dict[str, Any]):
@@ -310,7 +300,10 @@ class PaddleOCRVLEngine(HTREngine):
             self._venv_edit.setText(config["venv_path"])
         self._device_combo.setCurrentText("GPU" if config.get("use_gpu", True) else "CPU")
         self._gpu_index_spin.setValue(int(config.get("gpu_index", 0)))
-        self._prompt_edit.setPlainText(config.get("prompt", _DEFAULT_PROMPT))
+        if config.get("prompt_mode"):
+            self._prompt_mode_combo.setCurrentText(config["prompt_mode"])
+        self._custom_prompt_edit.setPlainText(config.get("custom_prompt", ""))
+        self._max_tokens_spin.setValue(int(config.get("max_new_tokens", _DEFAULT_MAX_NEW_TOKENS)))
 
     # ------------------------------------------------------------------
     # Model loading
@@ -320,22 +313,19 @@ class PaddleOCRVLEngine(HTREngine):
         """Validate venv + worker script exist. No actual model loading (lazy via subprocess)."""
         venv_path = Path(config.get("venv_path", str(self._venv_path))).expanduser()
         self._venv_path = venv_path
-        # Keep the model/HF cache next to the configured venv (unless an explicit
-        # POLYSCRIPTOR_PADDLE_VL_CACHE override is set).
-        self._cache_root = _default_cache_root(venv_path)
 
         python = _find_venv_python(venv_path)
         if python is None:
-            logger.error("[PaddleOCR-VL] venv Python not found at %s", venv_path)
+            logger.error("[Chandra] venv Python not found at %s", venv_path)
             return False
 
         if not _WORKER_SCRIPT.exists():
-            logger.error("[PaddleOCR-VL] Worker script not found: %s", _WORKER_SCRIPT)
+            logger.error("[Chandra] Worker script not found: %s", _WORKER_SCRIPT)
             return False
 
         self._venv_python = python
         self._is_loaded = True
-        logger.info("[PaddleOCR-VL] Ready — venv: %s, worker: %s", python, _WORKER_SCRIPT)
+        logger.info("[Chandra] Ready — venv: %s, worker: %s", python, _WORKER_SCRIPT)
         return True
 
     def unload_model(self):
@@ -350,18 +340,18 @@ class PaddleOCRVLEngine(HTREngine):
     # ------------------------------------------------------------------
 
     def requires_line_segmentation(self) -> bool:
-        return False  # PaddleOCR-VL parses the whole page itself
+        return False  # Chandra reads the whole page itself
 
     def transcribe_line(
         self, image: np.ndarray, config: Optional[Dict[str, Any]] = None
     ) -> TranscriptionResult:
         """
-        Transcribe a full page image via the PaddleOCR-VL subprocess.
+        Transcribe a full page image via the Chandra subprocess.
 
         Despite the method name, page-based engines receive the full page here.
         """
         if not self._is_loaded or self._venv_python is None:
-            return TranscriptionResult(text="[PaddleOCR-VL not loaded]", confidence=0.0)
+            return TranscriptionResult(text="[Chandra not loaded]", confidence=0.0)
 
         if config is None:
             config = self.get_config()
@@ -375,30 +365,28 @@ class PaddleOCRVLEngine(HTREngine):
             pil_img.convert("RGB").save(tmp_path)
 
             config_json = json.dumps({
+                "model_id": config.get("model_id") or _DEFAULT_MODEL_ID,
                 "use_gpu": config.get("use_gpu", True),
-                "gpu_index": int(config.get("gpu_index", 0)),
-                "prompt": config.get("prompt", _DEFAULT_PROMPT),
-                "pipeline_version": config.get("pipeline_version", _DEFAULT_PIPELINE_VERSION),
-                "prompt_label": config.get("prompt_label") or None,
-                "max_new_tokens": config.get("max_new_tokens") or None,
-                "repetition_penalty": config.get("repetition_penalty") or None,
-                "cache_root": str(self._cache_root),
+                "prompt_mode": config.get("prompt_mode") or "ocr",
+                "custom_prompt": config.get("custom_prompt") or "",
+                "max_new_tokens": int(config.get("max_new_tokens")
+                                      or _DEFAULT_MAX_NEW_TOKENS),
             })
 
-            # Redirect model/HF caches to /data so the near-full root FS stays clean.
             env = os.environ.copy()
-            env.setdefault("HF_HOME", str(self._cache_root / "hf_cache"))
-            env.setdefault("PADDLE_PDX_CACHE_HOME", str(self._cache_root / "paddlex_cache"))
-            env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-            # Pin the physical GPU here; the worker addresses it as gpu:0 internally
-            # (per feedback_cuda_visible_devices: never combine CUDA_VISIBLE_DEVICES=N + gpu:N).
+            # Optional cache override so weights land off the root FS
+            cache = os.environ.get("POLYSCRIPTOR_CHANDRA_CACHE")
+            if cache:
+                env.setdefault("HF_HUB_CACHE", cache)
+            # Pin the physical GPU here; the worker addresses it as cuda:0 internally
+            # (per feedback_cuda_visible_devices: never combine CUDA_VISIBLE_DEVICES=N + cuda:N).
             if config.get("use_gpu", True):
                 env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
                 env["CUDA_VISIBLE_DEVICES"] = str(int(config.get("gpu_index", 0)))
 
             result = subprocess.run(
                 [str(self._venv_python), str(_WORKER_SCRIPT), config_json, tmp_path],
-                capture_output=True, text=True, timeout=600,
+                capture_output=True, text=True, timeout=900,
                 start_new_session=True,  # isolate from terminal SIGINT
                 env=env,
             )
@@ -409,53 +397,47 @@ class PaddleOCRVLEngine(HTREngine):
                     if "error" in output:
                         err_msg = output["error"]
                         tb = output.get("traceback", "")
-                        logger.error("[PaddleOCR-VL] Worker error: %s", err_msg)
+                        logger.error("[Chandra] Worker error: %s", err_msg)
                         if tb:
-                            logger.debug("[PaddleOCR-VL] Traceback:\n%s", tb)
+                            logger.debug("[Chandra] Traceback:\n%s", tb)
                         return TranscriptionResult(text=f"[Error: {err_msg}]", confidence=0.0)
                 except (json.JSONDecodeError, ValueError):
                     pass
                 stderr = result.stderr[-2000:] if result.stderr else "(no stderr)"
-                logger.error("[PaddleOCR-VL] Worker exited %d: %s", result.returncode, stderr)
-                return TranscriptionResult(text="[PaddleOCR-VL error — see log]", confidence=0.0)
+                logger.error("[Chandra] Worker exited %d: %s", result.returncode, stderr)
+                return TranscriptionResult(text="[Chandra error — see log]", confidence=0.0)
 
             output = json.loads(result.stdout)
 
             if "error" in output:
-                logger.error("[PaddleOCR-VL] Worker error: %s", output["error"])
+                logger.error("[Chandra] Worker error: %s", output["error"])
                 return TranscriptionResult(text=f"[Error: {output['error']}]", confidence=0.0)
 
             text = output.get("text", "")
             lines = output.get("lines", [])
-            if not text and lines:
-                text = "\n".join(lines)
-            # PaddleOCR-VL (markdown pipeline) returns no per-token confidence.
-            # Report None (not 0.0) so the UI shows "no confidence" instead of a
-            # misleading 0%.
-            confidences = output.get("confidences", [])
-            mean_conf = float(np.mean(confidences)) if confidences else None
-
+            # Chandra returns no per-token confidence. Report None (not 0.0) so
+            # the UI shows "no confidence" instead of a misleading 0%.
             return TranscriptionResult(
                 text=text,
-                confidence=mean_conf,
+                confidence=None,
                 metadata={
-                    "engine": "PaddleOCR-VL",
-                    "model": "PaddlePaddle/PaddleOCR-VL-1.5",
-                    "line_count": len(lines) if lines else text.count("\n") + 1 if text else 0,
+                    "engine": "Chandra",
+                    "model": output.get("model_id", _DEFAULT_MODEL_ID),
+                    "line_count": len(lines),
                     "use_gpu": output.get("use_gpu"),
-                    "prompt": output.get("prompt"),
-                    "has_markdown": bool(output.get("markdown")),
+                    "prompt_mode": output.get("prompt_mode"),
+                    "html": output.get("html", ""),
                 },
             )
 
         except subprocess.TimeoutExpired:
-            logger.error("[PaddleOCR-VL] Subprocess timed out after 600s")
-            return TranscriptionResult(text="[PaddleOCR-VL timed out]", confidence=0.0)
+            logger.error("[Chandra] Subprocess timed out after 900s")
+            return TranscriptionResult(text="[Chandra timed out]", confidence=0.0)
         except json.JSONDecodeError as e:
-            logger.error("[PaddleOCR-VL] Failed to parse worker output: %s", e)
-            return TranscriptionResult(text="[PaddleOCR-VL output parse error]", confidence=0.0)
+            logger.error("[Chandra] Failed to parse worker output: %s", e)
+            return TranscriptionResult(text="[Chandra output parse error]", confidence=0.0)
         except Exception as e:
-            logger.error("[PaddleOCR-VL] Unexpected error: %s", e)
+            logger.error("[Chandra] Unexpected error: %s", e)
             return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
         finally:
             Path(tmp_path).unlink(missing_ok=True)

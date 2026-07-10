@@ -560,7 +560,8 @@ class TrOCRInference:
                  base_model: str = "kazars24/trocr-base-handwritten-ru",
                  normalize_bg: bool = False,
                  flip_rtl: bool = False,
-                 is_huggingface: bool = False):
+                 is_huggingface: bool = False,
+                 processor_subfolder: Optional[str] = None):
         """
         Initialize TrOCR inference.
 
@@ -571,12 +572,15 @@ class TrOCRInference:
             normalize_bg: Apply background normalization
             flip_rtl: Flip line images horizontally for RTL scripts
             is_huggingface: If True, load from HuggingFace Hub instead of local path
+            processor_subfolder: Repo subfolder containing the processor files
+                (e.g. "processor" for Kansallisarkisto/cyrillic-htr-model)
         """
         self.model_path = model_path
         self.base_model = base_model
         self.normalize_bg = normalize_bg
         self.flip_rtl = flip_rtl
         self.is_huggingface = is_huggingface
+        self.processor_subfolder = processor_subfolder
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -593,8 +597,26 @@ class TrOCRInference:
 
             # Try to load processor from model first, fallback to base_model if it fails
             try:
-                print(f"Attempting to load processor from {model_path}...")
-                self.processor = TrOCRProcessor.from_pretrained(model_path)
+                if self.processor_subfolder:
+                    print(f"Attempting to load processor from {model_path} "
+                          f"(subfolder: {self.processor_subfolder})...")
+                    self.processor = TrOCRProcessor.from_pretrained(
+                        model_path, subfolder=self.processor_subfolder)
+                else:
+                    print(f"Attempting to load processor from {model_path}...")
+                    try:
+                        self.processor = TrOCRProcessor.from_pretrained(model_path)
+                    except Exception as root_err:
+                        # Some repos (e.g. Kansallisarkisto/cyrillic-htr-model) ship the
+                        # processor in a "processor/" subfolder instead of the repo root.
+                        # Probe it before falling back to base_model: the base_model
+                        # fallback silently swaps in a foreign tokenizer, which produces
+                        # scrambled output without any error.
+                        print(f"No processor at repo root ({root_err}), "
+                              f"probing 'processor/' subfolder...")
+                        self.processor = TrOCRProcessor.from_pretrained(
+                            model_path, subfolder="processor")
+                        print("Processor loaded from 'processor/' subfolder.")
                 # Some models (e.g. dh-unibe/trocr-kurrent) ship a truncated tokenizer
                 # with only special tokens (vocab_size=5).  The model itself uses the full
                 # microsoft/trocr-base-handwritten vocabulary (50265 tokens).  Detect this
@@ -694,39 +716,45 @@ class TrOCRInference:
                 )
                 generated_ids = outputs.sequences
 
-                # Calculate confidence from scores
-                # scores is a tuple of tensors, one per generation step
-                # generated_ids shape: (batch_size, sequence_length)
+                # Per-token probabilities via compute_transition_scores: it follows
+                # the beam path that produced the FINAL sequence. (Beams are
+                # reordered during search — indexing outputs.scores by beam 0, as
+                # this code used to, reads probabilities from the wrong beam.)
                 if hasattr(outputs, 'scores') and outputs.scores and len(outputs.scores) > 0:
-                    import torch.nn.functional as F
+                    import math
 
-                    # Get the actual generated tokens (excluding special tokens like BOS)
-                    # generated_ids[0] is the first (and only) sequence in the batch
-                    generated_tokens = generated_ids[0].cpu().numpy()
+                    ts_kwargs = {"normalize_logits": True}
+                    if num_beams > 1 and getattr(outputs, "beam_indices", None) is not None:
+                        ts_kwargs["beam_indices"] = outputs.beam_indices
+                    transition_scores = self.model.compute_transition_scores(
+                        outputs.sequences, outputs.scores, **ts_kwargs
+                    )[0].cpu()
 
-                    # scores is a tuple with one tensor per generation step
-                    # Each tensor has shape (batch_size * num_beams, vocab_size)
-                    token_confidences = []
+                    gen_cfg = self.model.generation_config
+                    eos_id = gen_cfg.eos_token_id
+                    pad_id = gen_cfg.pad_token_id
+                    # sequences[0][0] is decoder_start; step i scored sequences[0][i+1]
+                    gen_tokens = generated_ids[0][1:].cpu().tolist()
 
-                    for step_idx, score_tensor in enumerate(outputs.scores):
-                        # Get probabilities for this generation step
-                        # score_tensor shape: (num_beams, vocab_size) for batch_size=1
-                        probs = F.softmax(score_tensor, dim=-1)
+                    log_probs = []
+                    for step, tok in zip(range(transition_scores.shape[0]), gen_tokens):
+                        if pad_id is not None and tok == pad_id:
+                            break
+                        log_probs.append(float(transition_scores[step]))
+                        if eos_id is not None and tok == eos_id:
+                            break
 
-                        # The actual generated token at this step
-                        # Skip BOS token (index 0), so generated token index is step_idx + 1
-                        if step_idx + 1 < len(generated_tokens):
-                            actual_token_id = generated_tokens[step_idx + 1]
-
-                            # Get probability of the actual selected token (from best beam, index 0)
-                            token_prob = probs[0, actual_token_id].item()
-                            token_confidences.append(token_prob)
-
-                    # Calculate average confidence
-                    avg_confidence = sum(token_confidences) / len(token_confidences) if token_confidences else 0.0
-                    char_confidences = token_confidences
+                    if log_probs:
+                        # Geometric mean: length-normalized sequence probability.
+                        # A single unlikely token pulls it down, unlike the
+                        # arithmetic mean which drowns errors among easy tokens.
+                        avg_confidence = math.exp(sum(log_probs) / len(log_probs))
+                        char_confidences = [math.exp(lp) for lp in log_probs]
+                    else:
+                        avg_confidence = None
+                        char_confidences = []
                 else:
-                    avg_confidence = 0.0
+                    avg_confidence = None
                     char_confidences = []
             else:
                 generated_ids = self.model.generate(

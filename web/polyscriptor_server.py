@@ -121,6 +121,7 @@ _ENGINE_VRAM_GB = {
     "PaddleOCR": 2,
     "LapaOCR": 18,
     "PaddleOCR-VL": 9,
+    "Chandra": 13,
 }
 _NO_GPU_ENGINES = {"Commercial APIs", "OpenWebUI", "LightOnOCR", "DeepSeek-OCR"}
 _TOTAL_VRAM_GB = 92  # 2x L40S @ 46GB each
@@ -141,6 +142,7 @@ _ENGINE_FACTORY = {
     "LapaOCR":                      ("engines.lapa_ocr_engine",     "LapaOCREngine"),
     "PaddleOCR":                    ("engines.paddle_engine",       "PaddleOCREngine"),
     "PaddleOCR-VL":                 ("engines.paddle_vl_engine",    "PaddleOCRVLEngine"),
+    "Chandra":                      ("engines.chandra_engine",      "ChandraEngine"),
 }
 
 
@@ -661,6 +663,9 @@ def _scan_trocr_models() -> list:
         {"label": "kazars24/trocr-base-handwritten-ru (HuggingFace)",
          "value": "kazars24/trocr-base-handwritten-ru",
          "source": "huggingface"},
+        {"label": "Kansallisarkisto/cyrillic-htr-model — Cyrillic 17th–20th c. (CER ~8%)",
+         "value": "Kansallisarkisto/cyrillic-htr-model",
+         "source": "huggingface"},
         {"label": "microsoft/trocr-base-printed — printed text, base",
          "value": "microsoft/trocr-base-printed",
          "source": "huggingface"},
@@ -978,7 +983,7 @@ ENGINE_SCHEMAS = {
                  {"label": "v1.5 (benchmarked / published)", "value": "v1.5"},
                  {"label": "v1.6 (newest)",                  "value": "v1.6"},
              ],
-             "hint": "0.9B vision-language document parser. Excellent for Chinese and printed/multilingual documents. NOT suitable for Cyrillic/Slavic handwriting (no support — use TrOCR / CRNN-CTC there)."},
+             "hint": "0.9B vision-language document parser. Excellent for Chinese and printed/multilingual documents. For handwriting, a model fine-tuned for your material (CRNN-CTC / TrOCR presets) will be far more accurate."},
             {"key": "use_gpu", "type": "checkbox",
              "label": "Use GPU (strongly recommended)", "default": True},
             {"key": "gpu_index", "type": "number", "label": "GPU index", "default": 0,
@@ -989,6 +994,30 @@ ENGINE_SCHEMAS = {
              "hint": "0 = pipeline default. Cap generation length to curb runaway repetition on dense pages."},
             {"key": "repetition_penalty", "type": "number", "label": "Repetition penalty", "default": 0,
              "hint": "0 = pipeline default. >1.0 (e.g. 1.05–1.2) discourages repeated tokens."},
+        ]
+    },
+    "Chandra": lambda: {
+        "fields": [
+            {"key": "prompt_mode", "type": "select", "label": "Prompt mode",
+             "default": "ocr",
+             "options": [
+                 {"label": "ocr — plain OCR (recommended)", "value": "ocr"},
+                 {"label": "ocr_layout — with layout blocks/bboxes", "value": "ocr_layout"},
+                 {"label": "custom — use custom prompt below", "value": "custom"},
+             ],
+             "hint": "Chandra 2 (5B VLM): universal OCR — 90+ languages, print + handwriting, "
+                     "tables, math. Good default for modern documents and materials without "
+                     "a specialized model. For historical scripts, a model fine-tuned for "
+                     "your material (see CRNN-CTC / TrOCR presets) will be far more accurate."},
+            {"key": "custom_prompt", "type": "text", "label": "Custom prompt", "default": "",
+             "hint": "Only used when prompt mode = custom."},
+            {"key": "max_new_tokens", "type": "number", "label": "Max new tokens", "default": 4096,
+             "hint": "Cap generation length per page."},
+            {"key": "use_gpu", "type": "checkbox",
+             "label": "Use GPU (strongly recommended)", "default": True},
+            {"key": "gpu_index", "type": "number", "label": "GPU index", "default": 0,
+             "hint": "Physical GPU pinned via CUDA_VISIBLE_DEVICES. ~12 GB VRAM in bf16; "
+                     "each page spawns a subprocess that loads the model (~30 s) first."},
         ]
     },
 }

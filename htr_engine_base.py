@@ -370,6 +370,13 @@ class HTREngineRegistry:
         except ImportError as e:
             print(f"Warning: Failed to load PaddleOCR-VL engine: {e}")
 
+        # Import and register Chandra engine
+        try:
+            from engines.chandra_engine import ChandraEngine
+            self.register(ChandraEngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load Chandra engine: {e}")
+
     def get_available_engines(self) -> List[HTREngine]:
         """Get list of engines with satisfied dependencies.
 

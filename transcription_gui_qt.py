@@ -233,13 +233,22 @@ class OCRWorker(QThread):
                     confidence = result_dict.get('confidence', None)
                     char_confidences = result_dict.get('char_confidences', [])
                 else:
-                    # TrOCR inference
-                    text, confidence, char_confidences = self.ocr.transcribe_line(
-                        segment.image,
-                        num_beams=self.num_beams,
-                        max_length=self.max_length,
-                        return_confidence=self.return_confidence
-                    )
+                    # TrOCR inference — returns a plain string unless
+                    # return_confidence is set, so only unpack in that case
+                    if self.return_confidence:
+                        text, confidence, char_confidences = self.ocr.transcribe_line(
+                            segment.image,
+                            num_beams=self.num_beams,
+                            max_length=self.max_length,
+                            return_confidence=True
+                        )
+                    else:
+                        text = self.ocr.transcribe_line(
+                            segment.image,
+                            num_beams=self.num_beams,
+                            max_length=self.max_length
+                        )
+                        confidence, char_confidences = None, []
 
                 # Create new LineSegment with text and confidence
                 result = LineSegment(
