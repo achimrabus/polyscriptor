@@ -1034,7 +1034,9 @@ class EngineLoadRequest(BaseModel):
 
 class TranscribeRequest(BaseModel):
     image_id: str
-    seg_method: str = "kraken"  # kraken, kraken-blla, hpp
+    # kraken, kraken-blla, hpp — None keeps the segmentation already in the
+    # session (see _desired_seg_source) and falls back to kraken if there is none
+    seg_method: Optional[str] = None
     seg_device: str = "cpu"
     max_columns: int = 6          # blla: max sub-columns per region (iterative splitting)
     split_width_fraction: float = 0.40  # blla: min region width (fraction of page) to trigger sub-split
@@ -1129,6 +1131,9 @@ class TranscriptionJob:
     created: float = field(default_factory=time.time)
     started: Optional[float] = None
     finished: Optional[float] = None
+    # Which line layout the run actually used — set once segmentation is settled
+    # so a client can tell reused from freshly computed segmentation.
+    segmentation: Optional[dict] = None
     current: int = 0
     total: int = 0
     results: Optional[List[dict]] = None
@@ -1169,6 +1174,8 @@ def _serialize_job(job: TranscriptionJob, include_results: bool = True) -> dict:
         "engine": job.engine_name,
         "error": job.error,
     }
+    if job.segmentation is not None:
+        out["segmentation"] = job.segmentation
     if include_results and job.status == "done":
         out["lines"] = job.results
     return out
@@ -1200,7 +1207,8 @@ async def _run_job(job: TranscriptionJob) -> None:
         xml_path = img_data.get("xml_path") if req.use_pagexml else None
 
         # Segmentation — same decision tree as /api/transcribe
-        if not eff_engine.requires_line_segmentation() and not xml_path and not img_data.get("lines"):
+        if not eff_engine.requires_line_segmentation() and not xml_path \
+                and not _has_usable_segmentation(img_data):
             from inference_page import LineSegment
             lines = [LineSegment(image=pil_image,
                                  bbox=(0, 0, pil_image.width, pil_image.height),
@@ -1210,12 +1218,18 @@ async def _run_job(job: TranscriptionJob) -> None:
             img_data["seg_source"] = "page"
         else:
             cached_lines = img_data.get("lines")
-            desired_source = "pagexml" if xml_path else req.seg_method
+            desired_source = _desired_seg_source(img_data, req.seg_method, xml_path)
             if not (cached_lines and img_data.get("seg_source") == desired_source):
-                await _run_segmentation(img_data, "pagexml" if xml_path else req.seg_method,
+                await _run_segmentation(img_data, desired_source,
                                         req.seg_device, req.max_columns,
                                         req.split_width_fraction, req.text_direction)
             lines = img_data["lines"]
+
+        job.segmentation = {
+            "source":      img_data.get("seg_source"),
+            "num_lines":   len(lines),
+            "num_regions": len(img_data.get("seg_regions") or []),
+        }
 
         line_regions = img_data.get("line_regions") or ([0] * len(lines))
         if eff_engine_name == "LapaOCR" and not eff_config.get("max_time_s"):
@@ -2193,6 +2207,43 @@ async def image_info(request: Request, image_id: str):
     }
 
 
+DEFAULT_SEG_METHOD = "kraken"
+
+# Sources that do not describe a real line layout: either nothing has run yet,
+# or a page-level engine parked a single full-page pseudo line under "page".
+# Such a state must never be inherited by a line-based run.
+_PSEUDO_SEG_SOURCES = (None, "", "page", "unknown")
+
+
+def _has_usable_segmentation(img_data: dict) -> bool:
+    """True if img_data holds a line layout a following run may reuse."""
+    return (bool(img_data.get("lines"))
+            and img_data.get("seg_source") not in _PSEUDO_SEG_SOURCES)
+
+
+def _desired_seg_source(img_data: dict, seg_method: Optional[str],
+                        xml_path) -> str:
+    """
+    Decide which segmentation the next run should work from.
+
+    An attached PAGE XML always wins, then an explicitly requested method.
+    If the caller names no method (API clients may omit seg_method), keep the
+    segmentation already in the session — that is what preserves a layout the
+    user built with /segment and pruned with DELETE …/region/{i}.
+    """
+    if xml_path is not None:
+        return "pagexml"
+    if seg_method:
+        return seg_method
+    cached = img_data.get("seg_source")
+    # A cached PAGE XML layout is not reused once the XML itself is out of play
+    # (no XML attached, or use_pagexml=False) — that combination would
+    # contradict the caller.
+    if _has_usable_segmentation(img_data) and cached != "pagexml":
+        return cached
+    return DEFAULT_SEG_METHOD
+
+
 async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
                             max_columns: int = 6,
                             split_width_fraction: float = 0.40,
@@ -2397,8 +2448,7 @@ async def transcribe(request: Request, req: TranscribeRequest):
             # page as one unit. But if the user explicitly ran Segment first, honour
             # those cached line segments and transcribe line-by-line: that produces a
             # segmented base the comparison workspace can align against other engines.
-            cached_source = img_data.get("seg_source")
-            has_explicit_seg = bool(img_data.get("lines")) and cached_source not in (None, "", "page", "unknown")
+            has_explicit_seg = _has_usable_segmentation(img_data)
 
             if not eff_engine.requires_line_segmentation() and not xml_path and not has_explicit_seg:
                 # Page-level engine with no PAGE XML — send whole page as single line
@@ -2421,7 +2471,7 @@ async def transcribe(request: Request, req: TranscribeRequest):
                 # Reuse cached segmentation if method matches (e.g. user clicked Segment first)
                 cached_lines   = img_data.get("lines")
                 cached_source  = img_data.get("seg_source")
-                desired_source = "pagexml" if (xml_path and req.use_pagexml) else req.seg_method
+                desired_source = _desired_seg_source(img_data, req.seg_method, xml_path)
 
                 if cached_lines and cached_source == desired_source:
                     lines = cached_lines
@@ -2434,17 +2484,11 @@ async def transcribe(request: Request, req: TranscribeRequest):
                     if img_data.get("seg_regions"):
                         seg_event["regions"] = img_data["seg_regions"]
                     yield _sse("segmentation", seg_event)
-                elif xml_path is not None:
-                    yield _sse("status", {"message": "Reading line layout from PAGE XML..."})
-                    seg_result = await _run_segmentation(img_data, "pagexml",
-                                                         req.seg_device, req.max_columns,
-                                                         req.split_width_fraction,
-                                                         req.text_direction)
-                    lines = img_data["lines"]
-                    yield _sse("segmentation", seg_result)
                 else:
-                    yield _sse("status", {"message": f"Segmenting with {req.seg_method}..."})
-                    seg_result = await _run_segmentation(img_data, req.seg_method,
+                    yield _sse("status", {"message":
+                        "Reading line layout from PAGE XML..." if desired_source == "pagexml"
+                        else f"Segmenting with {desired_source}..."})
+                    seg_result = await _run_segmentation(img_data, desired_source,
                                                          req.seg_device, req.max_columns,
                                                          req.split_width_fraction,
                                                          req.text_direction)

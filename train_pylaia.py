@@ -125,6 +125,13 @@ class PyLaiaDataset(Dataset):
             space_idx = self.char2idx['<space>']
             self.idx2char[space_idx] = ' '
 
+        # PATCH_SPACE_FIX: literales ' ' auf den <SPACE>-Index mappen.
+        # Ohne das mappt char2idx.get(' ', 0) jedes Leerzeichen auf den CTC-Blank (Index 0)
+        # -> Modell lernt keine Leerzeichen -> Scriptio continua (Bug bis 2026-07-15).
+        if '<SPACE>' in self.char2idx:
+            self.char2idx[' '] = self.char2idx['<SPACE>']
+        elif '<space>' in self.char2idx:
+            self.char2idx[' '] = self.char2idx['<space>']
         logger.info(f"Loaded {len(self.samples)} samples from {list_path}")
         logger.info(f"Vocabulary size: {len(self.symbols)} characters")
         
@@ -552,7 +559,7 @@ class PyLaiaTrainer:
             # Log overfitting indicator
             if train_cer < val_cer:
                 gap = (val_cer - train_cer) * 100
-                logger.info(f"⚠️  Overfitting gap: {gap:.2f}% (Val CER > Train CER)")
+                logger.info(f"WARNING: Overfitting gap: {gap:.2f}% (Val CER > Train CER)")
 
             # Update history
             self.history['train_loss'].append(train_loss)
@@ -567,7 +574,7 @@ class PyLaiaTrainer:
                 self.best_val_cer = val_cer
                 self.epochs_without_improvement = 0
                 self.save_checkpoint(epoch, val_cer, is_best=True)
-                logger.info(f"✓ New best model! CER: {val_cer*100:.2f}%")
+                logger.info(f"New best model! CER: {val_cer*100:.2f}%")
             else:
                 self.epochs_without_improvement += 1
                 logger.info(f"No improvement for {self.epochs_without_improvement} epochs")

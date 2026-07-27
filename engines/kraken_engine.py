@@ -58,13 +58,13 @@ KRAKEN_MODELS = {
         "language": "multi",
         "source": "zenodo"
     },
-    # Arabic handwritten segmentation (Muharaf Corpus), verified DOI 10.5281/zenodo.14295555
-    "arabic-muharaf": {
-        "zenodo_id": "10.5281/zenodo.14295555",
-        "description": "Arabic Handwritten Segmentation (Muharaf Corpus)",
-        "language": "arabic",
-        "source": "zenodo"
-    },
+    # NOTE: "arabic-muharaf" (DOI 10.5281/zenodo.14295555) was removed from this
+    # list — despite the verified DOI, it is a *segmentation* model (Arabic
+    # Handwritten Segmentation, Muharaf Corpus), not a text recognizer. This
+    # engine always wraps presets in TorchSeqRecognizer for OCR, which cannot
+    # load segmentation-type models (raises "Models of type segmentation are
+    # not supported by TorchSeqRecognizer"). Kraken segmentation models belong
+    # in kraken_segmenter.py's neural segmentation path, not here.
 }
 
 
@@ -127,7 +127,7 @@ class KrakenEngine(HTREngine):
         preset_layout.addWidget(QLabel("Model:"))
         preset_layout.addWidget(self._preset_combo)
 
-        preset_hint = QLabel("Note: Zenodo models (⬇️) auto-download on first use")
+        preset_hint = QLabel("Note: Zenodo models auto-download on first use")
         preset_hint.setStyleSheet("color: gray; font-size: 9pt;")
         preset_layout.addWidget(preset_hint)
 
@@ -186,7 +186,7 @@ class KrakenEngine(HTREngine):
         for model_id, info in KRAKEN_MODELS.items():
             if info.get("source") == "local":
                 desc = info.get('description', model_id)
-                self._preset_combo.addItem(f"📁 {desc}", userData=model_id)
+                self._preset_combo.addItem(f"[local] {desc}", userData=model_id)
                 break
 
         self._preset_combo.insertSeparator(self._preset_combo.count())
@@ -196,10 +196,10 @@ class KrakenEngine(HTREngine):
             if info.get("source") == "zenodo":
                 desc = info.get('description', model_id)
                 lang = info.get('language', '')
-                self._preset_combo.addItem(f"⬇️  {desc} ({lang})", userData=model_id)
+                self._preset_combo.addItem(f"[download] {desc} ({lang})", userData=model_id)
 
         self._preset_combo.insertSeparator(self._preset_combo.count())
-        self._preset_combo.addItem("📂 Browse Custom File...", userData="__custom__")
+        self._preset_combo.addItem("Browse Custom File...", userData="__custom__")
 
     def _on_model_source_changed(self, source: str):
         """Toggle between preset and custom model selection."""
@@ -319,81 +319,52 @@ class KrakenEngine(HTREngine):
             return False
 
     def _download_zenodo_model(self, zenodo_id: str, model_name: str) -> Optional[str]:
-        """Download a Kraken model from Zenodo via `kraken get`.
+        """Download a Kraken model from Zenodo via the htrmopo Python API.
 
-        Models are cached in `kraken_models/` inside the repo root.
+        Saved under the KRAKEN_ZENODO_MODELS_DIR env var if set (e.g. redirected
+        to a data volume with more space), otherwise under `kraken_models/` in
+        the repo root. Uses htrmopo's `get_model(model_id, path=...)` directly
+        instead of shelling out to `kraken get` — that avoids having to guess
+        where the CLI's own cache (platformdirs.user_data_dir('htrmopo'), e.g.
+        ~/.local/share/htrmopo on Linux) put the file afterwards.
         Returns local path on success, None on failure.
         """
-        import subprocess
-        import shutil
-        import sys
-        import time
+        import os
 
-        # Prefer the kraken binary from the same venv as this Python process
-        # (shutil.which only searches PATH, which may not include the venv bin/ in
-        # systemd services that invoke uvicorn directly without activating the venv).
-        venv_kraken = Path(sys.executable).parent / "kraken"
-        kraken_cmd = str(venv_kraken) if venv_kraken.exists() else shutil.which("kraken")
-        if not kraken_cmd:
-            _print("❌ 'kraken' command not found. Install with: pip install kraken")
-            _print(f"💡 Manual download: https://zenodo.org/record/{zenodo_id.split('/')[-1]}")
-            return None
+        default_dir = Path(__file__).parent.parent / "kraken_models"
+        models_dir = Path(os.environ.get("KRAKEN_ZENODO_MODELS_DIR", default_dir))
+        target_dir = models_dir / model_name
+        target_dir.mkdir(parents=True, exist_ok=True)
 
-        repo_root = Path(__file__).parent.parent
-        models_dir = repo_root / "kraken_models"
-        models_dir.mkdir(exist_ok=True)
-        model_path = models_dir / f"{model_name}.mlmodel"
-
-        if model_path.exists():
-            _print(f"✅ Using cached Zenodo model: {model_path}")
-            return str(model_path)
-
-        # Check for any existing name-matched file
-        for existing in models_dir.glob("*.mlmodel"):
-            if model_name.lower() in existing.stem.lower():
-                _print(f"✅ Found existing model: {existing}")
-                return str(existing)
-
-        _print(f"📥 Downloading Zenodo model {zenodo_id} …")
-        _print(f"📂 Will save to: {model_path}")
-        _print("⏳ This may take a few minutes on first use …")
+        existing = sorted(target_dir.glob("*.mlmodel"))
+        if existing:
+            _print(f"Using cached Zenodo model: {existing[0]}")
+            return str(existing[0])
 
         try:
-            result = subprocess.run(
-                [kraken_cmd, "get", zenodo_id],
-                capture_output=True, text=True, timeout=300
-            )
-            if result.returncode == 0:
-                # Find freshly downloaded .mlmodel (modified within last 2 min)
-                search_dirs = [
-                    Path.home() / "Library" / "Application Support" / "htrmopo",
-                    Path.home() / ".kraken",
-                ]
-                downloaded = None
-                for d in search_dirs:
-                    if not d.exists():
-                        continue
-                    for p in d.rglob("*.mlmodel"):
-                        if time.time() - p.stat().st_mtime < 120:
-                            downloaded = p
-                            break
-                    if downloaded:
-                        break
-                if downloaded and downloaded.exists():
-                    shutil.copy2(downloaded, model_path)
-                    _print(f"✅ Model saved to: {model_path}")
-                    return str(model_path)
-                else:
-                    _print("⚠️  Download succeeded but couldn't locate the file")
-            else:
-                _print(f"❌ kraken get failed (exit {result.returncode}): {result.stderr}")
-                _print(f"💡 Manual: kraken get {zenodo_id}  then copy to {models_dir}/")
-        except subprocess.TimeoutExpired:
-            _print("⏱️  Download timeout (>5 min). Try manually: kraken get " + zenodo_id)
-        except Exception as e:
-            _print(f"❌ Download error: {e}")
+            from htrmopo import get_model
+        except ImportError:
+            _print("ERROR: 'htrmopo' not installed. Install with: pip install htrmopo")
+            _print(f"Manual download: https://zenodo.org/record/{zenodo_id.split('/')[-1]}")
+            return None
 
-        return None
+        _print(f"Downloading Zenodo model {zenodo_id} …")
+        _print(f"Will save to: {target_dir}")
+        _print("This may take a few minutes on first use …")
+
+        try:
+            result_path = get_model(zenodo_id, path=target_dir)
+        except Exception as e:
+            _print(f"Download error: {e}")
+            _print(f"Manual: kraken get {zenodo_id}  then copy the .mlmodel into {target_dir}/")
+            return None
+
+        downloaded = sorted(Path(result_path).glob("*.mlmodel"))
+        if not downloaded:
+            _print("WARNING: Download succeeded but no .mlmodel file was found in the result")
+            return None
+        _print(f"Model saved to: {downloaded[0]}")
+        return str(downloaded[0])
 
     def unload_model(self):
         """Unload model from memory."""

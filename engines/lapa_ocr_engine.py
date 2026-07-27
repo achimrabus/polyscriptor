@@ -211,6 +211,7 @@ class LapaOCREngine(HTREngine):
             print(self.get_unavailable_reason())
             return False
 
+        base = None
         try:
             if self.model is not None:
                 self.unload_model()
@@ -300,6 +301,18 @@ class LapaOCREngine(HTREngine):
             self.model = None
             self.processor = None
             return False
+
+        finally:
+            # A failed from_pretrained() can leave partially-materialized
+            # tensors pinned on the GPU for as long as the exception's
+            # traceback is alive; `e` is cleared by Python before this
+            # `finally` runs, so this is the earliest point where dropping
+            # `base` and clearing the CUDA cache actually frees that memory.
+            base = None
+            if torch is not None and torch.cuda.is_available():
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
 
     def unload_model(self):
         if self.model is None:

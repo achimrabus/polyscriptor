@@ -105,9 +105,19 @@ async function loadEngines() {
             select.appendChild(group);
         }
 
-        // Restore last used engine if available
-        if (savedEngine && available.find(e => e.name === savedEngine)) {
+        // Restore last used engine if available. Heavy/experimental engines
+        // (e.g. LapaOCR, a full instruct-LLM base model) are excluded from
+        // sticky restore — they must be picked explicitly each session
+        // rather than silently reloading on every page visit, since they
+        // can exhaust shared GPU memory. Fall back to a lightweight default.
+        const STICKY_EXCLUDE = new Set(['LapaOCR']);
+        const DEFAULT_FALLBACK_ORDER = ['TrOCR', 'CRNN-CTC (PyLaia-inspired)'];
+
+        if (savedEngine && !STICKY_EXCLUDE.has(savedEngine) && available.find(e => e.name === savedEngine)) {
             select.value = savedEngine;
+        } else {
+            const fallback = DEFAULT_FALLBACK_ORDER.find(name => available.find(e => e.name === name));
+            if (fallback) select.value = fallback;
         }
         select.disabled = false;
         onEngineSelected();
@@ -246,7 +256,7 @@ async function _loadKrakenPresets() {
         for (const p of data.presets || []) {
             const opt = document.createElement('option');
             opt.value = p.id;
-            const icon = p.source === 'local' ? '📁' : '⬇️';
+            const icon = p.source === 'local' ? '[local]' : '[download]';
             opt.textContent = `${icon} ${p.label} (${p.language})`;
             sel.appendChild(opt);
         }
@@ -264,8 +274,8 @@ async function _loadKrakenPresets() {
         }
         if (status) {
             status.textContent = val === 'blla-local'
-                ? '📁 Local model — loads instantly'
-                : '⬇️ Auto-downloads from Zenodo on first use (~30–120s)';
+                ? 'Local model — loads instantly'
+                : 'Auto-downloads from Zenodo on first use (~30–120s)';
         }
         // Pre-fill model_path field with the preset ID so server knows what to load
         if (modelPathEl) modelPathEl.value = '';  // clear — preset_id takes priority

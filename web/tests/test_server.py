@@ -116,7 +116,7 @@ def test_kraken_presets_returns_list():
     data = resp.json()
     assert "presets" in data
     presets = data["presets"]
-    assert len(presets) == 3   # 1 local + 2 verified Zenodo (hallucinated IDs removed in f1ac6a3)
+    assert len(presets) == 2   # 1 local + 1 verified Zenodo recognition model
 
 
 def test_kraken_presets_local_first():
@@ -126,7 +126,7 @@ def test_kraken_presets_local_first():
     zenodo = [p for p in presets if p["source"] == "zenodo"]
     assert len(local) == 1
     assert local[0]["id"] == "blla-local"
-    assert len(zenodo) == 2   # catmus-print + arabic-muharaf (10 hallucinated IDs removed)
+    assert len(zenodo) == 1   # catmus-print only; arabic-muharaf is a segmentation model, not a recognizer
 
 
 def test_kraken_presets_schema():
@@ -682,3 +682,84 @@ def test_compare_ground_truth_scores_and_ranks_slots():
     assert data["leaderboard"][1]["slot_id"] == "bad"
     assert data["leaderboard"][1]["micro_cer"] > 0
     assert data["runs"][0]["labels"]["char_rate"] == "CER"
+
+
+# ── Segmentation reuse (seg_method omitted) ──────────────────────────────────
+
+def _img(source=None, lines=1, regions=0):
+    """Minimal image-cache stub carrying a segmentation state."""
+    d = {}
+    if source is not None:
+        d["seg_source"] = source
+        d["lines"] = [SimpleNamespace(bbox=(0, i * 10, 50, i * 10 + 10), image=None)
+                      for i in range(lines)]
+        d["seg_regions"] = [{"id": f"r_{i}", "bbox": [0, 0, 10, 10], "num_lines": 1}
+                            for i in range(regions)]
+    return d
+
+
+def test_cached_segmentation_is_usable_only_for_real_methods():
+    assert server_mod._has_usable_segmentation(_img("kraken-blla")) is True
+    assert server_mod._has_usable_segmentation(_img("pagexml")) is True
+    # Page-level engines park a single full-page pseudo line under "page";
+    # that must never be inherited by a line-based run.
+    assert server_mod._has_usable_segmentation(_img("page")) is False
+    assert server_mod._has_usable_segmentation(_img("unknown")) is False
+    assert server_mod._has_usable_segmentation(_img("")) is False
+    assert server_mod._has_usable_segmentation({}) is False
+    # Source set but no lines cached is not usable either.
+    assert server_mod._has_usable_segmentation({"seg_source": "kraken"}) is False
+
+
+def test_omitted_seg_method_keeps_existing_segmentation():
+    """The whole point: /segment with blla + region edits must survive a job
+    that does not name a method."""
+    img = _img("kraken-blla", lines=18, regions=2)
+    assert server_mod._desired_seg_source(img, None, None) == "kraken-blla"
+
+
+def test_omitted_seg_method_falls_back_to_kraken_without_cache():
+    assert server_mod._desired_seg_source({}, None, None) == "kraken"
+
+
+def test_omitted_seg_method_ignores_page_level_pseudo_segmentation():
+    assert server_mod._desired_seg_source(_img("page"), None, None) == "kraken"
+
+
+def test_explicit_seg_method_still_forces_that_method():
+    img = _img("kraken-blla", lines=18)
+    assert server_mod._desired_seg_source(img, "hpp", None) == "hpp"
+    assert server_mod._desired_seg_source(img, "kraken-blla", None) == "kraken-blla"
+
+
+def test_attached_pagexml_wins_over_cache_and_method():
+    img = _img("kraken-blla", lines=18)
+    assert server_mod._desired_seg_source(img, None, "/tmp/page.xml") == "pagexml"
+    assert server_mod._desired_seg_source(img, "hpp", "/tmp/page.xml") == "pagexml"
+
+
+def test_transcribe_request_allows_omitting_seg_method():
+    req = server_mod.TranscribeRequest(image_id="x")
+    assert req.seg_method is None
+
+
+def test_job_status_reports_which_segmentation_ran():
+    job = server_mod.TranscriptionJob(
+        job_id="j1", owner="key:test", display_name="test",
+        session_id="s1", params=server_mod.TranscribeRequest(image_id="x"),
+    )
+    # Nothing ran yet — no claim is made.
+    assert "segmentation" not in server_mod._serialize_job(job)
+
+    job.segmentation = {"source": "kraken-blla", "num_lines": 18, "num_regions": 1}
+    out = server_mod._serialize_job(job)
+    assert out["segmentation"]["source"] == "kraken-blla"
+    assert out["segmentation"]["num_lines"] == 18
+    assert out["segmentation"]["num_regions"] == 1
+
+
+def test_cached_pagexml_layout_is_not_reused_once_xml_is_out_of_play():
+    """use_pagexml=False leaves xml_path None; silently reusing the XML layout
+    would contradict the caller."""
+    img = _img("pagexml", lines=12)
+    assert server_mod._desired_seg_source(img, None, None) == "kraken"
