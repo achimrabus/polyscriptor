@@ -9,8 +9,15 @@ Date: 2025-11-05
 """
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import List, Tuple, Optional
 import Levenshtein
+
+
+class ComparisonMode(str, Enum):
+    """Semantic mode for user-facing comparison metrics."""
+    GROUND_TRUTH = "ground_truth"
+    ENGINE_COMPARISON = "engine_comparison"
 
 
 @dataclass
@@ -35,8 +42,8 @@ class LineMetrics:
     Attributes:
         reference: Ground truth or baseline text
         hypothesis: Predicted text to compare against reference
-        cer: Character Error Rate (0-100)
-        wer: Word Error Rate (0-100)
+        cer: Character Error Rate (0-100), meaningful as CER only with GT
+        wer: Word Error Rate (0-100), meaningful as WER only with GT
         match_percent: Percentage of matching characters (0-100)
         edit_distance: Levenshtein edit distance
         diff_ops: List of character-level diff operations
@@ -48,6 +55,45 @@ class LineMetrics:
     match_percent: float
     edit_distance: int
     diff_ops: List[DiffOperation]
+
+
+@dataclass(frozen=True)
+class ComparisonDisplayLabels:
+    """User-facing labels and notes for a comparison mode."""
+    char_rate: str
+    word_rate: str
+    match_rate: str
+    macro_char_rate: str
+    micro_char_rate: str
+    macro_word_rate: str
+    char_rate_column: str
+    word_rate_column: str
+    macro_char_rate_note: str
+    micro_char_rate_note: str
+    macro_word_rate_note: str
+    char_unit_label: str
+    color_thresholds: Tuple[float, float]
+
+
+@dataclass(frozen=True)
+class ComparisonDisplayMetrics:
+    """User-facing metric values for a single comparison."""
+    char_rate: float
+    word_rate: float
+    match_percent: float
+    edit_distance: int
+
+
+@dataclass(frozen=True)
+class ComparisonSummary:
+    """Aggregated user-facing metrics for multiple lines."""
+    line_count: int
+    total_edit_distance: int
+    total_char_units: int
+    macro_char_rate: float
+    micro_char_rate: float
+    macro_word_rate: float
+    avg_match_percent: float
 
 
 class TranscriptionMetrics:
@@ -120,8 +166,40 @@ class TranscriptionMetrics:
             return 100.0 if hyp_words else 0.0
 
         # Calculate edit distance between word sequences
-        distance = Levenshtein.distance(ref_words, hyp_words)
+        distance = TranscriptionMetrics._sequence_distance(ref_words, hyp_words)
         return (distance / len(ref_words)) * 100.0
+
+    @staticmethod
+    def calculate_char_disagreement(reference: str, hypothesis: str) -> float:
+        """
+        Calculate a symmetric GT-free character disagreement rate.
+
+        Uses the maximum character length as denominator so the result is
+        bounded to 0-100 and remains symmetric when reference/hypothesis swap.
+        """
+        max_len = max(len(reference), len(hypothesis))
+        if max_len == 0:
+            return 0.0
+
+        distance = Levenshtein.distance(reference, hypothesis)
+        return (distance / max_len) * 100.0
+
+    @staticmethod
+    def calculate_word_disagreement(reference: str, hypothesis: str) -> float:
+        """
+        Calculate a symmetric GT-free word disagreement rate.
+
+        Uses the maximum word count as denominator so the result is bounded to
+        0-100 and remains symmetric when reference/hypothesis swap.
+        """
+        ref_words = reference.split()
+        hyp_words = hypothesis.split()
+        max_words = max(len(ref_words), len(hyp_words))
+        if max_words == 0:
+            return 0.0
+
+        distance = TranscriptionMetrics._sequence_distance(ref_words, hyp_words)
+        return (distance / max_words) * 100.0
 
     @staticmethod
     def calculate_match_percent(reference: str, hypothesis: str) -> float:
@@ -257,6 +335,65 @@ class TranscriptionMetrics:
         return ops
 
     @staticmethod
+    def get_display_labels(mode: ComparisonMode) -> ComparisonDisplayLabels:
+        """Return user-facing labels for the chosen comparison mode."""
+        if mode == ComparisonMode.GROUND_TRUTH:
+            return ComparisonDisplayLabels(
+                char_rate="CER",
+                word_rate="WER",
+                match_rate="Match",
+                macro_char_rate="Macro CER",
+                micro_char_rate="Micro CER",
+                macro_word_rate="Macro WER",
+                char_rate_column="CER (%)",
+                word_rate_column="WER (%)",
+                macro_char_rate_note="mean of per-line CERs",
+                micro_char_rate_note="total edits / total ref chars (standard HTR metric)",
+                macro_word_rate_note="mean of per-line WERs",
+                char_unit_label="reference characters",
+                color_thresholds=(5.0, 20.0),
+            )
+
+        return ComparisonDisplayLabels(
+            char_rate="Char disagreement",
+            word_rate="Word disagreement",
+            match_rate="Match",
+            macro_char_rate="Macro char disagreement",
+            micro_char_rate="Micro char disagreement",
+            macro_word_rate="Macro word disagreement",
+            char_rate_column="Char disagreement (%)",
+            word_rate_column="Word disagreement (%)",
+            macro_char_rate_note="mean of per-line char disagreement rates",
+            micro_char_rate_note="total edits / total max chars per line (symmetric, GT-free)",
+            macro_word_rate_note="mean of per-line word disagreement rates",
+            char_unit_label="comparison character units",
+            color_thresholds=(15.0, 35.0),
+        )
+
+    @staticmethod
+    def get_display_metrics(metrics: LineMetrics, mode: ComparisonMode) -> ComparisonDisplayMetrics:
+        """Map raw edit-distance metrics to the correct user-facing semantics."""
+        if mode == ComparisonMode.GROUND_TRUTH:
+            char_rate = metrics.cer
+            word_rate = metrics.wer
+        else:
+            char_rate = TranscriptionMetrics.calculate_char_disagreement(
+                metrics.reference,
+                metrics.hypothesis,
+            )
+            word_rate = TranscriptionMetrics.calculate_word_disagreement(
+                metrics.reference,
+                metrics.hypothesis,
+            )
+
+        return ComparisonDisplayMetrics(
+            char_rate=char_rate,
+            word_rate=word_rate,
+            match_percent=metrics.match_percent,
+            edit_distance=metrics.edit_distance,
+        )
+
+    @staticmethod
     def compare_lines(reference: str, hypothesis: str) -> LineMetrics:
         """
         Perform complete comparison of two lines.
@@ -291,6 +428,59 @@ class TranscriptionMetrics:
             match_percent=match,
             edit_distance=distance,
             diff_ops=diff_ops
+        )
+
+    @staticmethod
+    def calculate_summary_metrics(
+        references: List[str],
+        hypotheses: List[str],
+        mode: ComparisonMode,
+    ) -> ComparisonSummary:
+        """Calculate aggregated metrics with GT-aware / GT-free semantics."""
+        line_count = min(len(references), len(hypotheses))
+        if line_count == 0:
+            return ComparisonSummary(
+                line_count=0,
+                total_edit_distance=0,
+                total_char_units=0,
+                macro_char_rate=0.0,
+                micro_char_rate=0.0,
+                macro_word_rate=0.0,
+                avg_match_percent=100.0,
+            )
+
+        raw_metrics = [
+            TranscriptionMetrics.compare_lines(references[i], hypotheses[i])
+            for i in range(line_count)
+        ]
+        display_metrics = [
+            TranscriptionMetrics.get_display_metrics(metrics, mode)
+            for metrics in raw_metrics
+        ]
+
+        total_edit_distance = sum(m.edit_distance for m in raw_metrics)
+        if mode == ComparisonMode.GROUND_TRUTH:
+            total_char_units = sum(len(references[i]) for i in range(line_count))
+        else:
+            total_char_units = sum(
+                max(len(references[i]), len(hypotheses[i]))
+                for i in range(line_count)
+            )
+
+        micro_char_rate = (
+            total_edit_distance / total_char_units * 100.0
+            if total_char_units
+            else 0.0
+        )
+
+        return ComparisonSummary(
+            line_count=line_count,
+            total_edit_distance=total_edit_distance,
+            total_char_units=total_char_units,
+            macro_char_rate=sum(m.char_rate for m in display_metrics) / line_count,
+            micro_char_rate=micro_char_rate,
+            macro_word_rate=sum(m.word_rate for m in display_metrics) / line_count,
+            avg_match_percent=sum(m.match_percent for m in display_metrics) / line_count,
         )
 
     @staticmethod
@@ -338,6 +528,27 @@ class TranscriptionMetrics:
 
         n = len(references)
         return (total_cer / n, total_wer / n, total_match / n)
+
+    @staticmethod
+    def _sequence_distance(reference: List[str], hypothesis: List[str]) -> int:
+        """Levenshtein distance for token sequences."""
+        if not reference:
+            return len(hypothesis)
+        if not hypothesis:
+            return len(reference)
+
+        previous_row = list(range(len(hypothesis) + 1))
+        for i, ref_token in enumerate(reference, start=1):
+            current_row = [i]
+            for j, hyp_token in enumerate(hypothesis, start=1):
+                substitution_cost = 0 if ref_token == hyp_token else 1
+                current_row.append(min(
+                    previous_row[j] + 1,
+                    current_row[j - 1] + 1,
+                    previous_row[j - 1] + substitution_cost,
+                ))
+            previous_row = current_row
+        return previous_row[-1]
 
 
 # Example usage

@@ -7,7 +7,6 @@ Supports multiple models available on the OpenWebUI platform.
 
 from typing import Dict, Any, Optional, List
 from pathlib import Path
-import os
 import numpy as np
 from PIL import Image
 import io
@@ -88,11 +87,8 @@ class OpenWebUIEngine(HTREngine):
         Looks for .env in the project root directory (parent of engines/).
         Silently skips loading if python-dotenv is not installed or if .env doesn't exist.
         
-        Environment variables loaded (if present):
-            - OPENWEBUI_API_KEY: Used as fallback when API key not in config
-        
-        If .env loading fails or is skipped, the engine will still work if API keys
-        are provided through other means (config, OS environment variables).
+        If .env loading fails or is skipped, the engine will still work if the API key
+        is provided through the config dict.
         """
         if not DOTENV_AVAILABLE:
             return
@@ -108,13 +104,11 @@ class OpenWebUIEngine(HTREngine):
         return "OpenWebUI API from openwebui.uni-freiburg.de (OpenAI-compatible, multiple models)"
 
     def is_available(self) -> bool:
-        return OPENAI_AVAILABLE and PYQT_AVAILABLE
+        return OPENAI_AVAILABLE
 
     def get_unavailable_reason(self) -> str:
         if not OPENAI_AVAILABLE:
             return "OpenAI library not installed. Install with: pip install openai"
-        if not PYQT_AVAILABLE:
-            return "PyQt6 not installed. Install with: pip install PyQt6"
         return ""
 
     def get_config_widget(self) -> QWidget:
@@ -353,12 +347,8 @@ class OpenWebUIEngine(HTREngine):
         try:
             api_key = config.get("api_key", "")
 
-            # Fall back to environment variable if no API key provided
             if not api_key:
-                api_key = os.environ.get("OPENWEBUI_API_KEY", "")
-
-            if not api_key:
-                print("Error: No API key provided. Set via config or OPENWEBUI_API_KEY env var.")
+                print("Error: No API key provided. Paste your key in the field.")
                 return False
 
             # Store config for batch processing (model, temperature, etc.)
@@ -367,6 +357,10 @@ class OpenWebUIEngine(HTREngine):
             # Save API key for future use
             if self._api_key_edit and self._api_key_edit.text().strip():
                 self._save_api_key()
+
+            # Allow base_url override from config (web UI field or CLI)
+            if config.get("base_url", "").strip():
+                self.base_url = config["base_url"].strip()
 
             # Initialize client
             self.client = OpenAI(
@@ -434,10 +428,13 @@ class OpenWebUIEngine(HTREngine):
             # Get model and parameters
             model = config.get("model", "gpt-4-vision-preview")
             temperature = config.get("temperature", 0.1)
-            max_tokens = config.get("max_tokens", 500)
+            max_tokens = config.get("max_tokens")
+            # Treat 0 as "no limit" (HTML number fields send 0 for blank)
+            if max_tokens is not None and max_tokens <= 0:
+                max_tokens = None
 
             # Call OpenWebUI API (OpenAI-compatible)
-            response = self.client.chat.completions.create(
+            api_kwargs = dict(
                 model=model,
                 messages=[
                     {
@@ -457,8 +454,10 @@ class OpenWebUIEngine(HTREngine):
                     }
                 ],
                 temperature=temperature,
-                max_tokens=max_tokens
             )
+            if max_tokens is not None:
+                api_kwargs["max_tokens"] = max_tokens
+            response = self.client.chat.completions.create(**api_kwargs)
 
             # Extract transcription
             text = response.choices[0].message.content.strip()

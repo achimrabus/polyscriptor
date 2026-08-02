@@ -36,6 +36,7 @@ class TrOCREngine(HTREngine):
         self.model: Optional[TrOCRInference] = None
         self._config_widget: Optional[QWidget] = None
         self._current_model_path: Optional[str] = None  # Store loaded model path
+        self._num_beams: int = 4  # Effective decoding beams (set in load_model for headless/batch)
 
         # Widget references (set when config widget is created)
         self._model_source_combo: Optional[QComboBox] = None
@@ -44,6 +45,7 @@ class TrOCREngine(HTREngine):
         self._hf_model_edit: Optional[QLineEdit] = None
         self._beam_spin: Optional[QSpinBox] = None
         self._normalize_check: Optional[QCheckBox] = None
+        self._flip_rtl_check: Optional[QCheckBox] = None
 
     def get_name(self) -> str:
         return "TrOCR"
@@ -52,13 +54,11 @@ class TrOCREngine(HTREngine):
         return "Transformer-based OCR optimized for handwritten manuscripts"
 
     def is_available(self) -> bool:
-        return TROCR_AVAILABLE and PYQT_AVAILABLE
+        return TROCR_AVAILABLE
 
     def get_unavailable_reason(self) -> str:
         if not TROCR_AVAILABLE:
             return "TrOCR inference module not available. Check that inference_page.py exists."
-        if not PYQT_AVAILABLE:
-            return "PyQt6 not installed. Install with: pip install PyQt6"
         return ""
 
     def get_config_widget(self) -> QWidget:
@@ -108,8 +108,13 @@ class TrOCREngine(HTREngine):
             "Custom (enter below)",
             "cyrillic-trocr/trocr-handwritten-cyrillic",
             "kazars24/trocr-base-handwritten-ru",
+            "Kansallisarkisto/cyrillic-htr-model",
+            "dh-unibe/trocr-kurrent",
+            "dh-unibe/trocr-kurrent-XVI-XVII",
             "microsoft/trocr-base-handwritten",
-            "microsoft/trocr-large-handwritten"
+            "microsoft/trocr-large-handwritten",
+            "microsoft/trocr-base-printed",
+            "microsoft/trocr-large-printed"
         ])
         self._hf_preset_combo.currentTextChanged.connect(self._on_preset_changed)
         hf_layout.addWidget(self._hf_preset_combo)
@@ -144,6 +149,10 @@ class TrOCREngine(HTREngine):
         self._normalize_check = QCheckBox("Normalize Background")
         self._normalize_check.setToolTip("Apply CLAHE normalization (use if model was trained with it)")
         settings_layout.addWidget(self._normalize_check)
+
+        self._flip_rtl_check = QCheckBox("RTL manuscript (flip line images)")
+        self._flip_rtl_check.setToolTip("Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew)")
+        settings_layout.addWidget(self._flip_rtl_check)
 
         settings_group.setLayout(settings_layout)
         layout.addWidget(settings_group)
@@ -224,6 +233,7 @@ class TrOCREngine(HTREngine):
             "model_path": self._local_model_combo.currentText() if is_local else self._hf_model_edit.text(),
             "beam_search": self._beam_spin.value(),
             "normalize_background": self._normalize_check.isChecked(),
+            "flip_rtl": self._flip_rtl_check.isChecked(),
         }
 
     def set_config(self, config: Dict[str, Any]):
@@ -244,6 +254,8 @@ class TrOCREngine(HTREngine):
 
         self._beam_spin.setValue(config.get("beam_search", 4))
         self._normalize_check.setChecked(config.get("normalize_background", False))
+        if self._flip_rtl_check:
+            self._flip_rtl_check.setChecked(config.get("flip_rtl", False))
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load TrOCR model."""
@@ -253,13 +265,24 @@ class TrOCREngine(HTREngine):
                 return False
 
             normalize = config.get("normalize_background", False)
+            flip_rtl = config.get("flip_rtl", False)
             model_source = config.get("model_source", "local")
             is_hf = (model_source == "huggingface")
+
+            # Capture effective decoding beams from CLI/batch config so that
+            # transcribe_line() uses it in headless mode (where get_config()
+            # returns {} because there is no Qt widget). Accept both keys:
+            # 'beam_search' (GUI) and 'num_beams' (CLI / batch_processing).
+            self._num_beams = int(config.get("beam_search", config.get("num_beams", 4)))
+            print(f"TrOCR decoding: num_beams={self._num_beams} "
+                  f"({'greedy' if self._num_beams <= 1 else 'beam search'})")
 
             self.model = TrOCRInference(
                 model_path=model_path,
                 normalize_bg=normalize,
-                is_huggingface=is_hf
+                flip_rtl=flip_rtl,
+                is_huggingface=is_hf,
+                processor_subfolder=config.get("processor_subfolder")
             )
 
             # Store the model path for metadata
@@ -298,14 +321,20 @@ class TrOCREngine(HTREngine):
         if config is None:
             config = self.get_config()
 
-        beam_search = config.get("beam_search", 4)
+        # Prefer an explicit per-call value (GUI passes 'beam_search', CLI may
+        # pass 'num_beams'); otherwise use the value captured at load_model time.
+        # NOTE: in headless/batch mode config is {} (no Qt widget), so without
+        # the self._num_beams fallback this silently defaulted to 4 and ignored
+        # the CLI --num-beams entirely.
+        beam_search = config.get("beam_search", config.get("num_beams", self._num_beams))
 
         try:
             # TrOCRInference expects PIL Image, convert from numpy
             from PIL import Image
             pil_image = Image.fromarray(image)
 
-            text = self.model.transcribe_line(pil_image, num_beams=beam_search)
+            text, confidence, token_confidences = self.model.transcribe_line(
+                pil_image, num_beams=beam_search, return_confidence=True)
 
             # Build metadata with model information
             metadata = {
@@ -317,9 +346,19 @@ class TrOCREngine(HTREngine):
             if self._current_model_path:
                 metadata["model"] = self._current_model_path
 
+            # Honest confidence: geometric mean of the generated tokens'
+            # probabilities (beam-safe, see TrOCRInference.transcribe_line).
+            # min_token_prob flags the weakest spot in the line — a low value
+            # means the model was unsure somewhere even if the mean looks fine.
+            # None (not 1.0) when no scores are available, so the UI shows
+            # "no confidence" instead of a fake 100%.
+            if token_confidences:
+                metadata["min_token_prob"] = round(min(token_confidences), 4)
+                metadata["num_tokens"] = len(token_confidences)
+
             return TranscriptionResult(
                 text=text,
-                confidence=1.0,  # TrOCR doesn't provide confidence scores
+                confidence=confidence,
                 metadata=metadata
             )
 
@@ -331,7 +370,7 @@ class TrOCREngine(HTREngine):
         """TrOCR capabilities."""
         return {
             "batch_processing": False,  # Could be implemented in future
-            "confidence_scores": False,  # TrOCR doesn't provide per-token confidence
+            "confidence_scores": True,  # geometric mean of per-token probabilities (beam-safe)
             "beam_search": True,
             "language_model": False,  # Implicit in decoder, not explicit LM
             "preprocessing": True,  # Has built-in normalization

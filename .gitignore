@@ -54,6 +54,9 @@ unpacked-datasets/
 *.csv
 *.txt
 !requirements.txt
+!requirements-gpu.txt
+!requirements-kraken.txt
+!requirements-paddle-vl.txt
 !README.txt
 
 # Images and media
@@ -66,6 +69,7 @@ unpacked-datasets/
 !example*.png
 !sample*.png
 !assets/*.png
+!web/static/pwa/icons/*.png
 
 # Test images directory
 HTR_Images/
@@ -76,6 +80,10 @@ logs/
 runs/
 tensorboard/
 wandb/
+
+# Security scanning reports
+gitleaks_*.json
+*_report.json
 
 # Compressed files
 *.zip
@@ -90,7 +98,6 @@ wandb/
 page/
 *.xml
 !example*.xml
-!ALTO_example*.xml
 
 # ignore local claude settings
 .claude/
@@ -132,6 +139,7 @@ fix_*.py
 COMPREHENSIVE_*.md
 QWEN_*.md
 KRAKEN_*.md
+SESSION_SUMMARY_*.md
 Documentation/
 
 # Detailed project documentation (hardware-specific, too detailed for public)
@@ -157,6 +165,8 @@ monitor_*.sh
 # Test and debug scripts (temporary)
 check_*.py
 test_*.py
+# Exception: web API test suite is a proper test, not a throwaway script
+!web/tests/test_*.py
 
 # Accidentally created files
 =*
@@ -204,6 +214,29 @@ htr_gui/
 # Training logs
 training_ukrainian_v2c.log
 nohup.out
+nohup_*.log
+
+# Lightning logs
+lightning_logs/
+
+# Internal planning docs
+*_PLAN.md
+PLAN_*.md
+
+# Training run scripts (local)
+run_party_*.sh
+
+# Jupyter notebooks (local experiments)
+*.ipynb
+
+# Web UI upload temp dirs (created at runtime)
+/tmp/polyscriptor_uploads_*/
+
+# Web UI key store (contains API keys — never commit)
+web/api_keys.json
+web/api_keys.yaml
+web/api_usage_log.jsonl
+web/uploads/
 
 # Diagnostic and inspection scripts (temporary)
 diagnose_exif_mismatch.py
@@ -212,3 +245,15 @@ inspect_*.ipynb
 # Gabelsberger shorthand preparation (work in progress)
 prepare_gabelsberger_shorthand.py
 *.gitlab-token
+
+# Internal handoff / briefing documents (not for public repo)
+*_HANDOFF.md
+
+# Runtime PID files (created by training/process scripts)
+*.pid
+
+# Disabled/archived model weights (large binaries)
+_disabled_models/
+
+# Kaggle competition data (downloaded, reproducible via kaggle CLI)
+kaggle_handwritten_to_data/

@@ -8,7 +8,7 @@ PyLaia expects:
 - Train/val list files
 
 Usage:
-    python convert_to_pylaia.py --input_csv data/efendiev_3/train.csv --output_dir data/pylaia_efendiev_train
+    python convert_to_pylaia.py --input_csv data/my_dataset/train.csv --output_dir data/pylaia_train
 """
 
 import argparse
@@ -43,7 +43,7 @@ def normalize_height(image: Image.Image, target_height: int = 64) -> Image.Image
 def convert_dataset(
     csv_path: str,
     output_dir: str,
-    data_root: str = "data/efendiev_3",
+    data_root: str = "data/my_dataset",
     target_height: int = 64,
     normalize_images: bool = True,
     grayscale: bool = True
@@ -201,13 +201,13 @@ def main():
         epilog="""
 Examples:
   # Convert training set
-  python convert_to_pylaia.py --input_csv data/efendiev_3/train.csv --output_dir data/pylaia_efendiev_train
-  
+  python convert_to_pylaia.py --input_csv data/my_dataset/train.csv --output_dir data/pylaia_train
+
   # Convert validation set
-  python convert_to_pylaia.py --input_csv data/efendiev_3/val.csv --output_dir data/pylaia_efendiev_val
-  
+  python convert_to_pylaia.py --input_csv data/my_dataset/val.csv --output_dir data/pylaia_val
+
   # Convert with custom height and keep color
-  python convert_to_pylaia.py --input_csv data/efendiev_3/train.csv --output_dir data/pylaia_efendiev_train --height 96 --no-grayscale
+  python convert_to_pylaia.py --input_csv data/my_dataset/train.csv --output_dir data/pylaia_train --height 96 --no-grayscale
         """
     )
     
@@ -228,8 +228,8 @@ Examples:
     parser.add_argument(
         '--data_root',
         type=str,
-        default='data/efendiev_3',
-        help='Root directory containing line images (default: data/efendiev_3)'
+        default='data/my_dataset',
+        help='Root directory containing line images (default: data/my_dataset)'
     )
     
     parser.add_argument(

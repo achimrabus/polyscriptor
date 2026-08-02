@@ -362,3 +362,11 @@ EOF
 | **Model outputs gibberish** | Vocabulary mismatch | Check idx2char mapping |
 | **Spaces missing in output** | `<SPACE>` not mapped to `' '` | Fix idx2char space handling |
 
+---
+
+## See Also
+
+- [INVESTIGATION_SUMMARY.md](INVESTIGATION_SUMMARY.md) - Prosta Mova EXIF bug analysis
+- [TRAIN_CER_LOGGING_EXPLANATION.md](TRAIN_CER_LOGGING_EXPLANATION.md) - How to use train CER for debugging
+- [PYLAIA_FIXES_SUMMARY_20251106.md](PYLAIA_FIXES_SUMMARY_20251106.md) - Vocabulary parsing bugs
+- [CLAUDE.md](CLAUDE.md) - Full project documentation

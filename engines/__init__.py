@@ -13,4 +13,8 @@ __all__ = [
     "PartyEngine",
     "DeepSeekOCREngine",
     "LightOnOCREngine",
+    "LapaOCREngine",
+    "PaddleOCREngine",
+    "PaddleOCRVLEngine",
+    "ChandraEngine",
 ]

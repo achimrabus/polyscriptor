@@ -37,7 +37,7 @@ class TranskribusParser:
     def __init__(self, input_dir: str, output_dir: str, min_line_width: int = 20,
                  use_polygon_mask: bool = False, normalize_background: bool = False,
                  preserve_aspect_ratio: bool = False, target_height: int = 128,
-                 num_workers: int = None):
+                 flip_rtl: bool = False, num_workers: int = None):
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.min_line_width = min_line_width
@@ -45,6 +45,7 @@ class TranskribusParser:
         self.normalize_background = normalize_background  # NEW: background normalization flag
         self.preserve_aspect_ratio = preserve_aspect_ratio  # NEW: aspect ratio preservation
         self.target_height = target_height  # NEW: target height for resizing (default 128px as per best practices)
+        self.flip_rtl = flip_rtl  # Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew, etc.)
 
         # Optimize worker count for 16 core / 32 thread CPU
         # Use 1.25x physical cores for mixed I/O + CPU workload
@@ -203,6 +204,13 @@ class TranskribusParser:
         tree = ET.parse(xml_path)
         root = tree.getroot()
 
+        # Support PAGE XML schema variants (e.g. 2013-07-15, 2019-07-15)
+        # by reading the namespace URI directly from the document root.
+        ns = self.NS
+        if root.tag.startswith('{') and '}' in root.tag:
+            ns_uri = root.tag[1:].split('}', 1)[0]
+            ns = {'page': ns_uri}
+
         lines_data = []
 
         # Open the full page image
@@ -237,14 +245,14 @@ class TranskribusParser:
             return lines_data
 
         # Find all TextLine elements
-        for region in root.findall('.//page:TextRegion', self.NS):
+        for region in root.findall('.//page:TextRegion', ns):
             region_id = region.get('id', 'unknown')
 
-            for idx, text_line in enumerate(region.findall('.//page:TextLine', self.NS)):
+            for idx, text_line in enumerate(region.findall('.//page:TextLine', ns)):
                 line_id = text_line.get('id', f'{region_id}_line_{idx}')
 
                 # Get coordinates
-                coords_elem = text_line.find('page:Coords', self.NS)
+                coords_elem = text_line.find('page:Coords', ns)
                 if coords_elem is None:
                     continue
 
@@ -256,7 +264,7 @@ class TranskribusParser:
                 x1, y1, x2, y2 = self.get_bounding_box(coords)
 
                 # Get text content
-                text_equiv = text_line.find('page:TextEquiv/page:Unicode', self.NS)
+                text_equiv = text_line.find('page:TextEquiv/page:Unicode', ns)
                 if text_equiv is None or not text_equiv.text:
                     continue
 
@@ -276,6 +284,8 @@ class TranskribusParser:
                     page_name = image_path.stem
                     line_filename = f"{page_name}_{line_id}.png"
                     line_image_path = self.images_dir / line_filename
+                    if self.flip_rtl:
+                        line_image = line_image.transpose(Image.FLIP_LEFT_RIGHT)
                     line_image.save(line_image_path)
 
                     lines_data.append({
@@ -312,14 +322,15 @@ class TranskribusParser:
             use_polygon_mask=self.use_polygon_mask,
             normalize_background=self.normalize_background,
             preserve_aspect_ratio=self.preserve_aspect_ratio,
-            target_height=self.target_height
+            target_height=self.target_height,
+            flip_rtl=self.flip_rtl
         )
 
     @staticmethod
     def _process_single_page_static(xml_path: Path, output_dir: Path, images_dir: Path,
                                      min_line_width: int, use_polygon_mask: bool,
                                      normalize_background: bool, preserve_aspect_ratio: bool,
-                                     target_height: int) -> List[dict]:
+                                     target_height: int, flip_rtl: bool = False) -> List[dict]:
         """
         Process a single page (static method for parallel processing).
 
@@ -334,6 +345,7 @@ class TranskribusParser:
             normalize_background=normalize_background,
             preserve_aspect_ratio=preserve_aspect_ratio,
             target_height=target_height,
+            flip_rtl=flip_rtl,
             num_workers=1  # Each worker processes sequentially
         )
 
@@ -488,7 +500,8 @@ class TranskribusParser:
             'pages_processed': df['page'].nunique(),
             'background_normalized': self.normalize_background,  # Record preprocessing
             'preserve_aspect_ratio': self.preserve_aspect_ratio,  # NEW: record aspect ratio setting
-            'target_height': self.target_height if self.preserve_aspect_ratio else None  # NEW: record target height
+            'target_height': self.target_height if self.preserve_aspect_ratio else None,  # NEW: record target height
+            'flip_rtl': self.flip_rtl  # RTL horizontal flip applied
         }
 
         metadata_path = self.output_dir / "dataset_info.json"
@@ -545,6 +558,11 @@ def main():
         help='Resize to target height while preserving aspect ratio (RECOMMENDED for TrOCR - prevents brutal downsampling)'
     )
     parser.add_argument(
+        '--flip-rtl',
+        action='store_true',
+        help='Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew, Persian, Syriac). Required for CRNN-CTC training on RTL manuscripts with LTR transcription.'
+    )
+    parser.add_argument(
         '--target-height',
         type=int,
         default=128,
@@ -579,6 +597,7 @@ def main():
         normalize_background=args.normalize_background,
         preserve_aspect_ratio=args.preserve_aspect_ratio,
         target_height=args.target_height,
+        flip_rtl=args.flip_rtl,
         num_workers=args.num_workers
     )
 

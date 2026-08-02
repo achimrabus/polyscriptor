@@ -1,0 +1,25 @@
+# Polyscriptor Web UI — server startup configuration
+# Uncomment and adjust to auto-load an engine on server start.
+#
+# Usage:
+#   python -m uvicorn web.polyscriptor_server:app --host 0.0.0.0 --port 8765
+#
+# The server will load the specified engine at startup so the first
+# transcription request doesn't need to wait for model loading.
+
+# --- Auto-load (optional) ---
+# Set default_engine to the engine name shown in the UI dropdown.
+# Leave blank or comment out to start without a loaded model.
+
+# Example: auto-load Church Slavonic CRNN-CTC model
+# default_engine: "CRNN-CTC (PyLaia-inspired)"
+# default_config:
+#   model_path: "Church Slavonic (2.89% CER)"
+#   enable_spaces: true
+
+# Example: auto-load TrOCR from HuggingFace
+# default_engine: "TrOCR"
+# default_config:
+#   model_path: "kazars24/trocr-base-handwritten-ru"
+#   num_beams: 4
+#   normalize_background: false

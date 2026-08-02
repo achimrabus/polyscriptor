@@ -12,6 +12,7 @@ This engine uses Party's PAGE XML workflow:
 No WSL needed - runs natively on Linux.
 """
 
+import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -77,18 +78,9 @@ class PartyEngine(HTREngine):
             if isinstance(location, Path) and location.exists():
                 return str(location)
             elif location == "party":
-                # Check if party is in PATH
-                try:
-                    result = subprocess.run(
-                        ["which", "party"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    if result.returncode == 0 and result.stdout.strip():
-                        return "party"  # Use command directly from PATH
-                except:
-                    pass
+                # Check if party is in PATH (shutil.which works on all platforms)
+                if shutil.which("party") is not None:
+                    return "party"  # Use command directly from PATH
 
         return None
 

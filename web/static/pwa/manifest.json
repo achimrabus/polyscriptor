@@ -1,0 +1,27 @@
+{
+  "name": "Polyscriptor HTR Demo",
+  "short_name": "Polyscriptor",
+  "description": "Handwritten Text Recognition — capture a photo and transcribe it instantly",
+  "start_url": "/demo",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#111827",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/static/pwa/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/pwa/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "lang": "en"
+}

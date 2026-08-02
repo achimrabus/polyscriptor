@@ -2,14 +2,14 @@
 """
 Batch HTR Processing CLI
 
-Process multiple manuscript images with various HTR engines (PyLaia, TrOCR, Churro, etc.)
+Process multiple manuscript images with various HTR engines (CRNN-CTC, TrOCR, Churro, etc.)
 Supports line segmentation, multiple output formats, and robust error handling.
 
 Usage:
     python batch_processing.py \\
         --input-folder data/manuscripts/ \\
         --output-folder output/ \\
-        --engine PyLaia \\
+        --engine crnn-ctc \\
         --model-path models/pylaia_ukrainian/best_model.pt \\
         --verbose
 
@@ -35,6 +35,29 @@ from tqdm import tqdm
 # Some high-resolution scans exceed the default 178MP limit
 Image.MAX_IMAGE_PIXELS = None
 
+# PDF support via PyMuPDF
+try:
+    import fitz  # PyMuPDF
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
+
+def pdf_to_images(pdf_path: Path, dpi: int = 300) -> List[Image.Image]:
+    """Render each page of a PDF to a PIL Image at the given DPI."""
+    if not PDF_AVAILABLE:
+        raise RuntimeError("PyMuPDF not installed. Install with: pip install pymupdf")
+    import fitz as _fitz
+    doc = _fitz.open(str(pdf_path))
+    mat = _fitz.Matrix(dpi / 72, dpi / 72)
+    images = []
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
+        images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
+    doc.close()
+    return images
+
+
 # HTR Engine imports
 from htr_engine_base import HTREngine, TranscriptionResult, get_global_registry
 
@@ -58,7 +81,7 @@ except ImportError:
 
 # Engine-specific recommendations (shared server - conservative defaults)
 ENGINE_CONFIG = {
-    'PyLaia': {
+    'CRNN-CTC (PyLaia-inspired)': {
         'min_device': 'cuda',
         'default_batch_size': 32,  # Conservative for shared server
         'batch_size_range': (8, 64),
@@ -78,7 +101,7 @@ ENGINE_CONFIG = {
         'default_batch_size': 16,
         'batch_size_range': (8, 32),
         'speed_estimate': 15,
-        'warning': 'Slower than PyLaia/TrOCR but more accurate for complex layouts'
+        'warning': 'Slower than CRNN-CTC/TrOCR but more accurate for complex layouts'
     },
     'Qwen3-VL': {
         'min_device': 'cuda',
@@ -121,6 +144,20 @@ ENGINE_CONFIG = {
         'batch_size_range': (8, 32),
         'speed_estimate': 25,
         'warning': 'LINE-LEVEL model (~4GB VRAM). Requires transformers from git source.'
+    },
+    'LapaOCR': {
+        'min_device': 'cuda',
+        'default_batch_size': 4,
+        'batch_size_range': (1, 8),
+        'speed_estimate': 6,
+        'warning': '12B VLM + LoRA adapter. For 24GB GPUs prefer 8bit/4bit quantization.'
+    },
+    'PaddleOCR': {
+        'min_device': 'cpu',
+        'default_batch_size': 1,
+        'batch_size_range': (1, 1),
+        'speed_estimate': 15,
+        'warning': 'Requires separate PaddleOCR venv (venv_paddle). Use --paddle-venv to specify path.'
     }
 }
 
@@ -132,9 +169,9 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process folder with PyLaia Ukrainian model
+  # Process folder with CRNN-CTC Ukrainian model
   %(prog)s --input-folder data/manuscripts/ \\
-           --engine PyLaia \\
+           --engine crnn-ctc \\
            --model-path models/pylaia_ukrainian/best_model.pt
 
   # Process with TrOCR and Kraken segmentation
@@ -145,7 +182,7 @@ Examples:
            --output-format txt,csv,pagexml
 
   # Dry run (preview without processing)
-  %(prog)s --input-folder pages/ --engine PyLaia \\
+  %(prog)s --input-folder pages/ --engine crnn-ctc \\
            --model-path models/best.pt --dry-run
 
 Shared Server Notice:
@@ -158,7 +195,7 @@ Shared Server Notice:
     parser.add_argument('--input-folder', type=Path, required=True,
                        help='Folder containing input images')
     parser.add_argument('--engine', type=str, required=True,
-                       help='HTR engine (PyLaia, TrOCR, Churro, Qwen3-VL, Party, Kraken, OpenWebUI, DeepSeek-OCR, LightOnOCR)')
+                       help='HTR engine (crnn-ctc, TrOCR, Churro, Qwen3-VL, Party, Kraken, OpenWebUI, DeepSeek-OCR, LightOnOCR, LapaOCR)')
 
     # Model selection
     model_group = parser.add_mutually_exclusive_group()
@@ -175,14 +212,16 @@ Shared Server Notice:
 
     # Segmentation
     parser.add_argument('--segmentation-method', type=str, default='hpp',
-                       choices=['hpp', 'kraken', 'none'],
-                       help='Line segmentation method (default: hpp)')
+                       choices=['hpp', 'kraken', 'kraken-blla', 'none'],
+                       help='Line segmentation method: hpp, kraken, kraken-blla (neural, multi-column), none (default: hpp)')
     parser.add_argument('--segmentation-sensitivity', type=float, default=0.05,
                        help='HPP sensitivity (0.01-0.1, default: 0.05)')
     parser.add_argument('--min-line-height', type=int, default=15,
                        help='Minimum line height in pixels (default: 15)')
     parser.add_argument('--min-gap', type=int, default=5,
                        help='Minimum gap between lines (default: 5)')
+    parser.add_argument('--seg-model', type=Path, default=None,
+                       help='Path to custom segmentation .mlmodel for kraken-blla (default: pagexml/blla.mlmodel)')
 
     # PAGE XML support
     parser.add_argument('--use-pagexml', action='store_true', default=True,
@@ -221,6 +260,8 @@ Shared Server Notice:
                        help='Path to LoRA adapter (Qwen3: use with --model-id for base model)')
     parser.add_argument('--line-mode', action='store_true',
                        help='Force line segmentation for page-based engines (Qwen3 line-trained models)')
+    parser.add_argument('--flip-rtl', action='store_true',
+                       help='Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew)')
 
     # API-based engines (OpenWebUI)
     parser.add_argument('--api-key', type=str,
@@ -248,6 +289,25 @@ Shared Server Notice:
     parser.add_argument('--max-new-tokens', type=int, default=256,
                        help='LightOnOCR max new tokens (64-512, default: 256)')
 
+    # LapaOCR-specific
+    parser.add_argument('--lapa-quantization', type=str, default='none',
+                       choices=['none', '8bit', '4bit'],
+                       help='LapaOCR quantization mode (default: none)')
+
+    # PaddleOCR-specific
+    parser.add_argument('--paddle-venv', type=Path, default=None,
+                       help='Path to PaddleOCR venv (default: venv_paddle next to this script)')
+    parser.add_argument('--paddle-lang', type=str, default='en',
+                       help='PaddleOCR language code (default: en). Examples: ch, de, fr, ru, uk, la')
+
+    # Kraken preset models (Zenodo auto-download)
+    parser.add_argument('--kraken-preset', type=str, default=None,
+                       help='Kraken preset model name — auto-downloads from Zenodo on first use. '
+                            'Overrides --model-path for Kraken engine. '
+                            'Available: blla-local, catmus-print-fondue, medieval-latin, '
+                            'legal-historical, greek-ancient, fraktur-german, english-early-modern, '
+                            'arabic-manuscripts, hebrew-ancient, classical-chinese, japanese-historical')
+
     # Safety flags
     parser.add_argument('--i-understand-this-is-slow', action='store_true',
                        help='Required flag for Qwen3 with >50 images')
@@ -258,7 +318,7 @@ Shared Server Notice:
     if not args.input_folder.exists():
         parser.error(f"Input folder not found: {args.input_folder}")
 
-    if args.engine in ['PyLaia', 'TrOCR', 'Churro'] and not (args.model_path or args.model_id):
+    if args.engine in ['CRNN-CTC (PyLaia-inspired)', 'crnn-ctc', 'CRNN-CTC', 'PyLaia', 'TrOCR', 'Churro'] and not (args.model_path or args.model_id):
         parser.error(f"{args.engine} requires --model-path or --model-id")
 
     # OpenWebUI requires API key (from arg or environment)
@@ -271,7 +331,7 @@ Shared Server Notice:
         if not args.model_id:
             parser.error("OpenWebUI requires --model-id (e.g., 'gpt-4-vision-preview' or model from server)")
 
-    if args.segmentation_method == 'kraken' and not KRAKEN_AVAILABLE:
+    if args.segmentation_method in ('kraken', 'kraken-blla') and not KRAKEN_AVAILABLE:
         parser.error("Kraken not installed. Install with: pip install kraken")
 
     # Parse output formats (handle both comma-separated and multiple --output-format flags)
@@ -291,7 +351,9 @@ Shared Server Notice:
 
 
 def discover_images(input_folder: Path, verbose: bool = False) -> List[Path]:
-    """Discover all image files in folder (recursive)."""
+    """Discover all image files in folder (recursive). PDFs are expanded page-by-page."""
+    import tempfile
+
     extensions = ['.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp']
     images = []
 
@@ -299,14 +361,43 @@ def discover_images(input_folder: Path, verbose: bool = False) -> List[Path]:
         images.extend(input_folder.rglob(f'*{ext}'))
         images.extend(input_folder.rglob(f'*{ext.upper()}'))
 
-    images = sorted(set(images))  # Remove duplicates, sort
+    images = sorted(set(images))
+
+    # Expand PDF files
+    pdf_files = sorted(set(
+        list(input_folder.rglob('*.pdf')) + list(input_folder.rglob('*.PDF'))
+    ))
+    if pdf_files:
+        if not PDF_AVAILABLE:
+            print(f"⚠️  {len(pdf_files)} PDF(s) found but PyMuPDF not installed — skipping. "
+                  "Install with: pip install pymupdf")
+        else:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="polyscriptor_pdf_"))
+            for pdf_path in pdf_files:
+                try:
+                    pages = pdf_to_images(pdf_path)
+                    for i, img in enumerate(pages, 1):
+                        out = tmp_dir / f"{pdf_path.stem}_page{i:03d}.png"
+                        img.save(str(out))
+                        images.append(out)
+                    if verbose:
+                        print(f"  📄 {pdf_path.name}: expanded {len(pages)} pages")
+                except Exception as e:
+                    print(f"  ⚠️  Could not expand PDF {pdf_path.name}: {e}")
+
+    images = sorted(images)  # final sort (mixes pages into correct order)
 
     if verbose:
         print(f"\n{'='*60}")
-        print(f"Found {len(images)} images in {input_folder}")
+        print(f"Found {len(images)} images in {input_folder} "
+              f"({len(pdf_files)} PDF(s) expanded)" if pdf_files else
+              f"Found {len(images)} images in {input_folder}")
         print(f"{'='*60}")
         for img in images[:10]:
-            print(f"  - {img.relative_to(input_folder)}")
+            try:
+                print(f"  - {img.relative_to(input_folder)}")
+            except ValueError:
+                print(f"  - {img.name}")
         if len(images) > 10:
             print(f"  ... and {len(images) - 10} more")
         print(f"{'='*60}\n")
@@ -519,7 +610,7 @@ def validate_engine_config(engine_name: str, config: dict, image_count: int, log
         logger.error(f"Processing {image_count} images will take approximately:")
         logger.error(f"  {estimated_hours:.1f}-{estimated_hours*2:.1f} HOURS")
         logger.error(f"\nConsider using:")
-        logger.error(f"  - PyLaia: {(image_count/30)*60:.0f} seconds (~{image_count/30:.1f} min)")
+        logger.error(f"  - CRNN-CTC: {(image_count/30)*60:.0f} seconds (~{image_count/30:.1f} min)")
         logger.error(f"  - TrOCR: {(image_count/20)*60:.0f} seconds (~{image_count/20:.1f} min)")
         logger.error(f"  - Churro: {(image_count/15)*60:.0f} seconds (~{image_count/15:.1f} min)")
         logger.error(f"\nIf you really want to use Qwen3 for {image_count} images,")
@@ -599,6 +690,9 @@ class BatchHTRProcessor:
         if not self.engine:
             raise ValueError(f"Engine not found: {self.args.engine}")
 
+        # Normalize to canonical engine name so downstream lookups (ENGINE_CONFIG etc.) work
+        self.args.engine = self.engine.get_name()
+
         if not self.engine.is_available():
             raise RuntimeError(f"Engine unavailable: {self.engine.get_unavailable_reason()}")
 
@@ -643,8 +737,13 @@ class BatchHTRProcessor:
             config['adapter'] = str(self.args.adapter)
 
         # Engine-specific
-        if self.args.num_beams > 1:
-            config['num_beams'] = self.args.num_beams
+        # Always propagate the decoding beams (also greedy=1) under both keys so
+        # the engine can distinguish greedy vs beam search. Previously this was
+        # gated on >1 and only set 'num_beams', which TrOCR's transcribe_line()
+        # never read (it looked up 'beam_search'), so --num-beams was ignored and
+        # TrOCR always ran its hard-coded default of 4.
+        config['num_beams'] = self.args.num_beams
+        config['beam_search'] = self.args.num_beams
 
         if self.args.temperature != 1.0:
             config['temperature'] = self.args.temperature
@@ -655,6 +754,9 @@ class BatchHTRProcessor:
 
         if self.args.language:
             config['language'] = self.args.language
+
+        if self.args.flip_rtl:
+            config['flip_rtl'] = True
 
         # OpenWebUI-specific
         if self.args.api_key:
@@ -673,6 +775,27 @@ class BatchHTRProcessor:
             config['image_size'] = self.args.image_size
             config['crop_mode'] = self.args.crop_mode
 
+        # Kraken preset model (auto-download from Zenodo)
+        if self.args.engine == 'Kraken' and getattr(self.args, 'kraken_preset', None):
+            try:
+                from engines.kraken_engine import download_preset_model
+                preset_path = download_preset_model(self.args.kraken_preset)
+                if preset_path:
+                    config['model_path'] = preset_path
+                    config['preset_id'] = self.args.kraken_preset
+                    self.logger.info(f"✓ Kraken preset '{self.args.kraken_preset}' → {preset_path}")
+                else:
+                    self.logger.warning(f"⚠️  Could not resolve Kraken preset '{self.args.kraken_preset}'")
+            except Exception as e:
+                self.logger.warning(f"⚠️  Kraken preset error: {e}")
+
+        # PaddleOCR-specific
+        if self.args.engine == 'PaddleOCR':
+            script_dir = Path(__file__).parent
+            default_venv = script_dir / 'venv_paddle'
+            config['venv_path'] = str(self.args.paddle_venv or default_venv)
+            config['lang'] = self.args.paddle_lang or 'en'
+
         # LightOnOCR-specific
         if self.args.engine == 'LightOnOCR':
             config['longest_edge'] = self.args.longest_edge
@@ -680,6 +803,15 @@ class BatchHTRProcessor:
             # Custom prompt support (reuses --prompt flag)
             if self.args.prompt:
                 config['custom_prompt'] = self.args.prompt
+
+        # LapaOCR-specific
+        if self.args.engine == 'LapaOCR':
+            config['base_model'] = config.get('model_id', 'lapa-llm/lapa-v0.1.2-instruct')
+            config['adapter'] = config.get('adapter', 'VmF0x/lapa-ocr-lora')
+            config['quantization'] = self.args.lapa_quantization
+            config['max_new_tokens'] = self.args.max_new_tokens
+            if self.args.prompt:
+                config['prompt'] = self.args.prompt
 
         return config
 
@@ -695,7 +827,12 @@ class BatchHTRProcessor:
 
         elif self.args.segmentation_method == 'kraken':
             self.segmenter = KrakenLineSegmenter()
-            self.logger.info("✓ Kraken segmenter initialized")
+            self.logger.info("✓ Kraken Classical segmenter initialized")
+
+        elif self.args.segmentation_method == 'kraken-blla':
+            device = self.args.device if hasattr(self.args, 'device') else 'cpu'
+            self.segmenter = KrakenLineSegmenter(device=device)
+            self.logger.info(f"✓ Kraken Neural (blla) segmenter initialized (device={device})")
 
     def process_batch(self, image_xml_pairs: List[Tuple[Path, Optional[Path]]]):
         """Process batch of images with optional PAGE XML."""
@@ -793,11 +930,32 @@ class BatchHTRProcessor:
                     )]
                     self.logger.debug(f"  No segmentation: treating image as single line")
                 else:
-                    # Segment lines from full page
-                    lines = self.segmenter.segment_lines(image)
-                    self.logger.debug(f"  Segmented {len(lines)} lines")
+                    if self.args.segmentation_method == 'kraken-blla':
+                        # Neural baseline segmentation with region detection
+                        from inference_page import sort_lines_by_region
+                        seg_model = str(self.args.seg_model) if getattr(self.args, 'seg_model', None) else None
+                        regions, blla_lines = self.segmenter.segment_with_regions(image, model_path=seg_model)
+                        self.logger.debug(f"  blla: {len(regions)} regions, {len(blla_lines)} lines")
 
-                    # Normalize Kraken LineSegments to inference_page format
+                        # Normalize blla LineSegments to inference_page format
+                        normalized_lines = []
+                        for line in blla_lines:
+                            x1, y1, x2, y2 = line.bbox
+                            normalized_lines.append(LineSegment(
+                                image=line.image,
+                                bbox=(x1, y1, x2-x1, y2-y1),
+                                coords=line.baseline if hasattr(line, 'baseline') else None,
+                                text=None,
+                                confidence=None,
+                                char_confidences=None
+                            ))
+                        lines = normalized_lines
+                    else:
+                        # Classical segmentation (HPP or Kraken)
+                        lines = self.segmenter.segment_lines(image)
+                        self.logger.debug(f"  Segmented {len(lines)} lines")
+
+                    # Normalize Kraken Classical LineSegments to inference_page format
                     # Kraken: bbox=(x1,y1,x2,y2), baseline attribute
                     # inference_page: bbox=(x,y,w,h), coords attribute
                     if self.args.segmentation_method == 'kraken' and len(lines) > 0:
@@ -830,10 +988,10 @@ class BatchHTRProcessor:
                 char_confidences=None
             )]
 
-        # Extract line images (filter out too-small lines for PyLaia)
+        # Extract line images (filter out too-small lines for CRNN-CTC)
         line_images = []
         filtered_lines = []
-        # PyLaia CNN needs minimum ~64px after resize to 128px height
+        # CRNN-CTC CNN needs minimum ~64px after resize to 128px height
         # Original height * (128 / original_height) >= 64  → original >= 64
         # But accounting for pooling layers, set conservative threshold
         min_height_for_cnn = 40  # Conservative minimum to avoid CNN dimension errors

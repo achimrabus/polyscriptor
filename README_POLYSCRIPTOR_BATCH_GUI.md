@@ -149,3 +149,5 @@ This ensures:
 ## See Also
 
 - [batch_processing.py](batch_processing.py) - CLI batch processor (backend)
+- [POLYSCRIPTOR_BATCH_GUI_PLAN.md](POLYSCRIPTOR_BATCH_GUI_PLAN.md) - Design documentation
+- [CLAUDE.md](CLAUDE.md) - Project overview and recent improvements

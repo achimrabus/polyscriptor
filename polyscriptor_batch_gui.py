@@ -34,7 +34,7 @@ from PyQt6.QtGui import QFont
 
 # Available engines with their configuration needs
 ENGINES = {
-    "PyLaia": {
+    "CRNN-CTC": {
         "needs_model_path": True,
         "needs_model_id": False,
         "default_segmentation": "kraken",
@@ -91,28 +91,53 @@ ENGINES = {
         "has_lighton_options": True,  # Enable LightOnOCR-specific controls
         "warning": "Requires transformers from git: pip install git+https://github.com/huggingface/transformers.git",
     },
+    "LapaOCR": {
+        "needs_model_path": False,
+        "needs_model_id": True,
+        "needs_adapter": True,
+        "default_segmentation": "kraken",  # Crop/line-focused model
+        "supports_beams": False,
+        "has_lapa_options": True,
+        "warning": "12B VLM + LoRA. On 24GB GPUs use 8bit/4bit quantization.",
+    },
+    "DeepSeek-OCR": {
+        "needs_model_path": False,
+        "needs_model_id": False,   # Uses default deepseek-ai/DeepSeek-OCR-2 from HF cache
+        "default_segmentation": "none",  # Page-level VLM
+        "supports_beams": False,
+        "has_deepseek_options": True,
+        "warning": "PAGE-LEVEL model (~6 GB VRAM). Requires venv_deepseek with transformers==4.46.3.",
+    },
+    "PaddleOCR": {
+        "needs_model_path": False,
+        "needs_model_id": False,
+        "default_segmentation": "none",  # PaddleOCR does its own detection
+        "supports_beams": False,
+        "has_paddle_options": True,
+        "warning": "Requires separate PaddleOCR venv (venv_paddle). Models download on first use.",
+    },
 }
 
 # Built-in presets
 BUILTIN_PRESETS = {
-    "Church Slavonic (PyLaia + Kraken)": {
-        "engine": "PyLaia",
+    "Church Slavonic (CRNN-CTC + Kraken)": {
+        "engine": "CRNN-CTC",
         "model_path": "models/pylaia_church_slavonic_20251103_162857/best_model.pt",
         "segmentation_method": "kraken",
         "use_pagexml": True,
         "device": "cuda:0",
         "output_formats": ["txt"],
     },
-    "Ukrainian (PyLaia + Kraken)": {
-        "engine": "PyLaia",
+    "Ukrainian (CRNN-CTC + Kraken)": {
+        "engine": "CRNN-CTC",
         "model_path": "models/pylaia_ukrainian_pagexml_20251101_182736/best_model.pt",
         "segmentation_method": "kraken",
         "use_pagexml": True,
         "device": "cuda:0",
         "output_formats": ["txt"],
     },
-    "Glagolitic (PyLaia + Kraken)": {
-        "engine": "PyLaia",
+    "Glagolitic (CRNN-CTC + Kraken)": {
+        "engine": "CRNN-CTC",
         "model_path": "models/pylaia_glagolitic_with_spaces_20251102_182103/best_model.pt",
         "segmentation_method": "kraken",
         "use_pagexml": True,
@@ -182,6 +207,16 @@ BUILTIN_PRESETS = {
         "output_formats": ["txt"],
         "longest_edge": 700,
         "max_new_tokens": 256,
+    },
+    "Ukrainian (LapaOCR + LoRA)": {
+        "engine": "LapaOCR",
+        "model_id": "lapa-llm/lapa-v0.1.2-instruct",
+        "adapter": "VmF0x/lapa-ocr-lora",
+        "segmentation_method": "kraken",
+        "use_pagexml": True,
+        "device": "cuda:0",
+        "output_formats": ["txt"],
+        "lapa_quantization": "none",
     },
 }
 
@@ -441,6 +476,84 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.lighton_group.setVisible(False)  # Hidden by default
         layout.addWidget(self.lighton_group)
 
+        # LapaOCR-specific controls
+        self.lapa_group = QGroupBox("LapaOCR Settings")
+        lapa_layout = QVBoxLayout()
+
+        quant_layout = QHBoxLayout()
+        quant_layout.addWidget(QLabel("Quantization:"))
+        self.lapa_quant_combo = QComboBox()
+        self.lapa_quant_combo.addItems(["none", "8bit", "4bit"])
+        self.lapa_quant_combo.setToolTip(
+            "none: highest quality, highest VRAM\n"
+            "8bit: lower VRAM, good quality\n"
+            "4bit: lowest VRAM"
+        )
+        quant_layout.addWidget(self.lapa_quant_combo)
+        quant_layout.addStretch()
+        lapa_layout.addLayout(quant_layout)
+
+        lapa_hint = QLabel("Default Base: lapa-llm/lapa-v0.1.2-instruct, Adapter: VmF0x/lapa-ocr-lora")
+        lapa_hint.setStyleSheet("color: gray; font-size: 9pt;")
+        lapa_hint.setWordWrap(True)
+        lapa_layout.addWidget(lapa_hint)
+
+        self.lapa_group.setLayout(lapa_layout)
+        self.lapa_group.setVisible(False)
+        layout.addWidget(self.lapa_group)
+
+        # DeepSeek-OCR-specific controls
+        self.deepseek_group = QGroupBox("DeepSeek-OCR Settings")
+        deepseek_layout = QVBoxLayout()
+
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("OCR Mode:"))
+        self.deepseek_mode_combo = QComboBox()
+        self.deepseek_mode_combo.addItems(["document", "free"])
+        self.deepseek_mode_combo.setToolTip(
+            "document: includes layout analysis (markdown output)\nfree: plain text output"
+        )
+        mode_layout.addWidget(self.deepseek_mode_combo)
+        mode_layout.addStretch()
+        deepseek_layout.addLayout(mode_layout)
+
+        self.deepseek_strip_md_check = QCheckBox("Strip Markdown formatting")
+        self.deepseek_strip_md_check.setToolTip("Remove markdown symbols from output text")
+        deepseek_layout.addWidget(self.deepseek_strip_md_check)
+
+        self.deepseek_group.setLayout(deepseek_layout)
+        self.deepseek_group.setVisible(False)
+        layout.addWidget(self.deepseek_group)
+
+        # PaddleOCR-specific controls
+        self.paddle_group = QGroupBox("PaddleOCR Settings")
+        paddle_layout = QVBoxLayout()
+
+        venv_layout = QHBoxLayout()
+        venv_layout.addWidget(QLabel("Venv path:"))
+        self.paddle_venv_edit = QLineEdit()
+        self.paddle_venv_edit.setPlaceholderText("venv_paddle  (leave blank for default)")
+        self.paddle_venv_edit.setToolTip("Path to PaddleOCR virtualenv. Default: venv_paddle next to this script.")
+        venv_layout.addWidget(self.paddle_venv_edit)
+        paddle_venv_browse = QPushButton("Browse")
+        paddle_venv_browse.clicked.connect(self._browse_paddle_venv)
+        venv_layout.addWidget(paddle_venv_browse)
+        paddle_layout.addLayout(venv_layout)
+
+        lang_layout = QHBoxLayout()
+        lang_layout.addWidget(QLabel("Language:"))
+        self.paddle_lang_edit = QLineEdit("en")
+        self.paddle_lang_edit.setToolTip(
+            "PaddleOCR language code. Examples: en, ch, de, fr, ru, uk, la, ar, japan, korean"
+        )
+        lang_layout.addWidget(self.paddle_lang_edit)
+        lang_layout.addStretch()
+        paddle_layout.addLayout(lang_layout)
+
+        self.paddle_group.setLayout(paddle_layout)
+        self.paddle_group.setVisible(False)
+        layout.addWidget(self.paddle_group)
+
         group.setLayout(layout)
         return group
 
@@ -453,14 +566,30 @@ class PolyscriptorBatchGUI(QMainWindow):
         method_layout = QHBoxLayout()
         method_layout.addWidget(QLabel("Method:"))
         self.seg_method_combo = QComboBox()
-        self.seg_method_combo.addItems(["kraken", "hpp", "none"])
+        self.seg_method_combo.addItems(["kraken", "kraken-blla", "hpp", "none"])
         self.seg_method_combo.setToolTip(
-            "kraken: Neural segmentation (best)\n"
+            "kraken: Kraken classical segmentation\n"
+            "kraken-blla: Kraken Neural (blla) — multi-column, baseline-aware\n"
             "hpp: Horizontal projection (fast)\n"
             "none: Pre-segmented line images"
         )
         method_layout.addWidget(self.seg_method_combo)
         layout.addLayout(method_layout)
+
+        # Custom segmentation model (for kraken-blla)
+        seg_model_layout = QHBoxLayout()
+        seg_model_layout.addWidget(QLabel("Seg Model:"))
+        self.seg_model_edit = QLineEdit()
+        self.seg_model_edit.setPlaceholderText("Default blla model (leave blank)")
+        self.seg_model_edit.setToolTip(
+            "Path to a custom kraken blla .mlmodel file.\n"
+            "Only used when segmentation method is kraken-blla.\n"
+            "Leave blank to use the built-in default.")
+        seg_model_browse = QPushButton("Browse…")
+        seg_model_browse.clicked.connect(self._browse_seg_model)
+        seg_model_layout.addWidget(self.seg_model_edit)
+        seg_model_layout.addWidget(seg_model_browse)
+        layout.addLayout(seg_model_layout)
 
         # PAGE XML checkbox
         self.pagexml_check = QCheckBox("Use PAGE XML (auto-detect from page/ folder)")
@@ -583,6 +712,12 @@ class PolyscriptorBatchGUI(QMainWindow):
         if folder:
             self.adapter_edit.setText(folder)
 
+    def _browse_paddle_venv(self):
+        """Browse for PaddleOCR venv directory."""
+        folder = QFileDialog.getExistingDirectory(self, "Select PaddleOCR Venv Directory")
+        if folder:
+            self.paddle_venv_edit.setText(folder)
+
     def _refresh_openwebui_models(self):
         """Fetch available models from OpenWebUI API."""
         api_key = self.api_key_edit.text().strip()
@@ -682,6 +817,23 @@ class PolyscriptorBatchGUI(QMainWindow):
         has_lighton = config.get("has_lighton_options", False)
         self.lighton_group.setVisible(has_lighton)
 
+        # Show/hide LapaOCR-specific controls
+        has_lapa = config.get("has_lapa_options", False)
+        self.lapa_group.setVisible(has_lapa)
+
+        # LapaOCR sensible defaults if user switches to the engine with empty fields
+        if engine_name == "LapaOCR":
+            if not self.model_id_edit.text().strip():
+                self.model_id_edit.setText("lapa-llm/lapa-v0.1.2-instruct")
+            if not self.adapter_edit.text().strip():
+                self.adapter_edit.setText("VmF0x/lapa-ocr-lora")
+
+        # Show/hide DeepSeek-OCR-specific controls
+        self.deepseek_group.setVisible(config.get("has_deepseek_options", False))
+
+        # Show/hide PaddleOCR-specific controls
+        self.paddle_group.setVisible(config.get("has_paddle_options", False))
+
         # Set default segmentation method
         default_seg = config.get("default_segmentation", "kraken")
         idx = self.seg_method_combo.findText(default_seg)
@@ -770,6 +922,14 @@ class PolyscriptorBatchGUI(QMainWindow):
         else:
             self.lighton_prompt_edit.clear()
 
+        # LapaOCR-specific
+        if "lapa_quantization" in preset:
+            idx = self.lapa_quant_combo.findText(preset["lapa_quantization"])
+            if idx >= 0:
+                self.lapa_quant_combo.setCurrentIndex(idx)
+        else:
+            self.lapa_quant_combo.setCurrentText("none")
+
         self._update_command_preview()
 
     def _save_preset(self):
@@ -832,6 +992,16 @@ class PolyscriptorBatchGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load presets: {e}")
 
+    def _browse_seg_model(self):
+        """Open file dialog to select a custom blla segmentation model."""
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Segmentation Model", "",
+            "Kraken Models (*.mlmodel);;All Files (*)"
+        )
+        if path:
+            self.seg_model_edit.setText(path)
+
     def _get_current_config(self) -> Dict[str, Any]:
         """Get current configuration as dictionary."""
         config = {
@@ -840,6 +1010,7 @@ class PolyscriptorBatchGUI(QMainWindow):
             "engine": self.engine_combo.currentText(),
             "device": self.device_combo.currentText(),
             "segmentation_method": self.seg_method_combo.currentText(),
+            "seg_model": self.seg_model_edit.text().strip() or None,
             "use_pagexml": self.pagexml_check.isChecked(),
         }
 
@@ -894,6 +1065,21 @@ class PolyscriptorBatchGUI(QMainWindow):
             if prompt:
                 config["lighton_prompt"] = prompt
 
+        if config["engine"] == "LapaOCR":
+            config["lapa_quantization"] = self.lapa_quant_combo.currentText()
+
+        # DeepSeek-OCR-specific
+        if config["engine"] == "DeepSeek-OCR":
+            config["deepseek_mode"] = self.deepseek_mode_combo.currentText()
+            config["deepseek_strip_md"] = self.deepseek_strip_md_check.isChecked()
+
+        # PaddleOCR-specific
+        if config["engine"] == "PaddleOCR":
+            venv = self.paddle_venv_edit.text().strip()
+            if venv:
+                config["paddle_venv"] = venv
+            config["paddle_lang"] = self.paddle_lang_edit.text().strip() or "en"
+
         return config
 
     def _build_command(self, dry_run: bool = False) -> List[str]:
@@ -930,6 +1116,8 @@ class PolyscriptorBatchGUI(QMainWindow):
         # Segmentation
         if config["segmentation_method"] != "none":
             cmd += ["--segmentation-method", config["segmentation_method"]]
+        if config.get("seg_model"):
+            cmd += ["--seg-model", config["seg_model"]]
 
         # PAGE XML
         if config["use_pagexml"]:
@@ -965,6 +1153,21 @@ class PolyscriptorBatchGUI(QMainWindow):
                 cmd += ["--max-new-tokens", str(config["max_new_tokens"])]
             if config.get("lighton_prompt"):
                 cmd += ["--prompt", config["lighton_prompt"]]
+
+        if config.get("engine") == "LapaOCR":
+            cmd += ["--lapa-quantization", config.get("lapa_quantization", "none")]
+
+        # DeepSeek-OCR-specific
+        if config.get("engine") == "DeepSeek-OCR":
+            cmd += ["--ocr-mode", config["deepseek_mode"]]
+            if config.get("deepseek_strip_md"):
+                cmd += ["--strip-markdown"]
+
+        # PaddleOCR-specific
+        if config.get("engine") == "PaddleOCR":
+            if config.get("paddle_venv"):
+                cmd += ["--paddle-venv", config["paddle_venv"]]
+            cmd += ["--paddle-lang", config.get("paddle_lang", "en")]
 
         return cmd
 
@@ -1008,6 +1211,17 @@ class PolyscriptorBatchGUI(QMainWindow):
         self.longest_edge_spin.valueChanged.connect(self._update_command_preview)
         self.max_new_tokens_spin.valueChanged.connect(self._update_command_preview)
         self.lighton_prompt_edit.textChanged.connect(self._update_command_preview)
+
+        # LapaOCR-specific
+        self.lapa_quant_combo.currentTextChanged.connect(self._update_command_preview)
+
+        # DeepSeek-OCR-specific
+        self.deepseek_mode_combo.currentTextChanged.connect(self._update_command_preview)
+        self.deepseek_strip_md_check.stateChanged.connect(self._update_command_preview)
+
+        # PaddleOCR-specific
+        self.paddle_venv_edit.textChanged.connect(self._update_command_preview)
+        self.paddle_lang_edit.textChanged.connect(self._update_command_preview)
 
     def _validate_config(self) -> Optional[str]:
         """Validate current configuration. Returns error message or None."""

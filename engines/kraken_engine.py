@@ -5,9 +5,18 @@ Wraps the Kraken OCR system as a plugin for the unified GUI.
 Kraken is specialized for historical document OCR with robust segmentation and recognition.
 """
 
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
 import numpy as np
+
+
+def _print(msg: str) -> None:
+    """Print with graceful fallback if console can't encode the message (e.g. Windows CP-1252)."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"))
 
 from htr_engine_base import HTREngine, TranscriptionResult
 
@@ -30,13 +39,32 @@ except ImportError:
     KRAKEN_AVAILABLE = False
 
 
-# Preset Kraken models (can be extended)
+# Local model (included in repo)
+LOCAL_BLLA_MODEL = "pagexml/blla.mlmodel"
+
+# Preset Kraken models — local + Zenodo community models (auto-download on first use)
 KRAKEN_MODELS = {
-    "default": {
-        "path": None,  # Will use get_model from Kraken
-        "description": "Default Kraken model (requires download)",
-        "language": "multi"
+    "blla-local": {
+        "path": LOCAL_BLLA_MODEL,
+        "description": "BLLA Segmentation Model (Local, Default)",
+        "language": "multi",
+        "source": "local"
     },
+    # --- VERIFIED ZENODO MODELS ---
+    # CATMuS-Print: printed text, multilingual, verified DOI 10.5281/zenodo.10592716
+    "catmus-print": {
+        "zenodo_id": "10.5281/zenodo.10592716",
+        "description": "CATMuS-Print (Modern Printed Text, multilingual)",
+        "language": "multi",
+        "source": "zenodo"
+    },
+    # NOTE: "arabic-muharaf" (DOI 10.5281/zenodo.14295555) was removed from this
+    # list — despite the verified DOI, it is a *segmentation* model (Arabic
+    # Handwritten Segmentation, Muharaf Corpus), not a text recognizer. This
+    # engine always wraps presets in TorchSeqRecognizer for OCR, which cannot
+    # load segmentation-type models (raises "Models of type segmentation are
+    # not supported by TorchSeqRecognizer"). Kraken segmentation models belong
+    # in kraken_segmenter.py's neural segmentation path, not here.
 }
 
 
@@ -60,17 +88,17 @@ class KrakenEngine(HTREngine):
         return "Kraken OCR - Specialized for historical documents with .mlmodel support"
 
     def is_available(self) -> bool:
-        return KRAKEN_AVAILABLE and PYQT_AVAILABLE
+        return KRAKEN_AVAILABLE
 
     def get_unavailable_reason(self) -> str:
         if not KRAKEN_AVAILABLE:
             return "Kraken not installed. Install with: pip install kraken"
-        if not PYQT_AVAILABLE:
-            return "PyQt6 not installed. Install with: pip install PyQt6"
         return ""
 
     def get_config_widget(self) -> QWidget:
         """Create Kraken configuration panel."""
+        if not PYQT_AVAILABLE:
+            raise RuntimeError("PyQt6 not installed. Install with: pip install PyQt6")
         if self._config_widget is not None:
             return self._config_widget
 
@@ -95,10 +123,11 @@ class KrakenEngine(HTREngine):
 
         self._preset_combo = QComboBox()
         self._populate_preset_models()
+        self._preset_combo.currentIndexChanged.connect(self._on_preset_model_changed)
         preset_layout.addWidget(QLabel("Model:"))
         preset_layout.addWidget(self._preset_combo)
 
-        preset_hint = QLabel("Note: Preset models may require download on first use")
+        preset_hint = QLabel("Note: Zenodo models auto-download on first use")
         preset_hint.setStyleSheet("color: gray; font-size: 9pt;")
         preset_layout.addWidget(preset_hint)
 
@@ -143,7 +172,7 @@ class KrakenEngine(HTREngine):
         return widget
 
     def _populate_preset_models(self):
-        """Populate preset models dropdown."""
+        """Populate preset models dropdown with local and Zenodo models."""
         if self._preset_combo is None:
             return
 
@@ -153,15 +182,47 @@ class KrakenEngine(HTREngine):
             self._preset_combo.addItem("No presets available")
             return
 
+        # Local model first
         for model_id, info in KRAKEN_MODELS.items():
-            desc = info.get('description', model_id)
-            self._preset_combo.addItem(f"{model_id} - {desc}", userData=model_id)
+            if info.get("source") == "local":
+                desc = info.get('description', model_id)
+                self._preset_combo.addItem(f"[local] {desc}", userData=model_id)
+                break
+
+        self._preset_combo.insertSeparator(self._preset_combo.count())
+
+        # Zenodo models
+        for model_id, info in KRAKEN_MODELS.items():
+            if info.get("source") == "zenodo":
+                desc = info.get('description', model_id)
+                lang = info.get('language', '')
+                self._preset_combo.addItem(f"[download] {desc} ({lang})", userData=model_id)
+
+        self._preset_combo.insertSeparator(self._preset_combo.count())
+        self._preset_combo.addItem("Browse Custom File...", userData="__custom__")
 
     def _on_model_source_changed(self, source: str):
         """Toggle between preset and custom model selection."""
         is_preset = (source == "Preset Models")
         self._preset_group.setVisible(is_preset)
         self._custom_group.setVisible(not is_preset)
+
+    def _on_preset_model_changed(self, index: int):
+        """Handle preset selection — open file browser for custom option."""
+        model_id = self._preset_combo.currentData()
+        if model_id == "__custom__":
+            file_path, _ = QFileDialog.getOpenFileName(
+                self._config_widget,
+                "Select Kraken Model File",
+                "",
+                "Kraken Models (*.mlmodel);;All Files (*)"
+            )
+            if file_path:
+                self._model_source_combo.setCurrentText("Custom Model File")
+                self._custom_model_edit.setText(file_path)
+            self._preset_combo.blockSignals(True)
+            self._preset_combo.setCurrentIndex(0)
+            self._preset_combo.blockSignals(False)
 
     def _browse_model(self):
         """Open file dialog to select model file."""
@@ -217,30 +278,37 @@ class KrakenEngine(HTREngine):
         self._bidi_reorder_check.setChecked(config.get("bidi_reordering", True))
 
     def load_model(self, config: Dict[str, Any]) -> bool:
-        """Load Kraken model."""
+        """Load Kraken model (local or Zenodo auto-download)."""
         try:
             model_path = config.get("model_path")
+            preset_id = config.get("preset_id")
 
-            # If model_path is None (preset), try to get default model
-            if model_path is None:
-                # Kraken can download default models automatically
-                # For now, we'll require an explicit path
-                print("Error: No model path specified. Please provide a .mlmodel file path.")
-                return False
+            # Resolve Zenodo preset: download if needed
+            if preset_id and preset_id in KRAKEN_MODELS:
+                model_info = KRAKEN_MODELS[preset_id]
+                if model_info.get("source") == "zenodo":
+                    zenodo_id = model_info.get("zenodo_id")
+                    model_path = self._download_zenodo_model(zenodo_id, preset_id)
+                    if not model_path:
+                        print(f"Error: Failed to download Zenodo model '{preset_id}'")
+                        return False
+                elif model_info.get("source") == "local":
+                    model_path = model_info.get("path")
 
-            if not model_path or not Path(model_path).exists():
+            # Fall back to default local blla model
+            if not model_path:
+                model_path = LOCAL_BLLA_MODEL
+                print(f"No model specified, using default: {model_path}")
+
+            if not Path(model_path).exists():
                 print(f"Error: Model file not found: {model_path}")
+                print("For Zenodo models, run: kraken get <zenodo_id>")
                 return False
 
-            # Load model using Kraken's vgsl module
             vgsl_model = vgsl.TorchVGSLModel.load_model(model_path)
-
-            # Wrap in TorchSeqRecognizer for use with rpred
             from kraken.lib.models import TorchSeqRecognizer
             self.model = TorchSeqRecognizer(vgsl_model, device='cpu')
-
             print(f"Kraken model loaded from: {model_path}")
-
             return True
 
         except Exception as e:
@@ -249,6 +317,54 @@ class KrakenEngine(HTREngine):
             print(traceback.format_exc())
             self.model = None
             return False
+
+    def _download_zenodo_model(self, zenodo_id: str, model_name: str) -> Optional[str]:
+        """Download a Kraken model from Zenodo via the htrmopo Python API.
+
+        Saved under the KRAKEN_ZENODO_MODELS_DIR env var if set (e.g. redirected
+        to a data volume with more space), otherwise under `kraken_models/` in
+        the repo root. Uses htrmopo's `get_model(model_id, path=...)` directly
+        instead of shelling out to `kraken get` — that avoids having to guess
+        where the CLI's own cache (platformdirs.user_data_dir('htrmopo'), e.g.
+        ~/.local/share/htrmopo on Linux) put the file afterwards.
+        Returns local path on success, None on failure.
+        """
+        import os
+
+        default_dir = Path(__file__).parent.parent / "kraken_models"
+        models_dir = Path(os.environ.get("KRAKEN_ZENODO_MODELS_DIR", default_dir))
+        target_dir = models_dir / model_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        existing = sorted(target_dir.glob("*.mlmodel"))
+        if existing:
+            _print(f"Using cached Zenodo model: {existing[0]}")
+            return str(existing[0])
+
+        try:
+            from htrmopo import get_model
+        except ImportError:
+            _print("ERROR: 'htrmopo' not installed. Install with: pip install htrmopo")
+            _print(f"Manual download: https://zenodo.org/record/{zenodo_id.split('/')[-1]}")
+            return None
+
+        _print(f"Downloading Zenodo model {zenodo_id} …")
+        _print(f"Will save to: {target_dir}")
+        _print("This may take a few minutes on first use …")
+
+        try:
+            result_path = get_model(zenodo_id, path=target_dir)
+        except Exception as e:
+            _print(f"Download error: {e}")
+            _print(f"Manual: kraken get {zenodo_id}  then copy the .mlmodel into {target_dir}/")
+            return None
+
+        downloaded = sorted(Path(result_path).glob("*.mlmodel"))
+        if not downloaded:
+            _print("WARNING: Download succeeded but no .mlmodel file was found in the result")
+            return None
+        _print(f"Model saved to: {downloaded[0]}")
+        return str(downloaded[0])
 
     def unload_model(self):
         """Unload model from memory."""
@@ -370,3 +486,21 @@ class KrakenEngine(HTREngine):
             "language_model": False,  # Not explicitly exposed
             "preprocessing": False,  # External binarization recommended
         }
+
+
+def download_preset_model(preset_name: str) -> Optional[str]:
+    """Module-level helper: resolve and (if needed) download a Kraken preset model.
+
+    Used by batch_processing.py and the web server without instantiating KrakenEngine.
+    Returns local file path, or None on failure.
+    """
+    if preset_name not in KRAKEN_MODELS:
+        print(f"Unknown Kraken preset: '{preset_name}'. Available: {list(KRAKEN_MODELS)}")
+        return None
+    info = KRAKEN_MODELS[preset_name]
+    if info.get("source") == "local":
+        return info.get("path")
+    if info.get("source") == "zenodo":
+        engine = KrakenEngine.__new__(KrakenEngine)
+        return engine._download_zenodo_model(info["zenodo_id"], preset_name)
+    return None

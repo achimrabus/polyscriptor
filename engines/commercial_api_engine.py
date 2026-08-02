@@ -85,13 +85,11 @@ class CommercialAPIEngine(HTREngine):
         return "OpenAI GPT-4V, Google Gemini, Anthropic Claude vision APIs"
 
     def is_available(self) -> bool:
-        return COMMERCIAL_API_AVAILABLE and PYQT_AVAILABLE and any(API_AVAILABILITY.values())
+        return COMMERCIAL_API_AVAILABLE and any(API_AVAILABILITY.values())
 
     def get_unavailable_reason(self) -> str:
         if not COMMERCIAL_API_AVAILABLE:
             return "Commercial API support not available. Install with: pip install openai google-generativeai anthropic"
-        if not PYQT_AVAILABLE:
-            return "PyQt6 not installed. Install with: pip install PyQt6"
         if not any(API_AVAILABILITY.values()):
             return "No API libraries installed. Install at least one: openai, google-generativeai, or anthropic"
         return ""
@@ -592,6 +590,9 @@ class CommercialAPIEngine(HTREngine):
                     elif "High" in thinking_text:
                         thinking_mode = "high"
                     # else: Auto = None (default)
+                else:
+                    # Web UI context — get thinking_mode from config dict
+                    thinking_mode = config.get("thinking_mode") or None
                 if self._temperature_edit is not None:
                     t_text = self._temperature_edit.text().strip()
                     if t_text:
@@ -607,8 +608,18 @@ class CommercialAPIEngine(HTREngine):
                             max_tokens = int(mt_text)
                         except ValueError:
                             max_tokens = None
-                fast_direct_early_exit = True
-                if self._early_exit_check is not None and not self._early_exit_check.isChecked():
+                # Fallback to config dict (web UI context — no Qt widgets)
+                if max_tokens is None:
+                    max_tokens = config.get("max_output_tokens")
+                # Treat 0 as "no limit" (HTML number fields send 0 for blank)
+                if max_tokens is not None and max_tokens <= 0:
+                    max_tokens = None
+                if temperature is None:
+                    temperature = config.get("temperature")
+                # Web UI (no Qt widgets): disable early exit for full reasoning quality
+                if self._early_exit_check is not None:
+                    fast_direct_early_exit = self._early_exit_check.isChecked()
+                else:
                     fast_direct_early_exit = False
                 # Extract continuation settings
                 auto_continue = False
@@ -633,7 +644,8 @@ class CommercialAPIEngine(HTREngine):
                         except ValueError:
                             pass  # Keep default
                 
-                reasoning_fallback_threshold = 0.6
+                # Web UI (no Qt widgets): disable reasoning fallback (1.0 = never trigger)
+                reasoning_fallback_threshold = 1.0 if not (hasattr(self, '_reasoning_fallback_edit') and self._reasoning_fallback_edit is not None) else 0.6
                 if hasattr(self, '_reasoning_fallback_edit') and self._reasoning_fallback_edit is not None:
                     rft_text = self._reasoning_fallback_edit.text().strip()
                     if rft_text:
@@ -664,14 +676,13 @@ class CommercialAPIEngine(HTREngine):
                             pass  # Keep existing max_tokens
                 
                 # Debug: show final token budget
-                final_max_tokens = max_tokens if max_tokens is not None else 2048
-                print(f"📊 Final settings: thinking_mode={thinking_mode}, max_output_tokens={final_max_tokens}, temp={temperature if temperature is not None else 1.0}")
-                
+                print(f"📊 Final settings: thinking_mode={thinking_mode}, max_output_tokens={max_tokens or 'model default'}, temp={temperature if temperature is not None else 1.0}")
+
                 text = self.model.transcribe(
-                    pil_image, 
+                    pil_image,
                     prompt=custom_prompt,
-                    temperature=temperature if temperature is not None else 1.0,
-                    max_output_tokens=max_tokens if max_tokens is not None else 2048,
+                    temperature=temperature if temperature is not None else 0.0,
+                    max_output_tokens=max_tokens,  # None = no limit, model uses its own maximum
                     auto_retry_on_block=True,
                     safety_relax=True,
                     verbose_block_logging=True,
@@ -683,7 +694,8 @@ class CommercialAPIEngine(HTREngine):
                     continuation_min_new_chars=continuation_min_new_chars,
                     reasoning_fallback_threshold=reasoning_fallback_threshold,
                     fallback_max_output_tokens=fallback_cap,
-                    record_stats_csv="gemini_runs.csv"
+                    record_stats_csv="gemini_runs.csv",
+                    apply_restriction_prompt=False  # Let model reason freely — improves transcription quality
                 )
             else:
                 temperature = None
@@ -702,20 +714,37 @@ class CommercialAPIEngine(HTREngine):
                             max_tokens = int(mt_text)
                         except ValueError:
                             max_tokens = None
+                # Fallback to config dict (web UI context — no Qt widgets)
+                if max_tokens is None:
+                    max_tokens = config.get("max_output_tokens")
+                # Treat 0 as "no limit" (HTML number fields send 0 for blank)
+                if max_tokens is not None and max_tokens <= 0:
+                    max_tokens = None
+                if temperature is None:
+                    temperature = config.get("temperature")
+                thinking_mode = config.get("thinking_mode") or None
                 text = self.model.transcribe(
                     pil_image,
                     prompt=custom_prompt,
-                    temperature=temperature if temperature is not None else 1.0,
-                    max_output_tokens=max_tokens if max_tokens is not None else 2048,
+                    temperature=temperature if temperature is not None else 0.0,
+                    max_output_tokens=max_tokens,  # None = no limit, model uses its own maximum
+                    thinking_mode=thinking_mode,
                 )
 
+            meta: Dict[str, Any] = {
+                "provider": self._current_provider,
+                "model": config.get("model", ""),
+            }
+            if hasattr(self.model, "last_usage") and self.model.last_usage:
+                usage = dict(self.model.last_usage)
+                thinking_text = usage.pop("thinking_text", None)
+                meta["token_usage"] = usage
+                if thinking_text:
+                    meta["thinking_text"] = thinking_text
             return TranscriptionResult(
                 text=text if text else "",
                 confidence=1.0,  # API models don't provide confidence
-                metadata={
-                    "provider": self._current_provider,
-                    "model": config.get("model", "")
-                }
+                metadata=meta,
             )
 
         except Exception as e:

@@ -1,7 +1,12 @@
 """
-Train PyLaia CRNN model for Efendiev dataset with optimized hyperparameters.
+Train a Puigcerver CRNN model for historical manuscript HTR.
 
-Based on Transkribus PyLaia advanced parameters.
+Implements the CRNN architecture from Puigcerver (2017) "Are Multidimensional
+Recurrent Layers Really Necessary for Handwritten Text Recognition?"
+(https://arxiv.org/abs/1707.08410), the same design used in PyLaia and Transkribus.
+This is a clean-room PyTorch reimplementation — the PyLaia package is not required.
+
+Originally adapted for the Efendiev dataset; now used for all Cyrillic scripts.
 
 Usage:
     python train_pylaia.py
@@ -44,8 +49,8 @@ class PyLaiaDataset(Dataset):
     ):
         """
         Args:
-            data_dir: Directory containing images/, gt/, lines.txt, symbols.txt
-            list_file: Name of file containing list of sample IDs
+            data_dir: Directory containing lines.txt, symbols.txt, and image files
+            list_file: Name of file listing samples (supports space or CSV format)
             symbols_file: Name of vocabulary file
             img_height: Target image height (128 from Transkribus)
             augment: Apply data augmentation
@@ -54,7 +59,12 @@ class PyLaiaDataset(Dataset):
         self.img_height = img_height
         self.augment = augment
 
-        # Load list of samples (new format: "image_path.png text")
+        # Load list of samples from lines.txt.
+        # Supports two formats (auto-detected per line):
+        #   Space:  "line_images/my_image.png transcription text"
+        #   CSV:    "line_images/my_image.png,transcription text"
+        # CRITICAL: Filenames can contain spaces, so we split on extension boundary.
+        # Supports .png and .jpg extensions.
         list_path = self.data_dir / list_file
         self.samples = []  # List of (image_path, text) tuples
         with open(list_path, 'r', encoding='utf-8') as f:
@@ -62,14 +72,20 @@ class PyLaiaDataset(Dataset):
                 line = line.strip()
                 if not line:
                     continue
-                # CRITICAL: Filenames can contain spaces! Split on ".png " not first space
-                # Example: "line_images/0210_apo_2023-06-20 11_09_01_line.png кꙋскѝ жꙋючѝ"
-                if '.png ' in line:
-                    img_path, text = line.split('.png ', 1)
-                    img_path = img_path + '.png'  # Add back the extension
-                    self.samples.append((img_path, text))
-                else:
-                    logger.warning(f"Skipping malformed line (no '.png '): {line[:100]}")
+                matched = False
+                for ext in ['.png', '.jpg']:
+                    if ext + ',' in line:
+                        img_path, text = line.split(ext + ',', 1)
+                        self.samples.append((img_path + ext, text))
+                        matched = True
+                        break
+                    elif ext + ' ' in line:
+                        img_path, text = line.split(ext + ' ', 1)
+                        self.samples.append((img_path + ext, text))
+                        matched = True
+                        break
+                if not matched:
+                    logger.warning(f"Skipping malformed line (no supported image extension): {line[:100]}")
         
         # Load vocabulary (handle both list and KALDI formats)
         symbols_path = self.data_dir / symbols_file
@@ -109,6 +125,13 @@ class PyLaiaDataset(Dataset):
             space_idx = self.char2idx['<space>']
             self.idx2char[space_idx] = ' '
 
+        # PATCH_SPACE_FIX: literales ' ' auf den <SPACE>-Index mappen.
+        # Ohne das mappt char2idx.get(' ', 0) jedes Leerzeichen auf den CTC-Blank (Index 0)
+        # -> Modell lernt keine Leerzeichen -> Scriptio continua (Bug bis 2026-07-15).
+        if '<SPACE>' in self.char2idx:
+            self.char2idx[' '] = self.char2idx['<SPACE>']
+        elif '<space>' in self.char2idx:
+            self.char2idx[' '] = self.char2idx['<space>']
         logger.info(f"Loaded {len(self.samples)} samples from {list_path}")
         logger.info(f"Vocabulary size: {len(self.symbols)} characters")
         
@@ -144,23 +167,22 @@ class PyLaiaDataset(Dataset):
             new_width = min(new_width, 10000)
         else:
             new_width = width
+        # Enforce minimum width for CNN architecture (3x MaxPool2x2 requires width >= 16)
+        new_width = max(new_width, 32)
 
         image = image.resize((new_width, self.img_height), Image.Resampling.LANCZOS)
 
         # Apply transforms
         image = self.transform(image)
         
-        # Convert text to indices
+        # Convert text to indices.
+        # Use char2idx directly for all characters including space.
+        # Old code special-cased ' ' → '<SPACE>'/'<space>' but our vocab stores
+        # literal ' ' at index 1, so that fallback silently mapped every space to
+        # index 0 (the CTC blank), corrupting the training signal for spaces.
         target = []
         for char in text:
-            if char == ' ':
-                # Try both <SPACE> and <space> to handle different vocab formats
-                space_idx = self.char2idx.get('<SPACE>')
-                if space_idx is None:
-                    space_idx = self.char2idx.get('<space>', 0)
-                target.append(space_idx)
-            else:
-                target.append(self.char2idx.get(char, 0))
+            target.append(self.char2idx.get(char, 0))
 
         return image, torch.LongTensor(target), text, img_rel_path
 
@@ -348,8 +370,7 @@ class PyLaiaTrainer:
             self.optimizer,
             mode='min',
             factor=0.5,
-            patience=5,
-            verbose=True
+            patience=5
         )
         
         self.max_epochs = max_epochs
@@ -538,7 +559,7 @@ class PyLaiaTrainer:
             # Log overfitting indicator
             if train_cer < val_cer:
                 gap = (val_cer - train_cer) * 100
-                logger.info(f"⚠️  Overfitting gap: {gap:.2f}% (Val CER > Train CER)")
+                logger.info(f"WARNING: Overfitting gap: {gap:.2f}% (Val CER > Train CER)")
 
             # Update history
             self.history['train_loss'].append(train_loss)
@@ -553,7 +574,7 @@ class PyLaiaTrainer:
                 self.best_val_cer = val_cer
                 self.epochs_without_improvement = 0
                 self.save_checkpoint(epoch, val_cer, is_best=True)
-                logger.info(f"✓ New best model! CER: {val_cer*100:.2f}%")
+                logger.info(f"New best model! CER: {val_cer*100:.2f}%")
             else:
                 self.epochs_without_improvement += 1
                 logger.info(f"No improvement for {self.epochs_without_improvement} epochs")
@@ -624,7 +645,7 @@ def main():
         'output_dir': args.output_dir,
         'img_height': 128,
         'batch_size': args.batch_size,
-        'num_workers': 4,
+        'num_workers': 8,
         'cnn_filters': [12, 24, 48, 48],
         'cnn_poolsize': [2, 2, 0, 2],
         'rnn_hidden': 256,
@@ -677,23 +698,29 @@ def main():
     )
     
     # Create data loaders
-    # IMPORTANT: num_workers=0 to avoid multiprocessing deadlock
+    # Use spawn context to avoid CUDA fork deadlock with num_workers > 0
+    num_workers = config.get('num_workers', 4)
+    mp_context = 'spawn' if num_workers > 0 else None
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=0,  # Single-process loading to avoid deadlock
+        num_workers=num_workers,
+        multiprocessing_context=mp_context,
+        persistent_workers=num_workers > 0,
         collate_fn=collate_fn,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=torch.cuda.is_available()
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=0,  # Single-process loading to avoid deadlock
+        num_workers=num_workers,
+        multiprocessing_context=mp_context,
+        persistent_workers=num_workers > 0,
         collate_fn=collate_fn,
-        pin_memory=True if torch.cuda.is_available() else False
+        pin_memory=torch.cuda.is_available()
     )
     
     # Create model

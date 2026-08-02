@@ -233,13 +233,22 @@ class OCRWorker(QThread):
                     confidence = result_dict.get('confidence', None)
                     char_confidences = result_dict.get('char_confidences', [])
                 else:
-                    # TrOCR inference
-                    text, confidence, char_confidences = self.ocr.transcribe_line(
-                        segment.image,
-                        num_beams=self.num_beams,
-                        max_length=self.max_length,
-                        return_confidence=self.return_confidence
-                    )
+                    # TrOCR inference — returns a plain string unless
+                    # return_confidence is set, so only unpack in that case
+                    if self.return_confidence:
+                        text, confidence, char_confidences = self.ocr.transcribe_line(
+                            segment.image,
+                            num_beams=self.num_beams,
+                            max_length=self.max_length,
+                            return_confidence=True
+                        )
+                    else:
+                        text = self.ocr.transcribe_line(
+                            segment.image,
+                            num_beams=self.num_beams,
+                            max_length=self.max_length
+                        )
+                        confidence, char_confidences = None, []
 
                 # Create new LineSegment with text and confidence
                 result = LineSegment(
@@ -559,7 +568,7 @@ class TranscriptionGUI(QMainWindow):
         info_text = QLabel(
             "• Transformer-based OCR with high accuracy\n"
             "• Best for: complex handwriting, mixed scripts\n"
-            "• Slower than PyLaia but more versatile"
+            "• Slower than CRNN-CTC but more versatile"
         )
         info_text.setWordWrap(True)
         info_layout.addWidget(info_text)
@@ -668,12 +677,12 @@ class TranscriptionGUI(QMainWindow):
             for model_name, model_path in PYLAIA_MODELS.items():
                 self.combo_pylaia_model.addItem(model_name, model_path)
 
-            self.combo_pylaia_model.setToolTip("Select PyLaia model")
+            self.combo_pylaia_model.setToolTip("Select CRNN-CTC model")
             pylaia_layout.addWidget(self.combo_pylaia_model, 1, 1, 1, 2)
 
             # Browse button for custom models
             self.btn_pylaia_browse = QPushButton("Browse...")
-            self.btn_pylaia_browse.setToolTip("Load a custom PyLaia model directory")
+            self.btn_pylaia_browse.setToolTip("Load a custom CRNN-CTC model directory")
             self.btn_pylaia_browse.clicked.connect(self._browse_pylaia_model)
             pylaia_layout.addWidget(self.btn_pylaia_browse, 1, 3)
 
@@ -683,18 +692,18 @@ class TranscriptionGUI(QMainWindow):
             pylaia_layout.addWidget(self.lbl_pylaia_hf, 2, 0)
 
             self.txt_pylaia_hf = QLineEdit()
-            self.txt_pylaia_hf.setPlaceholderText("e.g., user/pylaia-ukrainian-model (Note: PyLaia HF models rare)")
+            self.txt_pylaia_hf.setPlaceholderText("e.g., achimrabus/crnn-ctc-ukrainian (Note: CRNN-CTC HF models rare)")
             self.txt_pylaia_hf.setVisible(False)
             pylaia_layout.addWidget(self.txt_pylaia_hf, 2, 1, 1, 3)
 
             # Note about HF support
-            self.lbl_pylaia_hf_note = QLabel("⚠️ Note: PyLaia models on HuggingFace are rare. Most models are local only.")
+            self.lbl_pylaia_hf_note = QLabel("⚠️ Note: CRNN-CTC models on HuggingFace are rare. Most models are local only.")
             self.lbl_pylaia_hf_note.setWordWrap(True)
             self.lbl_pylaia_hf_note.setVisible(False)
             pylaia_layout.addWidget(self.lbl_pylaia_hf_note, 3, 0, 1, 4)
 
             # Info box with key features
-            info_group = QGroupBox("About PyLaia")
+            info_group = QGroupBox("About CRNN-CTC")
             info_layout = QVBoxLayout()
 
             info_text = QLabel(
@@ -759,7 +768,7 @@ class TranscriptionGUI(QMainWindow):
             # Add spacer
             pylaia_layout.setRowStretch(7, 1)
 
-            self.model_tabs.addTab(pylaia_tab, "PyLaia")
+            self.model_tabs.addTab(pylaia_tab, "CRNN-CTC")
 
         # Commercial API tab (OpenAI, Gemini, Claude)
         if COMMERCIAL_API_AVAILABLE:
@@ -1836,7 +1845,7 @@ class TranscriptionGUI(QMainWindow):
             if self.current_image_path is not None:
                 self.btn_process.setEnabled(True)
         elif is_pylaia:
-            self.btn_process.setText("⚡ Transcribe Lines (PyLaia)")
+            self.btn_process.setText("⚡ Transcribe Lines (CRNN-CTC)")
             self.btn_process.setToolTip("Fast CNN-RNN-CTC transcription (requires line segmentation first)")
             # In PyLaia mode, only enable if lines are segmented
             if hasattr(self, 'segments') and len(self.segments) > 0:
@@ -2195,7 +2204,7 @@ class TranscriptionGUI(QMainWindow):
             if is_pylaia:
                 # PyLaia model handling
                 if not PYLAIA_AVAILABLE:
-                    QMessageBox.critical(self, "Error", "PyLaia is not available!")
+                    QMessageBox.critical(self, "Error", "CRNN-CTC engine is not available!")
                     return
 
                 # Check which source is selected (Local or HuggingFace)
@@ -2210,8 +2219,8 @@ class TranscriptionGUI(QMainWindow):
 
                     QMessageBox.warning(
                         self, "Experimental Feature",
-                        "HuggingFace support for PyLaia is experimental.\n\n"
-                        "Most PyLaia models are local only and not available on HuggingFace.\n"
+                        "HuggingFace support for CRNN-CTC is experimental.\n\n"
+                        "Most CRNN-CTC models are local only and not available on HuggingFace.\n"
                         "This feature requires the model to have the correct structure:\n"
                         "- best_model.pt (or model.pt)\n"
                         "- model_config.json\n"
@@ -2219,14 +2228,14 @@ class TranscriptionGUI(QMainWindow):
                     )
                     # Note: Would need to implement HF download logic here
                     QMessageBox.critical(self, "Not Implemented",
-                                       "HuggingFace model loading for PyLaia is not yet implemented.\n"
+                                       "HuggingFace model loading for CRNN-CTC is not yet implemented.\n"
                                        "Please use local models or download manually.")
                     return
                 else:
                     # Local model
                     model_path = self.combo_pylaia_model.currentData()
                     if not model_path:
-                        QMessageBox.warning(self, "Warning", "No PyLaia model selected!")
+                        QMessageBox.warning(self, "Warning", "No CRNN-CTC model selected!")
                         return
                     model_display_name = self.combo_pylaia_model.currentText()
 
@@ -2238,7 +2247,7 @@ class TranscriptionGUI(QMainWindow):
                 # Initialize PyLaia (with or without LM) if needed or if settings changed
                 model_key = (model_path, lm_path, use_lm)
                 if self.pylaia is None or self._current_pylaia_model != model_key:
-                    self.status_bar.showMessage(f"Loading PyLaia model on {self.device.upper()}...")
+                    self.status_bar.showMessage(f"Loading CRNN-CTC model on {self.device.upper()}...")
 
                     if use_lm and lm_path and PYLAIA_LM_AVAILABLE:
                         # Use LM-enhanced inference
@@ -2256,7 +2265,7 @@ class TranscriptionGUI(QMainWindow):
                             lm_path=lm_path,
                             device=self.device
                         )
-                        self.status_bar.showMessage(f"PyLaia model loaded with language model on {self.device.upper()}")
+                        self.status_bar.showMessage(f"CRNN-CTC model loaded with language model on {self.device.upper()}")
                     elif use_lm and not PYLAIA_LM_AVAILABLE:
                         QMessageBox.warning(
                             self, "LM Not Available",
@@ -2284,7 +2293,7 @@ class TranscriptionGUI(QMainWindow):
                     params_list.append(f"Beam: {beam_width}")
 
                 self.last_model_info = {
-                    'type': 'PyLaia',
+                    'type': 'CRNN-CTC',
                     'name': model_name,
                     'params': ", ".join(params_list)
                 }
@@ -2792,7 +2801,7 @@ class TranscriptionGUI(QMainWindow):
         """Browse for PyLaia model directory."""
         dir_path = QFileDialog.getExistingDirectory(
             self,
-            "Select PyLaia Model Directory",
+            "Select CRNN-CTC Model Directory",
             ""
         )
 
@@ -2805,9 +2814,9 @@ class TranscriptionGUI(QMainWindow):
             if missing_files:
                 QMessageBox.warning(
                     self,
-                    "Invalid PyLaia Model",
+                    "Invalid CRNN-CTC Model",
                     f"Selected directory is missing required files:\n{', '.join(missing_files)}\n\n"
-                    f"A valid PyLaia model directory must contain:\n• best_model.pt\n• model_config.json\n• symbols.txt"
+                    f"A valid CRNN-CTC model directory must contain:\n• best_model.pt\n• model_config.json\n• symbols.txt"
                 )
                 return
 

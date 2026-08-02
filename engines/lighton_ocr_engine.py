@@ -100,7 +100,7 @@ class LightOnOCREngine(HTREngine):
         return "LightOnOCR: Lightweight line-level VLM with fine-tuned variants"
 
     def is_available(self) -> bool:
-        return LIGHTON_AVAILABLE and PYQT_AVAILABLE
+        return LIGHTON_AVAILABLE
 
     def get_unavailable_reason(self) -> str:
         reasons = []
@@ -108,8 +108,6 @@ class LightOnOCREngine(HTREngine):
             deps = ", ".join(LIGHTON_MISSING_DEPS)
             reasons.append(f"Missing dependencies: {deps}")
             reasons.append("Install transformers from git: pip install git+https://github.com/huggingface/transformers.git")
-        if not PYQT_AVAILABLE:
-            reasons.append("PyQt6 not installed. Install with: pip install PyQt6")
         return " | ".join(reasons) if reasons else ""
 
     def get_config_widget(self) -> QWidget:

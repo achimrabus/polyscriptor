@@ -43,6 +43,62 @@ class LineSegment:
     char_confidences: Optional[List[float]] = None  # per-character confidence scores
 
 
+def sort_lines_by_region(regions, lines):
+    """
+    Sort lines in reading order: regions left-to-right, lines top-to-bottom
+    within each region.
+
+    Works with SegRegion objects from kraken_segmenter (which carry bbox and
+    line_ids) and any list of line-like objects that have a ``.bbox`` attribute
+    with (x1, y1, x2, y2) format.
+
+    Args:
+        regions: List of SegRegion (from kraken_segmenter) with .bbox and .line_ids.
+                 If empty/None, lines are returned sorted top-to-bottom.
+        lines:   List of LineSegment (or kraken LineSegment).
+
+    Returns:
+        List of lines re-ordered by region reading order.
+    """
+    if not regions or not lines:
+        # No region info — simple top-to-bottom sort
+        return sorted(lines, key=lambda l: l.bbox[1])
+
+    # Sort regions left-to-right by mean x-center
+    sorted_regions = sorted(
+        regions,
+        key=lambda r: (r.bbox[0] + r.bbox[2]) / 2,
+    )
+
+    # Assign each line to the region whose bbox contains the line's center
+    region_buckets = {r.id: [] for r in sorted_regions}
+    unassigned = []
+
+    for line in lines:
+        cx = (line.bbox[0] + line.bbox[2]) / 2
+        cy = (line.bbox[1] + line.bbox[3]) / 2
+        assigned = False
+        for r in sorted_regions:
+            rx1, ry1, rx2, ry2 = r.bbox
+            if rx1 <= cx <= rx2 and ry1 <= cy <= ry2:
+                region_buckets[r.id].append(line)
+                assigned = True
+                break
+        if not assigned:
+            unassigned.append(line)
+
+    # Build ordered list: per-region top-to-bottom, then unassigned at the end
+    ordered = []
+    for r in sorted_regions:
+        bucket = region_buckets[r.id]
+        bucket.sort(key=lambda l: l.bbox[1])
+        ordered.extend(bucket)
+
+    unassigned.sort(key=lambda l: l.bbox[1])
+    ordered.extend(unassigned)
+    return ordered
+
+
 def normalize_background(image: Image.Image) -> Image.Image:
     """
     Normalize background to light gray (similar to Efendiev dataset).
@@ -331,22 +387,40 @@ class PageXMLSegmenter:
         tree = ET.parse(self.xml_path)
         root = tree.getroot()
 
+        # Determine scale factors: PAGE XML stores absolute pixel coords for the
+        # original scan.  If the uploaded image was resized, we must scale coords.
+        ns = self.NS
+        # Try both common PAGE XML namespaces (2013 and 2019 Transkribus variants)
+        page_elem = root.find('.//page:Page', ns)
+        if page_elem is None:
+            ns_2019 = {'page': 'http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15'}
+            page_elem = root.find('.//page:Page', ns_2019)
+            if page_elem is not None:
+                ns = ns_2019
+        xml_w = int(page_elem.get('imageWidth',  image.width))  if page_elem is not None else image.width
+        xml_h = int(page_elem.get('imageHeight', image.height)) if page_elem is not None else image.height
+        scale_x = image.width  / xml_w if xml_w > 0 else 1.0
+        scale_y = image.height / xml_h if xml_h > 0 else 1.0
+
+        # Will be populated below for visualization in the viewer
+        self.region_data: list = []
+
         # Store regions with their reading order
         regions_with_order = []
 
-        for region in root.findall('.//page:TextRegion', self.NS):
+        for region in root.findall('.//page:TextRegion', ns):
             # Extract region reading order from custom attribute
             region_order = self._extract_reading_order(region.get('custom', ''))
 
             # Get region Y coordinate as fallback (from first TextLine or Coords)
-            region_y = self._get_region_y_position(region)
+            region_y = self._get_region_y_position(region, ns)
 
             # Store lines for this region with their reading order
             lines_with_order = []
 
-            for text_line in region.findall('.//page:TextLine', self.NS):
+            for text_line in region.findall('.//page:TextLine', ns):
                 # Get coordinates
-                coords_elem = text_line.find('page:Coords', self.NS)
+                coords_elem = text_line.find('page:Coords', ns)
                 if coords_elem is None:
                     continue
 
@@ -354,8 +428,10 @@ class PageXMLSegmenter:
                 if not coords_str:
                     continue
 
-                # Parse coordinates
+                # Parse coordinates and scale to uploaded image dimensions
                 coords = self._parse_coords(coords_str)
+                if scale_x != 1.0 or scale_y != 1.0:
+                    coords = [(int(x * scale_x), int(y * scale_y)) for x, y in coords]
                 x1, y1, x2, y2 = self._get_bounding_box(coords)
 
                 # Crop line with padding
@@ -384,6 +460,22 @@ class PageXMLSegmenter:
             # Sort lines within this region
             lines_with_order.sort(key=lambda x: x[0])
             sorted_lines = [seg for _, seg in lines_with_order]
+
+            # Collect TextRegion bbox for viewer visualization
+            region_id = region.get('id', f'region_{len(regions_with_order)}')
+            region_coords_elem = region.find('page:Coords', ns)
+            if region_coords_elem is not None:
+                rc_str = region_coords_elem.get('points', '')
+                if rc_str:
+                    rc = self._parse_coords(rc_str)
+                    if scale_x != 1.0 or scale_y != 1.0:
+                        rc = [(int(x * scale_x), int(y * scale_y)) for x, y in rc]
+                    rx1, ry1, rx2, ry2 = self._get_bounding_box(rc)
+                    self.region_data.append({
+                        "id": region_id,
+                        "bbox": [rx1, ry1, rx2, ry2],
+                        "num_lines": len(sorted_lines),
+                    })
 
             # Use region reading order if available, otherwise region Y position
             region_sort_key = region_order if region_order is not None else region_y
@@ -417,13 +509,15 @@ class PageXMLSegmenter:
         except (ValueError, IndexError):
             return None
 
-    def _get_region_y_position(self, region) -> int:
+    def _get_region_y_position(self, region, ns=None) -> int:
         """Get Y position of region for fallback sorting.
 
         Uses the Y coordinate of the region's Coords or first TextLine.
         """
+        if ns is None:
+            ns = self.NS
         # Try region Coords first
-        coords_elem = region.find('page:Coords', self.NS)
+        coords_elem = region.find('page:Coords', ns)
         if coords_elem is not None:
             coords_str = coords_elem.get('points')
             if coords_str:
@@ -432,9 +526,9 @@ class PageXMLSegmenter:
                 return y1
 
         # Fallback: use first TextLine Y position
-        text_line = region.find('.//page:TextLine', self.NS)
+        text_line = region.find('.//page:TextLine', ns)
         if text_line is not None:
-            coords_elem = text_line.find('page:Coords', self.NS)
+            coords_elem = text_line.find('page:Coords', ns)
             if coords_elem is not None:
                 coords_str = coords_elem.get('points')
                 if coords_str:
@@ -465,7 +559,9 @@ class TrOCRInference:
     def __init__(self, model_path: str, device: Optional[str] = None,
                  base_model: str = "kazars24/trocr-base-handwritten-ru",
                  normalize_bg: bool = False,
-                 is_huggingface: bool = False):
+                 flip_rtl: bool = False,
+                 is_huggingface: bool = False,
+                 processor_subfolder: Optional[str] = None):
         """
         Initialize TrOCR inference.
 
@@ -474,12 +570,17 @@ class TrOCRInference:
             device: 'cuda', 'cpu', or None for auto-detect
             base_model: Base model for processor (used with local checkpoints)
             normalize_bg: Apply background normalization
+            flip_rtl: Flip line images horizontally for RTL scripts
             is_huggingface: If True, load from HuggingFace Hub instead of local path
+            processor_subfolder: Repo subfolder containing the processor files
+                (e.g. "processor" for Kansallisarkisto/cyrillic-htr-model)
         """
         self.model_path = model_path
         self.base_model = base_model
         self.normalize_bg = normalize_bg
+        self.flip_rtl = flip_rtl
         self.is_huggingface = is_huggingface
+        self.processor_subfolder = processor_subfolder
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -496,14 +597,44 @@ class TrOCRInference:
 
             # Try to load processor from model first, fallback to base_model if it fails
             try:
-                print(f"Attempting to load processor from {model_path}...")
-                self.processor = TrOCRProcessor.from_pretrained(model_path)
+                if self.processor_subfolder:
+                    print(f"Attempting to load processor from {model_path} "
+                          f"(subfolder: {self.processor_subfolder})...")
+                    self.processor = TrOCRProcessor.from_pretrained(
+                        model_path, subfolder=self.processor_subfolder)
+                else:
+                    print(f"Attempting to load processor from {model_path}...")
+                    try:
+                        self.processor = TrOCRProcessor.from_pretrained(model_path)
+                    except Exception as root_err:
+                        # Some repos (e.g. Kansallisarkisto/cyrillic-htr-model) ship the
+                        # processor in a "processor/" subfolder instead of the repo root.
+                        # Probe it before falling back to base_model: the base_model
+                        # fallback silently swaps in a foreign tokenizer, which produces
+                        # scrambled output without any error.
+                        print(f"No processor at repo root ({root_err}), "
+                              f"probing 'processor/' subfolder...")
+                        self.processor = TrOCRProcessor.from_pretrained(
+                            model_path, subfolder="processor")
+                        print("Processor loaded from 'processor/' subfolder.")
+                # Some models (e.g. dh-unibe/trocr-kurrent) ship a truncated tokenizer
+                # with only special tokens (vocab_size=5).  The model itself uses the full
+                # microsoft/trocr-base-handwritten vocabulary (50265 tokens).  Detect this
+                # by checking vocab_size and replace only the tokenizer – keep the image
+                # processor from the model so preprocessing stays correct.
+                if self.processor.tokenizer.vocab_size < 100:
+                    print(f"WARNING: tokenizer from '{model_path}' has vocab_size="
+                          f"{self.processor.tokenizer.vocab_size} (looks broken). "
+                          f"Replacing tokenizer with microsoft/trocr-base-handwritten.")
+                    _fallback = TrOCRProcessor.from_pretrained("microsoft/trocr-base-handwritten")
+                    self.processor.tokenizer = _fallback.tokenizer
             except Exception as e:
                 print(f"Failed to load processor from model: {e}")
                 print(f"Falling back to base model processor: {self.base_model}")
                 self.processor = TrOCRProcessor.from_pretrained(self.base_model)
 
-            self.model = VisionEncoderDecoderModel.from_pretrained(model_path)
+            self.model = VisionEncoderDecoderModel.from_pretrained(
+                model_path, low_cpu_mem_usage=False)
             # For backwards compatibility
             self.checkpoint_path = model_path
         else:
@@ -518,11 +649,22 @@ class TrOCRInference:
             else:
                 model_dir = self.checkpoint_path
 
-            print(f"Loading processor from base model: {self.base_model}")
-            self.processor = TrOCRProcessor.from_pretrained(self.base_model)
-            self.model = VisionEncoderDecoderModel.from_pretrained(model_dir)
+            # Try to load processor from the local model first (correct tokenizer),
+            # fall back to base_model for old checkpoints that lack processor files.
+            try:
+                print(f"Attempting to load processor from local model: {model_dir}")
+                self.processor = TrOCRProcessor.from_pretrained(model_dir)
+            except Exception as e:
+                print(f"Local processor not found ({e}), falling back to base model: {self.base_model}")
+                self.processor = TrOCRProcessor.from_pretrained(self.base_model)
+            self.model = VisionEncoderDecoderModel.from_pretrained(
+                model_dir, low_cpu_mem_usage=False)
 
         self.model.to(self.device)
+        # mBART decoder creates _float_tensor lazily on CPU; force it to the right device now.
+        for m in self.model.modules():
+            if hasattr(m, '_float_tensor'):
+                m._float_tensor = m._float_tensor.to(self.device)
         self.model.eval()
 
         print("Model loaded successfully!")
@@ -545,6 +687,10 @@ class TrOCRInference:
         # Apply background normalization if enabled
         if self.normalize_bg:
             line_image = normalize_background(line_image)
+
+        # Flip horizontally for RTL scripts (model trained on flipped images)
+        if self.flip_rtl:
+            line_image = line_image.transpose(Image.FLIP_LEFT_RIGHT)
 
         # Ensure image is in RGB mode (TrOCR requires 3 channels)
         if line_image.mode != 'RGB':
@@ -570,39 +716,45 @@ class TrOCRInference:
                 )
                 generated_ids = outputs.sequences
 
-                # Calculate confidence from scores
-                # scores is a tuple of tensors, one per generation step
-                # generated_ids shape: (batch_size, sequence_length)
+                # Per-token probabilities via compute_transition_scores: it follows
+                # the beam path that produced the FINAL sequence. (Beams are
+                # reordered during search — indexing outputs.scores by beam 0, as
+                # this code used to, reads probabilities from the wrong beam.)
                 if hasattr(outputs, 'scores') and outputs.scores and len(outputs.scores) > 0:
-                    import torch.nn.functional as F
+                    import math
 
-                    # Get the actual generated tokens (excluding special tokens like BOS)
-                    # generated_ids[0] is the first (and only) sequence in the batch
-                    generated_tokens = generated_ids[0].cpu().numpy()
+                    ts_kwargs = {"normalize_logits": True}
+                    if num_beams > 1 and getattr(outputs, "beam_indices", None) is not None:
+                        ts_kwargs["beam_indices"] = outputs.beam_indices
+                    transition_scores = self.model.compute_transition_scores(
+                        outputs.sequences, outputs.scores, **ts_kwargs
+                    )[0].cpu()
 
-                    # scores is a tuple with one tensor per generation step
-                    # Each tensor has shape (batch_size * num_beams, vocab_size)
-                    token_confidences = []
+                    gen_cfg = self.model.generation_config
+                    eos_id = gen_cfg.eos_token_id
+                    pad_id = gen_cfg.pad_token_id
+                    # sequences[0][0] is decoder_start; step i scored sequences[0][i+1]
+                    gen_tokens = generated_ids[0][1:].cpu().tolist()
 
-                    for step_idx, score_tensor in enumerate(outputs.scores):
-                        # Get probabilities for this generation step
-                        # score_tensor shape: (num_beams, vocab_size) for batch_size=1
-                        probs = F.softmax(score_tensor, dim=-1)
+                    log_probs = []
+                    for step, tok in zip(range(transition_scores.shape[0]), gen_tokens):
+                        if pad_id is not None and tok == pad_id:
+                            break
+                        log_probs.append(float(transition_scores[step]))
+                        if eos_id is not None and tok == eos_id:
+                            break
 
-                        # The actual generated token at this step
-                        # Skip BOS token (index 0), so generated token index is step_idx + 1
-                        if step_idx + 1 < len(generated_tokens):
-                            actual_token_id = generated_tokens[step_idx + 1]
-
-                            # Get probability of the actual selected token (from best beam, index 0)
-                            token_prob = probs[0, actual_token_id].item()
-                            token_confidences.append(token_prob)
-
-                    # Calculate average confidence
-                    avg_confidence = sum(token_confidences) / len(token_confidences) if token_confidences else 0.0
-                    char_confidences = token_confidences
+                    if log_probs:
+                        # Geometric mean: length-normalized sequence probability.
+                        # A single unlikely token pulls it down, unlike the
+                        # arithmetic mean which drowns errors among easy tokens.
+                        avg_confidence = math.exp(sum(log_probs) / len(log_probs))
+                        char_confidences = [math.exp(lp) for lp in log_probs]
+                    else:
+                        avg_confidence = None
+                        char_confidences = []
                 else:
-                    avg_confidence = 0.0
+                    avg_confidence = None
                     char_confidences = []
             else:
                 generated_ids = self.model.generate(
@@ -722,6 +874,11 @@ def main():
         action='store_true',
         help='Apply background normalization (REQUIRED if model was trained with --normalize-background)'
     )
+    parser.add_argument(
+        '--flip-rtl',
+        action='store_true',
+        help='Flip line images horizontally for RTL scripts (REQUIRED if model was trained with --flip-rtl)'
+    )
 
     args = parser.parse_args()
 
@@ -766,7 +923,8 @@ def main():
         args.checkpoint,
         device=args.device,
         base_model=args.base_model,
-        normalize_bg=args.normalize_background  # NEW: pass normalization flag
+        normalize_bg=args.normalize_background,  # NEW: pass normalization flag
+        flip_rtl=args.flip_rtl
     )
 
     # Transcribe

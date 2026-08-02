@@ -13,6 +13,7 @@ from PIL import Image
 import torchvision.transforms as transforms
 import logging
 import json
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,16 @@ class PyLaiaInference:
 
         # Find symbols file
         if syms_path is None:
-            # Look in data/pylaia_glagolitic/syms.txt
+            # First: look alongside the checkpoint for symbols.txt or syms.txt
+            model_dir = self.checkpoint_path.parent
+            for _candidate in ("symbols.txt", "syms.txt"):
+                _candidate_path = model_dir / _candidate
+                if _candidate_path.exists():
+                    syms_path = _candidate_path
+                    logger.info(f"Found symbols file alongside checkpoint: {syms_path}")
+                    break
+        if syms_path is None:
+            # Last-resort fallback
             syms_path = Path("data/pylaia_glagolitic/syms.txt")
 
         self.syms_path = Path(syms_path)
@@ -333,25 +343,30 @@ class PyLaiaInference:
 
 # Model registry (updated for trained models)
 PYLAIA_MODELS = {
-    "Church Slavonic (3.51% CER)": {
-        "checkpoint": "models/pylaia_church_slavonic_20251103_162857/best_model.pt",
-        "syms": "data/pylaia_church_slavonic/syms.txt",
-        "description": "PyLaia CRNN - Church Slavonic manuscript (153 symbols, 3.51% CER)"
+    "Church Slavonic (2.89% CER)": {
+        "checkpoint": "models/pylaia_church_slavonic_20251103_222215/best_model.pt",
+        "syms": "models/pylaia_church_slavonic_20251103_222215/symbols.txt",
+        "description": "PyLaia CRNN - Church Slavonic manuscript (2.89% CER)"
+    },
+    "Prosta Mova (3.77% CER)": {
+        "checkpoint": "models/pylaia_prosta_mova_v4_20251121_155322/best_model.pt",
+        "syms": "models/pylaia_prosta_mova_v4_20251121_155322/symbols.txt",
+        "description": "PyLaia CRNN - Prosta Mova (3.77% CER)"
     },
     "Glagolitic (5.33% CER)": {
         "checkpoint": "models/pylaia_glagolitic_with_spaces_20251102_182103/best_model.pt",
         "syms": "data/pylaia_glagolitic/syms.txt",
         "description": "PyLaia CRNN - Glagolitic manuscript (76 symbols, 5.33% CER)"
     },
-    "Ukrainian (13.53% CER - NEW)": {
+    "Ukrainian (4.76% CER)": {
+        "checkpoint": "models/pylaia_ukrainian_v2c_20251124_180634/best_model.pt",
+        "syms": "models/pylaia_ukrainian_v2c_20251124_180634/symbols.txt",
+        "description": "PyLaia CRNN - Ukrainian manuscript (4.76% CER)"
+    },
+    "Ukrainian (13.53% CER - OLD)": {
         "checkpoint": "models/pylaia_ukrainian_retrain_20251102_213431/best_model.pt",
         "syms": "models/pylaia_ukrainian_retrain_20251102_213431/symbols.txt",
-        "description": "PyLaia CRNN - Ukrainian manuscript (180 symbols, 13.53% CER, retrained)"
-    },
-    "Ukrainian (10.80% CER - OLD)": {
-        "checkpoint": "models/pylaia_ukrainian_pagexml_20251101_182736/best_model.pt",
-        "syms": "models/pylaia_ukrainian_pagexml_20251101_182736/symbols.txt",
-        "description": "PyLaia CRNN - Ukrainian manuscript (180 symbols, 10.80% CER)"
+        "description": "PyLaia CRNN - Ukrainian manuscript (180 symbols, 13.53% CER)"
     },
     "Glagolitic (old)": {
         "checkpoint": "models/pylaia_glagolitic_single_gpu/best_model.pt",
@@ -359,3 +374,60 @@ PYLAIA_MODELS = {
         "description": "PyLaia model - old Glagolitic training (no spaces)"
     }
 }
+
+
+def _scan_pylaia_models(models_dir: str = "models") -> None:
+    """Scan models/ for CRNN-CTC checkpoints not already in PYLAIA_MODELS.
+
+    Any subdirectory containing best_model.pt that isn't already registered
+    is added automatically, using its folder name as the display key.
+    A co-located symbols.txt or syms.txt is used as the symbols file.
+    This lets users drop a trained model into models/ without editing the registry.
+    """
+    models_path = Path(models_dir)
+    if not models_path.is_dir():
+        return
+
+    registered = {
+        str(Path(info["checkpoint"])) if isinstance(info, dict) else str(Path(info))
+        for info in PYLAIA_MODELS.values()
+    }
+
+    for checkpoint in sorted(models_path.glob("*/best_model.pt")):
+        checkpoint_str = str(checkpoint)
+        if checkpoint_str in registered:
+            continue
+        model_dir = checkpoint.parent
+        folder_name = model_dir.name
+        if folder_name in PYLAIA_MODELS:
+            continue
+        syms_path = None
+        for candidate in ("symbols.txt", "syms.txt"):
+            candidate_path = model_dir / candidate
+            if candidate_path.exists():
+                syms_path = str(candidate_path)
+                break
+        PYLAIA_MODELS[folder_name] = {
+            "checkpoint": checkpoint_str,
+            "syms": syms_path,
+            "description": f"CRNN-CTC model (auto-discovered): {folder_name}",
+        }
+        logger.debug(f"Auto-discovered CRNN-CTC model: {folder_name}")
+
+
+def _populate_pylaia_models() -> None:
+    """Let an optional runtime profile define presets, else scan local models/.
+
+    A deployment profile (POLYSCRIPTOR_PROFILE) may replace the preset registry
+    and return True to claim the full set, in which case the local model scan is
+    skipped.
+    """
+    from htr_engine_base import load_runtime_profile
+    profile = load_runtime_profile()
+    if profile is not None and hasattr(profile, "register_pylaia_models"):
+        if profile.register_pylaia_models(PYLAIA_MODELS):
+            return
+    _scan_pylaia_models()
+
+
+_populate_pylaia_models()

@@ -30,6 +30,7 @@ from PIL import Image
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
+from transformers import EarlyStoppingCallback
 from transformers import (
     VisionEncoderDecoderModel,
     TrOCRProcessor,
@@ -74,6 +75,9 @@ class OptimizedTrainingConfig:
     # Evaluation
     eval_strategy: str = "steps"
     eval_steps: int = 500
+    early_stopping_patience: int = 0
+    use_clahe: bool = False
+    use_elastic: bool = False
     save_steps: int = 500
     save_total_limit: int = 3
     logging_steps: int = 50
@@ -132,6 +136,7 @@ class OptimizedOCRDataset(Dataset):
         self.max_length = max_length
         self.is_train = is_train
         self.use_augmentation = use_augmentation and is_train
+        self.use_clahe = bool(getattr(config, 'use_clahe', False)) if config is not None else False
         self.cache_images = cache_images
         self.config = config
 
@@ -174,7 +179,7 @@ class OptimizedOCRDataset(Dataset):
 
         # Setup augmentation transforms
         if self.use_augmentation and config:
-            self.aug_transform = transforms.Compose([
+            _augs = [
                 transforms.ColorJitter(
                     brightness=config.aug_brightness,
                     contrast=config.aug_contrast
@@ -185,7 +190,10 @@ class OptimizedOCRDataset(Dataset):
                     expand=False,
                     fill=255
                 ),
-            ])
+            ]
+            if getattr(config, "use_elastic", False):
+                _augs.append(transforms.ElasticTransform(alpha=8.0, sigma=4.0, fill=255))
+            self.aug_transform = transforms.Compose(_augs)
         else:
             self.aug_transform = None
 
@@ -206,6 +214,17 @@ class OptimizedOCRDataset(Dataset):
                 print(f"Error loading {image_path}: {e}")
                 # Use blank image as fallback
                 self.image_cache[idx] = Image.new('RGB', (100, 32), color='white')
+
+    def _clahe(self, image):
+        import cv2
+        import numpy as np
+        from PIL import Image as _Image
+        arr = np.array(image)
+        lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(lab)
+        cl = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
+        merged = cv2.merge((cl, a, b))
+        return _Image.fromarray(cv2.cvtColor(merged, cv2.COLOR_LAB2RGB))
 
     def __len__(self):
         return len(self.df)
@@ -245,6 +264,11 @@ class OptimizedOCRDataset(Dataset):
                     print(f"Warning: Augmentation failed at index {idx}: {e}")
                     # Continue with non-augmented image
 
+            if self.use_clahe:
+                try:
+                    image = self._clahe(image)
+                except Exception as _e:
+                    print(f'Warning: CLAHE failed at index {idx}: {_e}')
             # Process image with TrOCR processor
             pixel_values = self.processor(
                 image,
@@ -344,11 +368,31 @@ class MemoryMonitorCallback(TrainerCallback):
         clear_memory()
 
 
+class LocalCERMetric:
+    """Drop-in for evaluate.load("cer") using jiwer directly.
+
+    evaluate's "cer" metric downloads a loading script and calls
+    huggingface_hub.hf_api.HfFolder, which was removed in huggingface_hub>=1.0
+    (installed: 1.4.1) -> AttributeError at startup. jiwer is the same backend
+    evaluate's CER metric wraps, so this is behaviourally equivalent and offline.
+    """
+
+    def compute(self, predictions, references):
+        import jiwer
+        refs = [r if r else " " for r in references]  # jiwer errors on empty refs
+        return float(jiwer.cer(refs, list(predictions)))
+
+
 def compute_metrics(processor, cer_metric):
     """Compute CER metric."""
     def _compute(pred):
         labels_ids = pred.label_ids
         pred_ids = pred.predictions
+
+        # transformers>=5 pads generated sequences across batches with -100, which
+        # the fast tokenizer cannot decode (OverflowError). Replace with pad_token_id
+        # before decoding predictions (the same cleanup labels already get below).
+        pred_ids[pred_ids == -100] = processor.tokenizer.pad_token_id
 
         # Decode predictions
         pred_str = processor.batch_decode(pred_ids, skip_special_tokens=True)
@@ -413,7 +457,7 @@ def train(config: OptimizedTrainingConfig):
     # Load CER metric
     if is_main_process:
         print("Loading CER metric...")
-    cer_metric = evaluate.load("cer")
+    cer_metric = LocalCERMetric()
     
     # Create datasets
     if is_main_process:
@@ -451,16 +495,26 @@ def train(config: OptimizedTrainingConfig):
         print(f"\nLoading model from {config.model_name}...")
     model = VisionEncoderDecoderModel.from_pretrained(config.model_name)
     
-    # Set generation config
+    # Structural token ids stay on model.config
     model.config.decoder_start_token_id = processor.tokenizer.cls_token_id
     model.config.pad_token_id = processor.tokenizer.pad_token_id
     model.config.vocab_size = model.config.decoder.vocab_size
     model.config.eos_token_id = processor.tokenizer.sep_token_id
-    model.config.max_length = config.generation_max_length
-    model.config.early_stopping = True
-    model.config.no_repeat_ngram_size = 3
-    model.config.length_penalty = 2.0
-    model.config.num_beams = config.generation_num_beams
+
+    # transformers>=5 no longer reads generation params off model.config; they must
+    # live on model.generation_config, otherwise generate() raises a ValueError at
+    # the first evaluation step.
+    model.generation_config.decoder_start_token_id = processor.tokenizer.cls_token_id
+    model.generation_config.pad_token_id = processor.tokenizer.pad_token_id
+    model.generation_config.eos_token_id = processor.tokenizer.sep_token_id
+    model.generation_config.max_length = config.generation_max_length
+    model.generation_config.no_repeat_ngram_size = 3
+    model.generation_config.num_beams = config.generation_num_beams
+    # early_stopping / length_penalty are beam-only flags. transformers>=5 validates
+    # the generation config on save and refuses to write them when num_beams == 1.
+    if config.generation_num_beams > 1:
+        model.generation_config.early_stopping = True
+        model.generation_config.length_penalty = 2.0
 
     if is_main_process:
         print("\nGPU memory after model loading:")
@@ -521,7 +575,10 @@ def train(config: OptimizedTrainingConfig):
         load_best_model_at_end=True,
         metric_for_best_model="cer",
         greater_is_better=False,
-        report_to=["tensorboard"],
+        # tensorboard 2.8.0 in this env is broken (numpy.bool8 removed; protobuf 5.x
+        # vs old _pb2). Disable reporting; monitor via the log file (loss/CER printed
+        # every logging_steps). Re-enable once tensorboard is upgraded.
+        report_to=[],
     )
 
     # Initialize trainer
@@ -530,16 +587,19 @@ def train(config: OptimizedTrainingConfig):
 
     # Add memory monitoring callback
     memory_callback = MemoryMonitorCallback(clear_every_n_steps=500)
+    _callbacks = [memory_callback]
+    if getattr(config, "early_stopping_patience", 0):
+        _callbacks.append(EarlyStoppingCallback(early_stopping_patience=config.early_stopping_patience))
 
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
-        tokenizer=processor.tokenizer,
+        processing_class=processor,  # transformers>=5 removed `tokenizer`; pass full processor
         data_collator=default_data_collator,
         compute_metrics=compute_metrics(processor, cer_metric),
-        callbacks=[memory_callback]
+        callbacks=_callbacks
     )
 
     # Train

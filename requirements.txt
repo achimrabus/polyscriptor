@@ -1,9 +1,42 @@
-# Core ML/Deep Learning (CUDA 12.1)
-# Install with: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-torch==2.5.1+cu121
-torchvision==0.20.1+cu121
-transformers==4.45.2
+# Core ML/Deep Learning
+#
+# Python version: 3.10–3.12 recommended.
+# Python 3.13+ may lack prebuilt wheels for some packages (e.g. pyarrow==19.0.0)
+# and would require a C compiler + cmake for source compilation.
+# Use `python --version` to verify before creating the virtual environment.
+#
+# CPU-only install:
+#   Linux/Mac:  pip install -r requirements.txt
+#   Windows:    pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+#               (avoids a DLL load error with the default PyPI torch wheel on CPU-only Windows)
+#
+# GPU install (CUDA 12.1):
+#   pip install -r requirements-gpu.txt --extra-index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+#   (requirements-gpu.txt installs the CUDA torch + nvidia-ml-py first;
+#    pip will then skip torch here because >=2.5.1 is already satisfied)
+#
+# Optional: Kraken segmentation (neural blla + classical)
+#   pip install -r requirements-kraken.txt
+#   NOTE: kraken requires numpy~=2.0 and scikit-learn~=1.5, which conflict with the pins
+#   in this file. Install it in a second step AFTER this file, or use a separate venv.
+torch>=2.5.1
+torchvision>=0.20.1
+transformers>=5.0.0
 accelerate==1.5.1
+
+# Fine-tuning adapter library (required by Qwen3-VL and Churro engines)
+peft>=0.10.0
+
+# GUI framework (required by transcription_gui_plugin.py and polyscriptor_batch_gui.py)
+PyQt6>=6.6.0
+
+# Commercial vision API clients (Gemini, Claude, GPT-4 Vision, OpenWebUI)
+# These packages are small (~2-3 MB, pure Python) and make the engine config panels
+# visible in the GUI even before API keys are configured.
+openai>=1.0.0
+anthropic>=0.20.0
+google-generativeai>=0.8.0  # NOTE: deprecated by Google; still works; future migration to google-genai
 
 # Data processing
 numpy==1.26.4
@@ -24,6 +57,15 @@ python-Levenshtein>=0.23.0  # Fast edit distance for CER/WER calculation
 
 # Configuration
 pyyaml==6.0.2
+
+# GPU monitoring (optional — in requirements-gpu.txt; code gracefully skips if absent)
+# nvidia-ml-py>=12.0.0
+
+# Web UI (polyscriptor_server.py — browser-based HTR interface)
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9  # multipart/form-data file uploads
+pymupdf>=1.24.0           # PDF → image rendering
 
 # Notebook support (optional)
 jupyter>=1.0.0

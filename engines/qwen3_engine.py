@@ -65,13 +65,11 @@ class Qwen3Engine(HTREngine):
         return "Vision-language model with LoRA fine-tuning support"
 
     def is_available(self) -> bool:
-        return QWEN3_AVAILABLE and PYQT_AVAILABLE
+        return QWEN3_AVAILABLE
 
     def get_unavailable_reason(self) -> str:
         if not QWEN3_AVAILABLE:
             return "Qwen3 not available. Install with: pip install transformers>=4.37.0 accelerate peft qwen-vl-utils"
-        if not PYQT_AVAILABLE:
-            return "PyQt6 not installed. Install with: pip install PyQt6"
         return ""
 
     def get_config_widget(self) -> QWidget:
@@ -431,11 +429,13 @@ class Qwen3Engine(HTREngine):
 
             adapter = config.get("adapter")
             max_image_size = config.get("max_image_size", 1536)
+            device = config.get("device", "auto")
 
             self.model = Qwen3VLMInference(
                 base_model=base_model,
                 adapter_model=adapter,
-                max_image_size=max_image_size
+                max_image_size=max_image_size,
+                device=device,
             )
 
             return True

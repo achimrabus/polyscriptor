@@ -1,0 +1,17 @@
+# Optional: Kraken segmentation support
+#
+# Kraken requires numpy~=2.0 and scikit-learn~=1.5, which conflict with the
+# numpy==1.26.4 and scikit-learn==1.6.1 pins in requirements.txt.
+#
+# Install AFTER requirements.txt — pip will upgrade numpy/scikit-learn to
+# satisfy kraken's constraints.  All other engines (TrOCR, CRNN-CTC,
+# Qwen3-VL, Commercial APIs) are unaffected by these upgrades.
+#
+# Usage:
+#   pip install -r requirements.txt          # base install first
+#   pip install -r requirements-kraken.txt   # then add kraken
+#
+# Without kraken the GUI and web UI fall back to HPP (Horizontal Projection
+# Profile) segmentation, which is faster but less accurate on complex layouts.
+
+kraken>=6.0.0

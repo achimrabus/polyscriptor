@@ -5,7 +5,7 @@ Wraps the PyLaia CTC-based HTR inference system as a plugin.
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 import numpy as np
 
 from htr_engine_base import HTREngine, TranscriptionResult
@@ -50,19 +50,20 @@ class PyLaiaEngine(HTREngine):
         self._enable_spaces_check: Optional[QCheckBox] = None
 
     def get_name(self) -> str:
-        return "PyLaia"
+        return "CRNN-CTC (PyLaia-inspired)"
 
     def get_description(self) -> str:
-        return "CTC-based HTR with optional KenLM language model"
+        return "Puigcerver CRNN-CTC: clean-room PyTorch reimplementation of the PyLaia architecture"
+
+    def get_aliases(self) -> List[str]:
+        return ["crnn-ctc", "CRNN-CTC", "PyLaia"]  # "PyLaia" kept for backward compatibility
 
     def is_available(self) -> bool:
-        return PYLAIA_AVAILABLE and PYQT_AVAILABLE
+        return PYLAIA_AVAILABLE
 
     def get_unavailable_reason(self) -> str:
         if not PYLAIA_AVAILABLE:
-            return "PyLaia not available. Check that inference_pylaia.py exists and dependencies are installed."
-        if not PYQT_AVAILABLE:
-            return "PyQt6 not installed. Install with: pip install PyQt6"
+            return "CRNN-CTC engine not available. Check that inference_pylaia_native.py exists and dependencies are installed."
         return ""
 
     def get_config_widget(self) -> QWidget:
@@ -152,6 +153,15 @@ class PyLaiaEngine(HTREngine):
         )
         output_layout.addWidget(self._enable_spaces_check)
 
+        self._flip_rtl_check = QCheckBox("RTL manuscript (flip line images)")
+        self._flip_rtl_check.setChecked(False)
+        self._flip_rtl_check.setToolTip(
+            "Flip line images horizontally for right-to-left scripts.\n"
+            "Required for models trained on RTL manuscripts (Ottoman, Arabic, Hebrew, etc.)\n"
+            "with left-to-right transcriptions (Latin transliteration)."
+        )
+        output_layout.addWidget(self._flip_rtl_check)
+
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
 
@@ -190,9 +200,9 @@ class PyLaiaEngine(HTREngine):
         """Open file dialog to select model file."""
         file_path, _ = QFileDialog.getOpenFileName(
             self._config_widget,
-            "Select PyLaia Model",
+            "Select CRNN-CTC Model",
             "models",
-            "PyLaia Models (*.ckpt *.pth *.pt);;All Files (*)"
+            "CRNN-CTC Models (*.ckpt *.pth *.pt);;All Files (*)"
         )
 
         if file_path:
@@ -223,6 +233,7 @@ class PyLaiaEngine(HTREngine):
             "use_lm": self._use_lm_check.isChecked(),
             "lm_weight": self._lm_weight_spin.value(),
             "enable_spaces": self._enable_spaces_check.isChecked(),
+            "flip_rtl": self._flip_rtl_check.isChecked(),
         }
 
         if config["use_lm"]:
@@ -250,6 +261,8 @@ class PyLaiaEngine(HTREngine):
         self._use_lm_check.setChecked(config.get("use_lm", False))
         self._lm_weight_spin.setValue(config.get("lm_weight", 1.5))
         self._enable_spaces_check.setChecked(config.get("enable_spaces", True))
+        if hasattr(self, '_flip_rtl_check'):
+            self._flip_rtl_check.setChecked(config.get("flip_rtl", False))
 
         if "lm_path" in config:
             self._custom_lm_edit.setText(config["lm_path"])
@@ -266,8 +279,25 @@ class PyLaiaEngine(HTREngine):
             if model_path in PYLAIA_MODELS:
                 preset_info = PYLAIA_MODELS[model_path]
                 if isinstance(preset_info, dict):
-                    model_path = preset_info.get("checkpoint", preset_info.get("path", model_path))
-                    syms_path = preset_info.get("syms")
+                    if preset_info.get("repo_id"):
+                        try:
+                            from huggingface_hub import hf_hub_download
+                        except ImportError as exc:
+                            raise RuntimeError(
+                                "huggingface_hub is required for Hugging Face model presets"
+                            ) from exc
+                        repo_id = preset_info["repo_id"]
+                        model_path = hf_hub_download(
+                            repo_id=repo_id,
+                            filename=preset_info.get("checkpoint", "best_model.pt"),
+                        )
+                        syms_path = hf_hub_download(
+                            repo_id=repo_id,
+                            filename=preset_info.get("syms", "symbols.txt"),
+                        )
+                    else:
+                        model_path = preset_info.get("checkpoint", preset_info.get("path", model_path))
+                        syms_path = preset_info.get("syms")
                 # If preset_info is just a string, use it as the path
                 elif isinstance(preset_info, str):
                     model_path = preset_info
@@ -340,6 +370,10 @@ class PyLaiaEngine(HTREngine):
                 pil_image = PILImage.fromarray(image)
             else:
                 pil_image = image
+
+            # Flip horizontally for RTL scripts
+            if config and config.get("flip_rtl", False):
+                pil_image = pil_image.transpose(PILImage.FLIP_LEFT_RIGHT)
 
             # PyLaiaInferenceWSL uses transcribe() which returns (text, confidence) tuple
             # Use LM version if available (not yet implemented for WSL)

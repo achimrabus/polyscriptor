@@ -4,7 +4,7 @@ HTR Transcription GUI - Plugin-Based Version
 Unified interface for multiple HTR engines using the plugin system.
 
 Features:
-- Dropdown engine selection (TrOCR, Qwen3, PyLaia, Commercial APIs)
+- Dropdown engine selection (TrOCR, Qwen3, CRNN-CTC, Commercial APIs)
 - Dynamic configuration panels per engine
 - Seamless zoom/pan with QGraphicsView
 - Drag & drop + file dialog import
@@ -19,6 +19,15 @@ import sys
 import json
 import time
 from pathlib import Path
+
+# Windows console defaults to CP-1252; reconfigure to UTF-8 so Cyrillic output
+# and emoji from engine code don't raise UnicodeEncodeError. No-op on Linux/macOS.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass  # Python < 3.7 — reconfigure not available
 from typing import List, Optional, Tuple, Dict, Any
 import numpy as np
 from PIL import Image
@@ -32,10 +41,10 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QLineEdit, QComboBox,
     QFileDialog, QProgressBar, QStatusBar, QMessageBox,
     QListWidget, QListWidgetItem, QGroupBox, QScrollArea, QSlider, QSpinBox, QCheckBox,
-    QFontDialog
+    QFontDialog, QToolButton, QSizePolicy, QStackedWidget
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QPointF, QSettings
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont, QAction, QShortcut, QKeySequence
+from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QFont, QAction, QShortcut, QKeySequence, QPalette
 
 # Import segmentation components
 from inference_page import LineSegmenter, PageXMLSegmenter, LineSegment
@@ -59,8 +68,61 @@ for engine in available_engines:
     print(f"  - {engine.get_name()}: {engine.get_description()}")
 
 
+class CollapsibleSection(QWidget):
+    """Section with a clickable header that collapses/expands its content."""
+
+    def __init__(self, title, expanded=True, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header button (full-width, checkable, with arrow indicator)
+        self._header = QToolButton()
+        self._header.setText(title)
+        self._header.setCheckable(True)
+        self._header.setChecked(expanded)
+        self._header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._header.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self._header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._header.setStyleSheet(
+            "QToolButton { font-weight: bold; border: 1px solid palette(mid); "
+            "border-radius: 3px; padding: 4px 8px; background: palette(button); "
+            "color: palette(buttonText); }"
+            "QToolButton:hover { background: palette(midlight); }"
+        )
+        self._header.toggled.connect(self._on_toggled)
+        layout.addWidget(self._header)
+
+        # Content area
+        self._content = QWidget()
+        self.content_layout = QVBoxLayout(self._content)
+        self.content_layout.setContentsMargins(2, 4, 2, 4)
+        self._content.setVisible(expanded)
+        layout.addWidget(self._content)
+
+    def _on_toggled(self, checked):
+        self._content.setVisible(checked)
+        self._header.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
+        )
+        # Notify parent layout that our size hint changed
+        self.updateGeometry()
+
+    def set_expanded(self, expanded):
+        self._header.setChecked(expanded)
+
+    def is_expanded(self):
+        return self._header.isChecked()
+
+
 class ZoomableGraphicsView(QGraphicsView):
     """Graphics view with smooth zoom and pan capabilities."""
+
+    rects_changed = pyqtSignal(int)   # emits len(drawn_rects) after add/clear
+    escape_pressed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -76,6 +138,13 @@ class ZoomableGraphicsView(QGraphicsView):
         self.setScene(self._scene)
         self.line_items = []
 
+        # Draw mode state
+        self.draw_mode: bool = False
+        self.drawn_rects: List[Tuple[int, int, int, int]] = []
+        self.drawn_rect_items: List = []
+        self._drag_start = None    # QPointF (scene coords) while dragging
+        self._drag_item = None     # live QGraphicsRectItem during drag
+
     def has_image(self):
         return not self._empty
 
@@ -90,6 +159,10 @@ class ZoomableGraphicsView(QGraphicsView):
         """Load image into view."""
         self._scene.clear()
         self.line_items = []
+        self.drawn_rect_items = []
+        self.drawn_rects = []
+        self._drag_start = None
+        self._drag_item = None
         self._scene.addPixmap(pixmap)
         self._empty = False
         self.fit_in_view()
@@ -116,6 +189,83 @@ class ZoomableGraphicsView(QGraphicsView):
             factor = 1.25 if event.angleDelta().y() > 0 else 0.8
             self.scale(factor, factor)
             self._zoom += 1 if factor > 1 else -1
+
+    def set_draw_mode(self, enabled: bool):
+        """Toggle rectangle draw mode on/off."""
+        self.draw_mode = enabled
+        if enabled:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            if self._drag_item is not None:
+                self._scene.removeItem(self._drag_item)
+                self._drag_item = None
+            self._drag_start = None
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def clear_drawn_rects(self):
+        """Remove all drawn rectangles from the scene."""
+        for item in self.drawn_rect_items:
+            self._scene.removeItem(item)
+        self.drawn_rect_items = []
+        self.drawn_rects = []
+        if self._drag_item is not None:
+            self._scene.removeItem(self._drag_item)
+            self._drag_item = None
+        self.rects_changed.emit(0)
+
+    def mousePressEvent(self, event):
+        if self.draw_mode and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = self.mapToScene(event.pos())
+            pen = QPen(QColor(180, 0, 0))
+            pen.setWidth(2)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            self._drag_item = self._scene.addRect(
+                self._drag_start.x(), self._drag_start.y(), 0, 0, pen
+            )
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.draw_mode and self._drag_start is not None:
+            pos = self.mapToScene(event.pos())
+            x1 = min(self._drag_start.x(), pos.x())
+            y1 = min(self._drag_start.y(), pos.y())
+            x2 = max(self._drag_start.x(), pos.x())
+            y2 = max(self._drag_start.y(), pos.y())
+            self._drag_item.setRect(x1, y1, x2 - x1, y2 - y1)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.draw_mode and event.button() == Qt.MouseButton.LeftButton:
+            if self._drag_start is not None:
+                pos = self.mapToScene(event.pos())
+                x1 = int(min(self._drag_start.x(), pos.x()))
+                y1 = int(min(self._drag_start.y(), pos.y()))
+                x2 = int(max(self._drag_start.x(), pos.x()))
+                y2 = int(max(self._drag_start.y(), pos.y()))
+                if (x2 - x1) >= 10 and (y2 - y1) >= 10:
+                    self.drawn_rects.append((x1, y1, x2, y2))
+                    self.drawn_rect_items.append(self._drag_item)
+                    self.rects_changed.emit(len(self.drawn_rects))
+                else:
+                    self._scene.removeItem(self._drag_item)
+            self._drag_start = None
+            self._drag_item = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.draw_mode and event.key() == Qt.Key.Key_Escape:
+            self.escape_pressed.emit()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
 
 class StatisticsPanel(QWidget):
@@ -407,9 +557,11 @@ class TranscriptionGUI(QMainWindow):
         self.line_segments: List[LineSegment] = []
         self.transcriptions: List[str] = []
         self.current_engine: Optional[HTREngine] = None
+        self.transcription_engine: Optional[HTREngine] = None  # engine that produced self.transcriptions
         self.worker: Optional[TranscriptionWorker] = None
         self.comparison_widget: Optional[ComparisonWidget] = None
         self.comparison_mode_active: bool = False
+        self.regions: list = []  # SegRegion list from blla segmentation
 
         # Multi-page navigation state
         self.image_list: List[Path] = []
@@ -435,10 +587,10 @@ class TranscriptionGUI(QMainWindow):
         self.main_splitter.setHandleWidth(4)
         self.main_splitter.setStyleSheet("""
             QSplitter::handle {
-                background-color: #cccccc;
+                background-color: palette(mid);
             }
             QSplitter::handle:hover {
-                background-color: #999999;
+                background-color: palette(midlight);
             }
         """)
         container_layout.addWidget(self.main_splitter)
@@ -447,13 +599,15 @@ class TranscriptionGUI(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
 
-        # Logo display at top
+        # Logo display at top (smaller on FHD to save space)
         logo_handler = get_logo_handler()
         logo_label = QLabel()
-        logo_pixmap = logo_handler.get_logo_pixmap(width=300)
+        screen_height = QApplication.primaryScreen().availableGeometry().height()
+        logo_width = 200 if screen_height < 1200 else 300
+        logo_pixmap = logo_handler.get_logo_pixmap(width=logo_width)
         logo_label.setPixmap(logo_pixmap)
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_label.setStyleSheet("padding: 10px;")
+        logo_label.setStyleSheet("padding: 5px;" if screen_height < 1200 else "padding: 10px;")
         left_layout.addWidget(logo_label)
 
         # Image view
@@ -477,6 +631,42 @@ class TranscriptionGUI(QMainWindow):
         img_controls.addWidget(btn_fit)
 
         left_layout.addLayout(img_controls)
+
+        # Draw mode controls: rectangle drawing for manual re-segmentation
+        # Hidden until blla segmentation populates self.regions
+        self.draw_controls_widget = QWidget()
+        draw_controls = QHBoxLayout(self.draw_controls_widget)
+        draw_controls.setContentsMargins(0, 0, 0, 0)
+
+        self.btn_draw_mode = QPushButton("Draw Regions")
+        self.btn_draw_mode.setCheckable(True)
+        self.btn_draw_mode.setToolTip(
+            "Toggle draw mode: click and drag to draw rectangles on the image.\n"
+            "Each rectangle marks an area to re-segment with blla.\n"
+            "Press Escape or click again to exit draw mode.")
+        draw_controls.addWidget(self.btn_draw_mode)
+
+        self.btn_resegment_drawn = QPushButton("Re-segment Drawn")
+        self.btn_resegment_drawn.setEnabled(False)
+        self.btn_resegment_drawn.setToolTip(
+            "Run blla segmentation within each drawn rectangle.\n"
+            "Replaces existing regions that overlap the drawn areas.")
+        draw_controls.addWidget(self.btn_resegment_drawn)
+
+        btn_clear_drawn = QPushButton("Clear Drawn")
+        btn_clear_drawn.setToolTip("Remove all drawn rectangles.")
+        draw_controls.addWidget(btn_clear_drawn)
+
+        self.draw_controls_widget.setVisible(False)
+        left_layout.addWidget(self.draw_controls_widget)
+
+        self.btn_draw_mode.toggled.connect(self._toggle_draw_mode)
+        self.btn_resegment_drawn.clicked.connect(self._resegment_drawn_regions)
+        btn_clear_drawn.clicked.connect(self._clear_drawn_regions)
+        self.image_view.rects_changed.connect(
+            lambda n: self.btn_resegment_drawn.setEnabled(n > 0))
+        self.image_view.escape_pressed.connect(
+            lambda: self.btn_draw_mode.setChecked(False))
 
         # Image navigation - row 2: prev/next buttons and page counter
         nav_controls = QHBoxLayout()
@@ -507,9 +697,9 @@ class TranscriptionGUI(QMainWindow):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
-        # Segmentation settings
-        seg_group = QGroupBox("Segmentation Settings")
-        seg_layout = QVBoxLayout()
+        # --- Segmentation Settings (collapsible) ---
+        self.seg_section = CollapsibleSection("Segmentation Settings")
+        seg_layout = self.seg_section.content_layout
 
         # Check if Kraken is available
         try:
@@ -524,8 +714,9 @@ class TranscriptionGUI(QMainWindow):
         self.seg_method_combo = QComboBox()
         self.seg_method_combo.addItem("HPP (Fast)", "HPP")
         if KRAKEN_AVAILABLE:
-            self.seg_method_combo.addItem("Kraken (Robust)", "Kraken")
-            self.seg_method_combo.setCurrentIndex(1)  # Default to Kraken if available
+            self.seg_method_combo.addItem("Kraken Classical", "Kraken")
+            self.seg_method_combo.addItem("Kraken Neural (blla)", "KrakenBLLA")
+            self.seg_method_combo.setCurrentIndex(1)  # Default to Kraken Classical if available
         else:
             self.seg_method_combo.addItem("Kraken (Not installed)", None)
             self.seg_method_combo.model().item(1).setEnabled(False)
@@ -584,19 +775,115 @@ class TranscriptionGUI(QMainWindow):
         self.kraken_params_widget.setLayout(kraken_layout)
         seg_layout.addWidget(self.kraken_params_widget)
 
+        # Kraken Neural (blla) parameters
+        self.blla_params_widget = QWidget()
+        blla_layout = QVBoxLayout()
+        blla_layout.setContentsMargins(0, 0, 0, 0)
+
+        blla_device_layout = QHBoxLayout()
+        blla_device_layout.addWidget(QLabel("Device:"))
+        self.blla_device_combo = QComboBox()
+        self.blla_device_combo.addItem("CPU", "cpu")
+        try:
+            import torch
+            if torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    name = torch.cuda.get_device_name(i)
+                    self.blla_device_combo.addItem(f"GPU {i}: {name}", f"cuda:{i}")
+                # Default to first GPU (only if GPUs were actually added)
+                if torch.cuda.device_count() > 0:
+                    self.blla_device_combo.setCurrentIndex(1)
+        except ImportError:
+            pass
+        blla_device_layout.addWidget(self.blla_device_combo)
+        blla_layout.addLayout(blla_device_layout)
+
+        # Max columns
+        blla_cols_layout = QHBoxLayout()
+        blla_cols_layout.addWidget(QLabel("Max Columns:"))
+        self.blla_max_columns_spin = QSpinBox()
+        self.blla_max_columns_spin.setRange(1, 8)
+        self.blla_max_columns_spin.setValue(4)
+        self.blla_max_columns_spin.setToolTip(
+            "Maximum number of text columns to detect per region (1-8).\n"
+            "Set to 2 for single-page two-column, 4 for double-page two-column.")
+        blla_cols_layout.addWidget(self.blla_max_columns_spin)
+        blla_cols_layout.addStretch()
+        blla_layout.addLayout(blla_cols_layout)
+
+        # Split width threshold
+        blla_split_layout = QHBoxLayout()
+        blla_split_layout.addWidget(QLabel("Split Width:"))
+        self.blla_split_slider = QSlider(Qt.Orientation.Horizontal)
+        self.blla_split_slider.setRange(10, 80)  # 10% to 80%
+        self.blla_split_slider.setValue(40)       # default 40%
+        self.blla_split_label = QLabel("40%")
+        self.blla_split_slider.valueChanged.connect(
+            lambda v: self.blla_split_label.setText(f"{v}%")
+        )
+        self.blla_split_slider.setToolTip(
+            "Regions wider than this % of page width get sub-split into columns.\n"
+            "Lower = more aggressive splitting.\n"
+            "Portrait single-page: 40% (default)\n"
+            "Landscape double-page: try 20-25%")
+        blla_split_layout.addWidget(self.blla_split_slider)
+        blla_split_layout.addWidget(self.blla_split_label)
+        blla_layout.addLayout(blla_split_layout)
+
+        # Min lines to split
+        blla_minlines_layout = QHBoxLayout()
+        blla_minlines_layout.addWidget(QLabel("Min Lines:"))
+        self.blla_min_lines_spin = QSpinBox()
+        self.blla_min_lines_spin.setRange(3, 50)
+        self.blla_min_lines_spin.setValue(10)
+        self.blla_min_lines_spin.setToolTip(
+            "Minimum lines in a region before attempting column split.\n"
+            "Lower = split regions with fewer lines.")
+        blla_minlines_layout.addWidget(self.blla_min_lines_spin)
+        blla_minlines_layout.addStretch()
+        blla_layout.addLayout(blla_minlines_layout)
+
+        # Text direction (reading order)
+        blla_dir_layout = QHBoxLayout()
+        blla_dir_layout.addWidget(QLabel("Direction:"))
+        self.blla_direction_combo = QComboBox()
+        self.blla_direction_combo.addItem("LTR — Latin, Cyrillic, …", "horizontal-lr")
+        self.blla_direction_combo.addItem("RTL — Arabic, Ottoman, Hebrew, …", "horizontal-rl")
+        self.blla_direction_combo.addItem("Vertical LTR", "vertical-lr")
+        self.blla_direction_combo.addItem("Vertical RTL", "vertical-rl")
+        self.blla_direction_combo.setToolTip(
+            "Controls column reading order.\n"
+            "Use RTL for Arabic, Ottoman Turkish, Hebrew manuscripts.\n"
+            "Affects which column is listed first in the output.")
+        blla_dir_layout.addWidget(self.blla_direction_combo)
+        blla_layout.addLayout(blla_dir_layout)
+
+        # Custom model path
+        blla_model_layout = QHBoxLayout()
+        blla_model_layout.addWidget(QLabel("Model:"))
+        self.blla_model_edit = QLineEdit()
+        self.blla_model_edit.setPlaceholderText("Default (pagexml/blla.mlmodel)")
+        self.blla_model_edit.setToolTip(
+            "Path to a custom kraken blla .mlmodel segmentation file.\n"
+            "Leave blank to use the built-in default (pagexml/blla.mlmodel).\n"
+            "Any kraken blla-compatible model can be used here.")
+        blla_model_btn = QPushButton("Browse…")
+        blla_model_btn.clicked.connect(self._browse_blla_model)
+        blla_model_layout.addWidget(self.blla_model_edit)
+        blla_model_layout.addWidget(blla_model_btn)
+        blla_layout.addLayout(blla_model_layout)
+
+        self.blla_params_widget.setLayout(blla_layout)
+        seg_layout.addWidget(self.blla_params_widget)
+
         # Set initial visibility based on default method
         self._on_seg_method_changed(self.seg_method_combo.currentIndex())
 
-        seg_group.setLayout(seg_layout)
-        left_layout.addWidget(seg_group)    
+        right_layout.addWidget(self.seg_section)
 
-        # Right panel: Engine selection and transcription
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-
-        # Engine selection
-        engine_group = QGroupBox("HTR Engine")
-        engine_layout = QVBoxLayout()
+        # --- HTR Engine (collapsible) ---
+        self.engine_section = CollapsibleSection("HTR Engine", expanded=False)
+        engine_content = self.engine_section.content_layout
 
         self.engine_combo = QComboBox()
         if not available_engines:
@@ -606,30 +893,30 @@ class TranscriptionGUI(QMainWindow):
                 self.engine_combo.addItem(engine.get_name())
 
         self.engine_combo.currentTextChanged.connect(self.on_engine_changed)
-        engine_layout.addWidget(self.engine_combo)
+        engine_content.addWidget(self.engine_combo)
 
         # Engine description
         self.engine_desc_label = QLabel("")
         self.engine_desc_label.setWordWrap(True)
         self.engine_desc_label.setStyleSheet("color: gray; font-size: 12pt;")
-        engine_layout.addWidget(self.engine_desc_label)
+        engine_content.addWidget(self.engine_desc_label)
 
-        engine_group.setLayout(engine_layout)
-        right_layout.addWidget(engine_group)
-
-        # Dynamic engine configuration panel
+        # Dynamic engine configuration container
+        # Wrapped in a scroll area so tall configs don't push export buttons off-screen.
+        # No minimum height (collapses if empty); max height caps growth.
         config_scroll = QScrollArea()
         config_scroll.setWidgetResizable(True)
-        config_scroll.setMinimumHeight(300)
+        config_scroll.setFrameShape(config_scroll.Shape.NoFrame)
 
         self.config_container = QWidget()
         self.config_layout = QVBoxLayout(self.config_container)
         self.config_layout.addStretch()
-
         config_scroll.setWidget(self.config_container)
-        right_layout.addWidget(config_scroll)
+        engine_content.addWidget(config_scroll)
 
-        # Load/Process buttons
+        right_layout.addWidget(self.engine_section)
+
+        # Load/Process buttons — outside collapsible section so always visible
         process_layout = QHBoxLayout()
 
         self.btn_load_model = QPushButton("Load Model")
@@ -648,8 +935,8 @@ class TranscriptionGUI(QMainWindow):
         self.progress_bar.setVisible(False)
         right_layout.addWidget(self.progress_bar)
 
-        # Transcription results (horizontal split: text + statistics)
-        results_group = QGroupBox("Transcriptions")
+        # Transcription results — splitter fills all remaining space
+        self.results_group = QGroupBox("Transcriptions")
         results_layout = QVBoxLayout()
 
         # Horizontal splitter for text and statistics
@@ -666,34 +953,43 @@ class TranscriptionGUI(QMainWindow):
 
         self.results_splitter.addWidget(self.text_container)
 
-        # Right: Statistics panel (compact, scrollable)
+        # Right: Statistics panel (hidden by default on FHD, toggle via button below)
         self.stats_scroll = QScrollArea()
         self.stats_scroll.setWidgetResizable(True)
-        self.stats_scroll.setMinimumWidth(180)  # Minimum for readable stats
-        # REMOVED: setMaximumWidth(300) - Let user decide stats panel width
+        self.stats_scroll.setMinimumWidth(180)
 
         self.stats_panel = StatisticsPanel()
         self.stats_scroll.setWidget(self.stats_panel)
 
         self.results_splitter.addWidget(self.stats_scroll)
 
-        # Set minimum widths
-        self.transcription_text.setMinimumWidth(400)  # Minimum for text
+        self.transcription_text.setMinimumWidth(400)
+        self.results_splitter.setCollapsible(0, False)
+        self.results_splitter.setCollapsible(1, True)
 
-        # Set initial sizes (78% text, 22% stats at 1152px right panel)
-        # At 1152px: ~900px text, ~250px stats
-        self.results_splitter.setSizes([900, 250])
-
-        # Add collapsible behavior
-        self.results_splitter.setCollapsible(0, False)  # Text cannot collapse
-        self.results_splitter.setCollapsible(1, True)   # Stats can collapse (hide)
+        # Stats panel hidden by default; user clicks Stats button to show
+        self.results_splitter.setSizes([1, 0])
 
         results_layout.addWidget(self.results_splitter)
+        self.results_group.setLayout(results_layout)
 
-        # Export and comparison buttons (below splitter)
+        # Wrap results_group in a QStackedWidget so comparison can take over the full area
+        self.results_stack = QStackedWidget()
+        self.results_stack.addWidget(self.results_group)  # page 0: normal view
+        # comparison widget will be added as page 1 dynamically
+        right_layout.addWidget(self.results_stack, stretch=1)
+
+        # When engine section expands, hide results area (gives config room to breathe)
+        self.engine_section._header.toggled.connect(
+            lambda checked: self.results_stack.setVisible(not checked)
+        )
+        # Set initial state to match engine section (collapsed → results visible)
+        self.results_stack.setVisible(not self.engine_section.is_expanded())
+
+        # Export + comparison + stats toggle row — pinned at the very bottom of right_layout
+        # (outside results_group so it is always visible regardless of section heights)
         export_layout = QHBoxLayout()
 
-        # Compare button (checkable - toggles comparison mode)
         self.btn_compare = QPushButton("⚖ Compare")
         self.btn_compare.setCheckable(True)
         self.btn_compare.setStyleSheet("""
@@ -709,7 +1005,7 @@ class TranscriptionGUI(QMainWindow):
         self.btn_compare.toggled.connect(self.toggle_comparison_mode)
         export_layout.addWidget(self.btn_compare)
 
-        export_layout.addStretch()  # Push export buttons to the right
+        export_layout.addStretch()
 
         btn_export_txt = QPushButton("Export TXT")
         btn_export_txt.clicked.connect(self.export_txt)
@@ -723,10 +1019,14 @@ class TranscriptionGUI(QMainWindow):
         btn_export_xml.clicked.connect(self.export_xml)
         export_layout.addWidget(btn_export_xml)
 
-        results_layout.addLayout(export_layout)
+        self.btn_stats_toggle = QPushButton("Stats")
+        self.btn_stats_toggle.setCheckable(True)
+        self.btn_stats_toggle.setChecked(False)  # always off at startup
+        self.btn_stats_toggle.setToolTip("Show/hide statistics panel")
+        self.btn_stats_toggle.toggled.connect(self._toggle_stats_panel)
+        export_layout.addWidget(self.btn_stats_toggle)
 
-        results_group.setLayout(results_layout)
-        right_layout.addWidget(results_group, stretch=1)
+        right_layout.addLayout(export_layout)
 
         # Add right panel to main splitter
         self.main_splitter.addWidget(right_panel)
@@ -750,6 +1050,11 @@ class TranscriptionGUI(QMainWindow):
         # Initialize first engine
         if available_engines:
             self.on_engine_changed(self.engine_combo.currentText())
+
+        # Auto-collapse seg settings on FHD (< 1200px height)
+        # engine_section always starts collapsed (expanding hides transcription area)
+        if screen_height < 1200:
+            self.seg_section.set_expanded(False)
 
     def setup_menu_bar(self):
         """Setup menu bar with view presets."""
@@ -829,29 +1134,31 @@ class TranscriptionGUI(QMainWindow):
         """Toggle comparison mode on/off."""
         if enabled:
             # Validate prerequisites
-            if not self.current_engine or not self.current_engine.is_model_loaded():
-                QMessageBox.warning(self, "No Model",
-                                   "Please load an engine and model first!")
-                self.btn_compare.setChecked(False)
-                return
-
             if not self.transcriptions:
                 QMessageBox.warning(self, "No Transcriptions",
                                    "Please process the image first!")
                 self.btn_compare.setChecked(False)
                 return
 
+            if not self.transcription_engine:
+                QMessageBox.warning(self, "No Base Engine",
+                                   "Cannot determine which engine produced the transcription.")
+                self.btn_compare.setChecked(False)
+                return
+
             # Prepare line segments and images for comparison
-            # Handle both line-based models (PyLaia, TrOCR) and page-based models (Qwen, APIs)
+            # Handle both line-based models (CRNN-CTC, TrOCR) and page-based models (Qwen, APIs)
             if self.line_segments:
-                # Line-based: use actual segments
+                # Line-based: use pre-cropped images from segments (already properly cropped)
                 line_images = []
-                if self.current_image:
-                    img_np = np.array(self.current_image)
-                    for segment in self.line_segments:
-                        x, y, w, h = segment.bbox
-                        line_img = img_np[y:y+h, x:x+w]
-                        line_images.append(line_img)
+                for segment in self.line_segments:
+                    if segment.image is not None:
+                        line_images.append(np.array(segment.image))
+                    elif self.current_image:
+                        # Fallback: crop from full image using (x1,y1,x2,y2) bbox
+                        x1, y1, x2, y2 = segment.bbox
+                        img_np = np.array(self.current_image)
+                        line_images.append(img_np[y1:y2, x1:x2])
             else:
                 # Page-based: treat whole page as single "line"
                 from inference_page import LineSegment
@@ -865,9 +1172,10 @@ class TranscriptionGUI(QMainWindow):
                 )]
                 line_images = [np.array(self.current_image)]
 
-            # Create comparison widget
+            # Create comparison widget — use transcription_engine (the engine that
+            # produced self.transcriptions), not current_engine (which may have changed)
             self.comparison_widget = ComparisonWidget(
-                self.current_engine,
+                self.transcription_engine,
                 self.line_segments,
                 line_images,
                 self
@@ -884,10 +1192,10 @@ class TranscriptionGUI(QMainWindow):
             # Set base transcriptions
             self.comparison_widget.set_base_transcriptions(self.transcriptions)
 
-            # Hide statistics panel and replace with comparison widget
-            self.stats_scroll.hide()
-            self.results_splitter.replaceWidget(1, self.comparison_widget)
-            self.comparison_widget.show()
+            # Add comparison widget to stack and switch to it (full content area)
+            self.results_stack.addWidget(self.comparison_widget)
+            self.results_stack.setCurrentWidget(self.comparison_widget)
+            self.btn_stats_toggle.setEnabled(False)
 
             # Update button text
             self.btn_compare.setText("⚖ Comparison Active")
@@ -898,23 +1206,30 @@ class TranscriptionGUI(QMainWindow):
         else:
             # Close comparison mode
             if self.comparison_widget:
-                # Clean up comparison widget
+                # Terminate worker if still running (closed via main button, not ✕)
+                if (self.comparison_widget.comparison_worker and
+                        self.comparison_widget.comparison_worker.isRunning()):
+                    self.comparison_widget.comparison_worker.terminate()
+                    self.comparison_widget.comparison_worker.wait()
                 self.comparison_widget.unload_comparison_engine()
-                self.comparison_widget.hide()
 
-                # Restore statistics panel
-                self.results_splitter.replaceWidget(1, self.stats_scroll)
-                self.stats_scroll.show()
-
-                # Delete comparison widget
+                # Switch back to normal view and remove comparison from stack
+                self.results_stack.setCurrentWidget(self.results_group)
+                self.results_stack.removeWidget(self.comparison_widget)
                 self.comparison_widget.deleteLater()
                 self.comparison_widget = None
 
-            # Update button text
+            self.btn_stats_toggle.setEnabled(True)
             self.btn_compare.setText("⚖ Compare")
-
             self.comparison_mode_active = False
             self.status_bar.showMessage("Comparison mode closed")
+
+    def _toggle_stats_panel(self, show: bool):
+        """Show or hide the statistics panel in the results splitter."""
+        if show:
+            self.results_splitter.setSizes([700, 250])
+        else:
+            self.results_splitter.setSizes([1, 0])
 
     def update_process_button_state(self):
         """Update process button enabled state based on current conditions."""
@@ -968,19 +1283,63 @@ class TranscriptionGUI(QMainWindow):
             QMessageBox.warning(self, "Error", "Failed to load model. Check console for details.")
 
     def _load_images(self):
-        """Open file dialog to select one or more images."""
+        """Open file dialog to select one or more images or PDFs."""
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select Images",
+            "Select Images or PDFs",
             "",
-            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;All Files (*)"
+            "Images & PDFs (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.pdf);;"
+            "PDF Files (*.pdf);;"
+            "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp);;"
+            "All Files (*)"
         )
 
         if not file_paths:
             return
 
-        # Store image list and set index to first image
-        self.image_list = [Path(p) for p in file_paths]
+        expanded = []
+        for p_str in file_paths:
+            p = Path(p_str)
+            if p.suffix.lower() == '.pdf':
+                try:
+                    import fitz as _fitz
+                    import tempfile
+                    doc = _fitz.open(str(p))
+                    n = len(doc)
+                    doc.close()
+                    load_all = True
+                    if n > 1:
+                        reply = QMessageBox.question(
+                            self, "PDF",
+                            f"'{p.name}' has {n} pages. Load all pages?",
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                        )
+                        load_all = (reply == QMessageBox.StandardButton.Yes)
+                    tmp = Path(tempfile.mkdtemp(prefix="polyscriptor_pdf_"))
+                    mat = _fitz.Matrix(150 / 72, 150 / 72)
+                    doc = _fitz.open(str(p))
+                    pages_to_render = range(len(doc)) if load_all else range(1)
+                    for i in pages_to_render:
+                        page = doc[i]
+                        pix = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
+                        from PIL import Image as _PIL
+                        img = _PIL.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        out = tmp / f"{p.stem}_page{i+1:03d}.png"
+                        img.save(str(out))
+                        expanded.append(out)
+                    doc.close()
+                except ImportError:
+                    QMessageBox.warning(self, "PDF Error",
+                        "PyMuPDF not installed. Install with:\npip install pymupdf")
+                except Exception as e:
+                    QMessageBox.warning(self, "PDF Error", f"Could not open PDF: {e}")
+            else:
+                expanded.append(p)
+
+        if not expanded:
+            return
+
+        self.image_list = expanded
         self.current_image_index = 0
         self._display_current_image()
         self._update_navigation_ui()
@@ -1007,6 +1366,7 @@ class TranscriptionGUI(QMainWindow):
 
             self.status_bar.showMessage(f"Loaded: {file_path.name}")
             self.line_segments = []
+            self.regions = []
             self.transcriptions = []
             self.transcription_text.clear()
             self.stats_panel.clear()
@@ -1050,20 +1410,41 @@ class TranscriptionGUI(QMainWindow):
         """Legacy method - redirects to _load_images for backwards compatibility."""
         self._load_images()
 
+    def _browse_blla_model(self):
+        """Open file dialog to select a custom blla .mlmodel file."""
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Segmentation Model", "",
+            "Kraken Models (*.mlmodel);;All Files (*)"
+        )
+        if path:
+            self.blla_model_edit.setText(path)
+
     def _on_seg_method_changed(self, index):
         """Handle segmentation method change."""
         method = self.seg_method_combo.currentData()
 
+        # Hide all parameter widgets first
+        self.hpp_params_widget.setVisible(False)
+        self.kraken_params_widget.setVisible(False)
+        if hasattr(self, 'blla_params_widget'):
+            self.blla_params_widget.setVisible(False)
+
+        # Show/hide draw controls based on whether blla is selected
+        if hasattr(self, 'draw_controls_widget'):
+            self.draw_controls_widget.setVisible(method == "KrakenBLLA")
+
         if method == "Kraken":
-            # Show Kraken parameters, hide HPP parameters
             self.kraken_params_widget.setVisible(True)
-            self.hpp_params_widget.setVisible(False)
             if hasattr(self, 'status_bar'):
-                self.status_bar.showMessage("Switched to Kraken segmentation (slower but more robust)")
+                self.status_bar.showMessage("Switched to Kraken Classical segmentation")
+        elif method == "KrakenBLLA":
+            if hasattr(self, 'blla_params_widget'):
+                self.blla_params_widget.setVisible(True)
+            if hasattr(self, 'status_bar'):
+                self.status_bar.showMessage("Switched to Kraken Neural (blla) — supports multi-column layouts")
         else:  # HPP
-            # Show HPP parameters, hide Kraken parameters
             self.hpp_params_widget.setVisible(True)
-            self.kraken_params_widget.setVisible(False)
             if hasattr(self, 'status_bar'):
                 self.status_bar.showMessage("Switched to HPP segmentation (fast)")
 
@@ -1076,9 +1457,51 @@ class TranscriptionGUI(QMainWindow):
         try:
             method = self.seg_method_combo.currentData()
 
-            if method == "Kraken":
-                # Use Kraken segmentation
-                self.status_bar.showMessage("Detecting lines with Kraken (this may take 3-8 seconds)...")
+            if method == "KrakenBLLA":
+                # Use Kraken Neural (blla) segmentation — regions + baselines
+                self.status_bar.showMessage("Detecting regions & lines with Kraken Neural (blla)...")
+                QApplication.processEvents()
+
+                from kraken_segmenter import KrakenLineSegmenter
+                from inference_page import LineSegment, sort_lines_by_region
+
+                device = self.blla_device_combo.currentData() if hasattr(self, 'blla_device_combo') else 'cpu'
+                segmenter = KrakenLineSegmenter(device=device)
+                max_cols = self.blla_max_columns_spin.value() if hasattr(self, 'blla_max_columns_spin') else 4
+                split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.40
+                min_lines = self.blla_min_lines_spin.value() if hasattr(self, 'blla_min_lines_spin') else 10
+                custom_model = self.blla_model_edit.text().strip() if hasattr(self, 'blla_model_edit') else None
+                text_dir = self.blla_direction_combo.currentData() if hasattr(self, 'blla_direction_combo') else 'horizontal-lr'
+                regions, kraken_lines = segmenter.segment_with_regions(
+                    self.current_image, device=device,
+                    model_path=custom_model or None,
+                    max_columns=max_cols,
+                    split_width_fraction=split_frac,
+                    min_lines_to_split=min_lines,
+                    text_direction=text_dir,
+                )
+
+                # Store regions for later use (visualization, export)
+                self.regions = regions
+
+                # Convert kraken LineSegments to inference_page LineSegment format
+                self.line_segments = []
+                for seg in kraken_lines:
+                    self.line_segments.append(LineSegment(
+                        image=seg.image,
+                        bbox=seg.bbox,
+                        coords=seg.baseline,
+                    ))
+
+                num_regions = len(regions)
+                num_lines = len(self.line_segments)
+                self.status_bar.showMessage(
+                    f"blla: {num_regions} region(s), {num_lines} lines"
+                )
+
+            elif method == "Kraken":
+                # Use Kraken Classical segmentation
+                self.status_bar.showMessage("Detecting lines with Kraken Classical (this may take 3-8 seconds)...")
                 QApplication.processEvents()
 
                 from kraken_segmenter import KrakenLineSegmenter
@@ -1091,6 +1514,8 @@ class TranscriptionGUI(QMainWindow):
                     use_binarization=use_binarization
                 )
 
+                self.regions = []  # Classical has no regions
+
                 # Convert Kraken segments to LineSegment format
                 from inference_page import LineSegment
                 self.line_segments = []
@@ -1102,6 +1527,7 @@ class TranscriptionGUI(QMainWindow):
                     ))
 
             else:  # HPP method
+                self.regions = []  # HPP has no regions
                 self.status_bar.showMessage("Detecting lines with HPP...")
                 QApplication.processEvents()
 
@@ -1117,11 +1543,15 @@ class TranscriptionGUI(QMainWindow):
                 )
                 self.line_segments = segmenter.segment_lines(self.current_image)
 
-            # Draw boxes
-            self.image_view.draw_line_boxes(self.line_segments)
+            # Draw boxes (color-code by region if blla was used)
+            if method == "KrakenBLLA" and self.regions:
+                self._draw_region_line_boxes()
+            else:
+                self.image_view.draw_line_boxes(self.line_segments)
 
             num_lines = len(self.line_segments)
-            self.status_bar.showMessage(f"Found {num_lines} lines with {method}")
+            method_display = {"HPP": "HPP", "Kraken": "Kraken Classical", "KrakenBLLA": "Kraken Neural (blla)"}.get(method, method)
+            self.status_bar.showMessage(f"Found {num_lines} lines with {method_display}")
 
             # Warn if no lines or only 1 line detected
             if num_lines == 0:
@@ -1156,6 +1586,199 @@ class TranscriptionGUI(QMainWindow):
             print(f"Segmentation error:\n{error_detail}")
             QMessageBox.warning(self, "Error", f"Failed to segment lines: {e}\n\nCheck console for details.")
     
+    def _draw_region_line_boxes(self):
+        """Draw color-coded line boxes grouped by region after blla segmentation."""
+        # Region color palette
+        region_colors = [
+            QColor(0, 200, 0),      # green
+            QColor(0, 100, 255),     # blue
+            QColor(255, 128, 0),     # orange
+            QColor(180, 0, 180),     # purple
+            QColor(255, 0, 0),       # red
+        ]
+
+        # Remove old line items
+        for item in self.image_view.line_items:
+            self.image_view._scene.removeItem(item)
+        self.image_view.line_items = []
+
+        # Build region-to-color mapping and assign lines to regions by bbox containment
+        line_idx = 0
+        for ri, region in enumerate(self.regions):
+            color = region_colors[ri % len(region_colors)]
+            pen = QPen(color)
+            pen.setWidth(2)
+
+            # Draw region polygon/bbox
+            if region.polygon and len(region.polygon) >= 3:
+                region_pen = QPen(color)
+                region_pen.setWidth(3)
+                region_pen.setStyle(Qt.PenStyle.DashLine)
+                for i in range(len(region.polygon)):
+                    p1 = region.polygon[i]
+                    p2 = region.polygon[(i + 1) % len(region.polygon)]
+                    line_item = self.image_view._scene.addLine(
+                        p1[0], p1[1], p2[0], p2[1], region_pen
+                    )
+                    self.image_view.line_items.append(line_item)
+            else:
+                region_pen = QPen(color)
+                region_pen.setWidth(3)
+                region_pen.setStyle(Qt.PenStyle.DashLine)
+                x1, y1, x2, y2 = region.bbox
+                rect_item = self.image_view._scene.addRect(
+                    x1, y1, x2 - x1, y2 - y1, region_pen
+                )
+                self.image_view.line_items.append(rect_item)
+
+            # Draw lines belonging to this region
+            n_lines = len(region.line_ids)
+            for _ in range(n_lines):
+                if line_idx < len(self.line_segments):
+                    seg = self.line_segments[line_idx]
+                    x1, y1, x2, y2 = seg.bbox
+                    rect_item = self.image_view._scene.addRect(
+                        x1, y1, x2 - x1, y2 - y1, pen
+                    )
+                    self.image_view.line_items.append(rect_item)
+                    line_idx += 1
+
+        # Any remaining lines (shouldn't happen, but be safe)
+        default_pen = QPen(QColor(0, 255, 0))
+        default_pen.setWidth(2)
+        while line_idx < len(self.line_segments):
+            seg = self.line_segments[line_idx]
+            x1, y1, x2, y2 = seg.bbox
+            rect_item = self.image_view._scene.addRect(
+                x1, y1, x2 - x1, y2 - y1, default_pen
+            )
+            self.image_view.line_items.append(rect_item)
+            line_idx += 1
+
+    def _toggle_draw_mode(self, checked: bool):
+        """Enable or disable rectangle draw mode on the image view."""
+        self.image_view.set_draw_mode(checked)
+
+    def _clear_drawn_regions(self):
+        """Remove all drawn rectangles from the image view."""
+        self.image_view.clear_drawn_rects()
+
+    def _resegment_drawn_regions(self):
+        """Re-run blla segmentation inside each drawn rectangle, replacing overlapping regions."""
+        drawn = self.image_view.drawn_rects
+        if not drawn or self.current_image is None:
+            return
+
+        from inference_page import LineSegment as InfLineSegment
+
+        try:
+            from kraken_segmenter import KrakenLineSegmenter
+        except ImportError:
+            QMessageBox.warning(self, "Not Available", "Kraken segmenter not installed.")
+            return
+
+        W, H = self.current_image.size
+
+        def _overlap(b1, b2):
+            return not (b1[2] <= b2[0] or b2[2] <= b1[0] or
+                        b1[3] <= b2[1] or b2[3] <= b1[1])
+
+        # Build (region, lines) pairs for KEPT regions (no overlap with any drawn rect)
+        kept_pairs = []
+        line_offset = 0
+        for region in self.regions:
+            n = len(region.line_ids)
+            region_lines = list(self.line_segments[line_offset:line_offset + n])
+            line_offset += n
+            if not any(_overlap(region.bbox, dr) for dr in drawn):
+                kept_pairs.append((region, region_lines))
+
+        # Get segmenter params (same guards as segment_lines)
+        device = self.blla_device_combo.currentData() if hasattr(self, 'blla_device_combo') else 'cpu'
+        max_cols = self.blla_max_columns_spin.value() if hasattr(self, 'blla_max_columns_spin') else 4
+        split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.40
+        min_lines = self.blla_min_lines_spin.value() if hasattr(self, 'blla_min_lines_spin') else 10
+        custom_model = self.blla_model_edit.text().strip() if hasattr(self, 'blla_model_edit') else None
+        text_dir = self.blla_direction_combo.currentData() if hasattr(self, 'blla_direction_combo') else 'horizontal-lr'
+
+        segmenter = KrakenLineSegmenter(device=device)
+        new_pairs = []
+
+        for ri, (dx1, dy1, dx2, dy2) in enumerate(drawn):
+            dx1, dy1 = max(0, dx1), max(0, dy1)
+            dx2, dy2 = min(W, dx2), min(H, dy2)
+            if dx2 <= dx1 or dy2 <= dy1:
+                continue
+
+            self.status_bar.showMessage(f"Re-segmenting drawn rect {ri + 1}/{len(drawn)}...")
+            QApplication.processEvents()
+
+            crop = self.current_image.crop((dx1, dy1, dx2, dy2))
+            try:
+                seg_regions, seg_lines = segmenter.segment_with_regions(
+                    crop, device=device,
+                    model_path=custom_model or None,
+                    max_columns=max_cols,
+                    split_width_fraction=split_frac,
+                    min_lines_to_split=min_lines,
+                    text_direction=text_dir,
+                )
+            except Exception as e:
+                self.status_bar.showMessage(f"Error re-segmenting rect {ri + 1}: {e}")
+                continue
+
+            # Adjust all coordinates by (+dx1, +dy1) to convert crop → page space
+            for sr in seg_regions:
+                sr.id = f"r_draw_{ri}_{sr.id}"
+                bx1, by1, bx2, by2 = sr.bbox
+                sr.bbox = (bx1 + dx1, by1 + dy1, bx2 + dx1, by2 + dy1)
+                if sr.polygon:
+                    sr.polygon = [(px + dx1, py + dy1) for px, py in sr.polygon]
+
+            # Convert kraken LineSegments to InfLineSegment with adjusted coords
+            inf_lines = []
+            for seg in seg_lines:
+                sbx1, sby1, sbx2, sby2 = seg.bbox
+                adj_bbox = (sbx1 + dx1, sby1 + dy1, sbx2 + dx1, sby2 + dy1)
+                adj_baseline = (
+                    [(bpx + dx1, bpy + dy1) for bpx, bpy in seg.baseline]
+                    if seg.baseline else None
+                )
+                inf_lines.append(InfLineSegment(
+                    image=seg.image,
+                    bbox=adj_bbox,
+                    coords=adj_baseline,
+                ))
+
+            # Pair each region with its slice of inf_lines
+            line_offset2 = 0
+            for sr in seg_regions:
+                n2 = len(sr.line_ids)
+                new_pairs.append((sr, inf_lines[line_offset2:line_offset2 + n2]))
+                line_offset2 += n2
+
+        # Merge all pairs, sort left-to-right by region x-center
+        all_pairs = kept_pairs + new_pairs
+        all_pairs.sort(key=lambda p: (p[0].bbox[0] + p[0].bbox[2]) / 2)
+
+        self.regions = [r for r, _ in all_pairs]
+        self.line_segments = [l for _, ls in all_pairs for l in ls]
+
+        # Re-index line_ids so they are contiguous
+        flat_idx = 0
+        for region in self.regions:
+            n = len(region.line_ids)
+            region.line_ids = [f"l_{flat_idx + i}" for i in range(n)]
+            flat_idx += n
+
+        # Clear drawn rects, exit draw mode, refresh canvas
+        self.image_view.clear_drawn_rects()
+        self.btn_draw_mode.setChecked(False)
+        self._draw_region_line_boxes()
+        self.status_bar.showMessage(
+            f"{len(self.regions)} region(s), {len(self.line_segments)} lines after re-segmentation"
+        )
+
     def process_image(self):
         """Transcribe all detected lines or full page (for VLMs)."""
         if not self.current_engine or not self.current_engine.is_model_loaded():
@@ -1165,6 +1788,9 @@ class TranscriptionGUI(QMainWindow):
         if not self.current_image:
             QMessageBox.warning(self, "No Image", "Please load an image first")
             return
+
+        # Collapse engine section so progress bar and transcription area are visible
+        self.engine_section.set_expanded(False)
 
         # For VLMs that don't need segmentation, create a fake line segment with the full image
         line_segments = self.line_segments
@@ -1211,6 +1837,7 @@ class TranscriptionGUI(QMainWindow):
     def on_transcription_finished(self, transcriptions: List[str], metadata: Dict[str, Any] = None):
         """Handle completion of transcription."""
         self.transcriptions = transcriptions
+        self.transcription_engine = self.current_engine  # snapshot which engine produced these
 
         # Display results (without "Line X:" prefix)
         result_text = "\n".join(transcriptions)
@@ -1255,7 +1882,20 @@ class TranscriptionGUI(QMainWindow):
 
         try:
             with open(file_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(self.transcriptions))
+                if self.regions and len(self.regions) > 1:
+                    # Region-aware: separate output per region with headers
+                    offset = 0
+                    for ri, region in enumerate(self.regions):
+                        n = len(region.line_ids) if hasattr(region, 'line_ids') else 0
+                        region_lines = self.transcriptions[offset:offset + n]
+                        offset += n
+                        if ri > 0:
+                            f.write("\n")
+                        f.write(f"=== Region {ri + 1} ===\n")
+                        f.write("\n".join(region_lines))
+                        f.write("\n")
+                else:
+                    f.write("\n".join(self.transcriptions))
 
             self.status_bar.showMessage(f"Exported to: {file_path}")
             QMessageBox.information(self, "Success", f"Exported to: {file_path}")
@@ -1318,24 +1958,45 @@ class TranscriptionGUI(QMainWindow):
             img = Image.open(self.current_image_path)
             width, height = img.size
 
-            # If transcriptions exist, add them to segments
-            segments_to_export = self.line_segments.copy()
-            if self.transcriptions and len(self.transcriptions) == len(self.line_segments):
-                # Add transcriptions to segments
-                for i, (seg, text) in enumerate(zip(segments_to_export, self.transcriptions)):
-                    seg.text = text
-
-            # Create exporter and export
-            exporter = PageXMLExporter(str(self.current_image_path), width, height)
-            exporter.export(
-                segments_to_export,
-                file_path,
-                creator="HTR-Transcription-GUI-Plugin",
-                comments=f"Engine: {self.current_engine.get_name() if self.current_engine else 'None'}"
+            transcriptions = (
+                self.transcriptions
+                if self.transcriptions and len(self.transcriptions) == len(self.line_segments)
+                else None
             )
+            engine_name = self.current_engine.get_name() if self.current_engine else 'None'
+            exporter = PageXMLExporter(str(self.current_image_path), width, height)
+
+            if self.regions and len(self.regions) > 1:
+                # Region-aware export: one TextRegion per detected column/region,
+                # TextLines nested inside, actual baseline polylines used.
+                exporter.export_with_regions(
+                    self.regions,
+                    self.line_segments,
+                    file_path,
+                    transcriptions=transcriptions,
+                    creator="HTR-Transcription-GUI-Plugin",
+                    comments=f"Engine: {engine_name}; regions: {len(self.regions)}"
+                )
+                msg = (f"Exported PAGE XML to:\n{file_path}\n"
+                       f"({len(self.regions)} regions, {len(self.line_segments)} lines)")
+            else:
+                # Single-region fallback: all lines in one TextRegion
+                segments_to_export = list(self.line_segments)
+                if transcriptions:
+                    from inference_page import LineSegment as InfLineSegment
+                    for i, (seg, text) in enumerate(zip(segments_to_export, transcriptions)):
+                        if isinstance(seg, InfLineSegment):
+                            seg.text = text
+                exporter.export(
+                    segments_to_export,
+                    file_path,
+                    creator="HTR-Transcription-GUI-Plugin",
+                    comments=f"Engine: {engine_name}"
+                )
+                msg = f"Exported PAGE XML to:\n{file_path}"
 
             self.status_bar.showMessage(f"Exported PAGE XML to: {file_path}")
-            QMessageBox.information(self, "Success", f"Exported PAGE XML to:\n{file_path}")
+            QMessageBox.information(self, "Success", msg)
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to export PAGE XML: {e}")
@@ -1400,7 +2061,8 @@ class TranscriptionGUI(QMainWindow):
             results_state = settings.value('splitter/results')
             if results_state:
                 self.results_splitter.restoreState(results_state)
-            # else: use initial sizes set in setup_ui (900, 250)
+            # Always enforce stats panel state to match button (button starts OFF)
+            self._toggle_stats_panel(self.btn_stats_toggle.isChecked())
 
             # Restore last used engine
             last_engine = settings.value('engine/last_used')
@@ -1449,10 +2111,62 @@ class TranscriptionGUI(QMainWindow):
         event.accept()
 
 
+def _setup_dark_mode(app: QApplication) -> None:
+    """Apply Fusion style + dark palette when the system is in dark mode.
+
+    Qt's native Windows style has limited dark-mode support.  Switching to the
+    platform-independent Fusion style and providing an explicit palette ensures
+    all widgets (including custom ones) render correctly in both light and dark
+    system themes on Windows, Linux, and macOS.
+    """
+    # Detect dark mode BEFORE calling setStyle() — setStyle("Fusion") resets
+    # the palette to Fusion's light default, so the probe must happen first.
+    is_dark = False
+    try:
+        # Qt 6.5+ (PyQt6 >= 6.6.0): reliable cross-platform detection
+        is_dark = (app.styleHints().colorScheme() == Qt.ColorScheme.Dark)
+    except AttributeError:
+        # Fallback: read OS palette before any style change
+        bg = app.palette().color(QPalette.ColorRole.Window)
+        is_dark = bg.lightness() < 128
+
+    # Switch to Fusion — platform-independent rendering, honours QPalette
+    app.setStyle("Fusion")
+
+    if not is_dark:
+        return  # Light mode — Fusion default palette is fine
+
+    dark = QPalette()
+    c = QColor
+    dark.setColor(QPalette.ColorRole.Window,          c(45,  45,  48))
+    dark.setColor(QPalette.ColorRole.WindowText,      c(220, 220, 220))
+    dark.setColor(QPalette.ColorRole.Base,            c(30,  30,  32))
+    dark.setColor(QPalette.ColorRole.AlternateBase,   c(45,  45,  48))
+    dark.setColor(QPalette.ColorRole.ToolTipBase,     c(45,  45,  48))
+    dark.setColor(QPalette.ColorRole.ToolTipText,     c(220, 220, 220))
+    dark.setColor(QPalette.ColorRole.Text,            c(220, 220, 220))
+    dark.setColor(QPalette.ColorRole.Button,          c(60,  60,  64))
+    dark.setColor(QPalette.ColorRole.ButtonText,      c(220, 220, 220))
+    dark.setColor(QPalette.ColorRole.BrightText,      c(255, 255, 255))
+    dark.setColor(QPalette.ColorRole.Link,            c(100, 160, 220))
+    dark.setColor(QPalette.ColorRole.Highlight,       c(42,  130, 218))
+    dark.setColor(QPalette.ColorRole.HighlightedText, c(255, 255, 255))
+    dark.setColor(QPalette.ColorRole.Midlight,        c(75,  75,  80))
+    dark.setColor(QPalette.ColorRole.Mid,             c(80,  80,  85))
+    dark.setColor(QPalette.ColorRole.Dark,            c(25,  25,  27))
+    dark.setColor(QPalette.ColorRole.Shadow,          c(10,  10,  12))
+    # Disabled-state variants (dimmed)
+    for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText,
+                 QPalette.ColorRole.WindowText):
+        dark.setColor(QPalette.ColorGroup.Disabled, role, c(120, 120, 120))
+    app.setPalette(dark)
+
+
 def main():
     """Main entry point."""
     app = QApplication(sys.argv)
     app.setApplicationName("HTR Transcription Tool")
+    _setup_dark_mode(app)
 
     if not available_engines:
         QMessageBox.critical(
@@ -1461,7 +2175,7 @@ def main():
             "No HTR engines found. Please install at least one engine:\n\n"
             "- TrOCR: Already included\n"
             "- Qwen3: pip install transformers accelerate peft qwen-vl-utils\n"
-            "- PyLaia: See Documentation/PYLAIA_INSTALLATION_ISSUES.md\n"
+            "- CRNN-CTC: See Documentation/PYLAIA_INSTALLATION_ISSUES.md\n"
             "- Commercial APIs: pip install openai google-generativeai anthropic"
         )
         sys.exit(1)

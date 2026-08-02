@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polyscriptor HTR</title>
+    <link rel="stylesheet" href="/static/app.css?v=20260611-vl">
+</head>
+<body>
+    <!-- Header -->
+    <header id="header">
+        <div class="header-left">
+            <span class="header-logo">⬡</span>
+            <h1>Polyscriptor <span class="header-sub">HTR</span></h1>
+        </div>
+        <div class="header-right">
+            <div id="activity-status" class="activity-widget" style="display:none"></div>
+            <div id="gpu-status" class="gpu-widget"></div>
+            <button id="btn-help" class="btn-icon" title="Help">?</button>
+        </div>
+    </header>
+
+    <!-- Main 3-column layout -->
+    <main id="app">
+        <!-- Left: Engine + Image controls -->
+        <aside id="engine-panel" class="panel" data-panel="settings">
+
+
+            <section class="panel-section">
+                <h2>HTR Engine</h2>
+                <label for="engine-select">Engine</label>
+                <select id="engine-select" disabled>
+                    <option>Loading engines…</option>
+                </select>
+                <p id="engine-description" class="muted"></p>
+                <div id="config-form"></div>
+                <div id="kraken-preset-row" class="hidden" style="margin-top:8px">
+                    <label for="kraken-preset-select" style="display:block;font-size:0.78rem;margin-bottom:3px">Kraken Model Preset</label>
+                    <select id="kraken-preset-select" style="width:100%">
+                        <option value="">Loading presets…</option>
+                    </select>
+                    <span id="kraken-preset-status" class="muted" style="font-size:0.72rem;display:block;margin-top:3px"></span>
+                </div>
+                <button id="btn-load-model" class="btn btn-primary" disabled>Load Model</button>
+                <div id="engine-status" class="status-badge hidden"></div>
+            </section>
+
+            <hr>
+
+            <section class="panel-section">
+                <h2>Image</h2>
+                <div id="upload-area" class="upload-area">
+                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path stroke-linecap="round" stroke-linejoin="round"
+                              d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+                    </svg>
+                    <p>Drop image or PDF, or click to browse</p>
+                    <input type="file" id="file-input" accept="image/*,.pdf" multiple hidden>
+                </div>
+                <p id="image-info" class="muted"></p>
+                <div id="batch-queue-section" class="hidden">
+                    <div class="batch-queue-header">
+                        <span class="section-label">Queue</span>
+                        <span id="batch-overall-progress" class="batch-overall-progress hidden"></span>
+                    </div>
+                    <div id="batch-list"></div>
+                    <div class="batch-options-row">
+                        <label class="checkbox-label" title="Use PAGE XML segmentation if a matching .xml file was uploaded for this image">
+                            <input type="checkbox" id="batch-use-pagexml" checked>
+                            Use PAGE XML
+                        </label>
+                        <label class="checkbox-label" title="Skip images that have already been transcribed in this session">
+                            <input type="checkbox" id="batch-resume">
+                            Resume
+                        </label>
+                    </div>
+                    <div class="btn-row" style="margin-top:6px">
+                        <button id="btn-process-batch" class="btn btn-primary btn-small">Process All</button>
+                        <button id="btn-clear-batch" class="btn btn-small btn-outline">Clear</button>
+                    </div>
+                    <div id="batch-export-row" class="btn-row hidden" style="margin-top:6px">
+                        <button id="btn-export-batch-txt" class="btn btn-small">All TXT</button>
+                        <button id="btn-export-batch-csv" class="btn btn-small">All CSV</button>
+                        <button id="btn-export-batch-txt-zip" class="btn btn-small btn-primary">Download ZIP (TXT)</button>
+                        <button id="btn-export-batch-thinking-zip" class="btn btn-small btn-primary">Download ZIP (Thinking)</button>
+                        <button id="btn-export-batch-xml" class="btn btn-small btn-primary">Download ZIP (XML)</button>
+                    </div>
+                </div>
+                <div id="xml-upload-row" class="xml-row hidden">
+                    <span id="xml-status" class="muted">No PAGE XML</span>
+                    <label class="btn btn-small btn-outline" for="xml-input">
+                        Upload XML
+                        <input type="file" id="xml-input" accept=".xml" hidden multiple>
+                    </label>
+                </div>
+            </section>
+
+            <hr>
+
+            <section class="panel-section" id="seg-controls">
+                <h2>Segmentation</h2>
+                <label for="seg-method">Method</label>
+                <select id="seg-method">
+                    <option value="kraken">Kraken Classical</option>
+                    <option value="kraken-blla">Kraken Neural (blla)</option>
+                    <option value="hpp">HPP (fast)</option>
+                </select>
+
+                <label for="seg-device">Device</label>
+                <select id="seg-device">
+                    <option value="cpu">CPU</option>
+                    <option value="cuda:0">GPU 0</option>
+                    <option value="cuda:1">GPU 1</option>
+                </select>
+
+                <div id="blla-options" style="display:none">
+                    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+                        <div style="display:flex;flex-direction:column;gap:3px">
+                            <label for="seg-max-columns">Max columns</label>
+                            <input type="number" id="seg-max-columns" min="1" max="12" value="6" style="width:60px">
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:3px">
+                            <label for="seg-split-width">Split width %</label>
+                            <input type="number" id="seg-split-width" min="5" max="80" value="40" step="5" style="width:60px" title="Min region width (% of page) to trigger sub-column splitting. Lower = split narrower regions. Double pages: try 20.">
+                        </div>
+                    </div>
+                    <div style="margin-top:6px">
+                        <label for="seg-text-direction">Reading direction</label>
+                        <select id="seg-text-direction" title="Controls column reading order. Use horizontal-rl for Arabic, Ottoman, Hebrew manuscripts.">
+                            <option value="horizontal-lr">LTR (Latin, Cyrillic, …)</option>
+                            <option value="horizontal-rl">RTL (Arabic, Ottoman, Hebrew, …)</option>
+                            <option value="vertical-lr">Vertical LTR</option>
+                            <option value="vertical-rl">Vertical RTL</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <div id="seg-regions-list" class="hidden"></div>
+
+            <div class="panel-footer">
+                <div class="btn-row footer-btn-row">
+                    <button id="btn-segment" class="btn btn-outline" disabled title="Preview line segmentation without transcribing">Segment</button>
+                    <button id="btn-transcribe" class="btn btn-accent" disabled>Transcribe</button>
+                </div>
+            </div>
+        </aside>
+        <div class="panel-resize-handle" id="resize-left" title="Drag to resize"></div>
+
+        <!-- Center: Image viewer -->
+        <section id="viewer-panel" class="panel" data-panel="image">
+            <!-- Zoom toolbar — only visible when image is loaded -->
+            <div id="zoom-toolbar" class="zoom-toolbar hidden">
+                <button class="zoom-btn" id="btn-zoom-out" title="Zoom out">−</button>
+                <span id="zoom-level" class="zoom-level">100%</span>
+                <button class="zoom-btn" id="btn-zoom-in" title="Zoom in">+</button>
+                <button class="zoom-btn zoom-fit" id="btn-zoom-fit" title="Fit to view">⊡</button>
+                <span class="zoom-toolbar-sep"></span>
+                <button class="btn btn-small btn-outline nav-btn" id="btn-nav-prev" title="Previous image (←)" disabled>‹ Prev</button>
+                <span id="batch-nav-label" class="batch-nav-label-toolbar"></span>
+                <button class="btn btn-small btn-outline nav-btn" id="btn-nav-next" title="Next image (→)" disabled>Next ›</button>
+            </div>
+            <!-- Scroll area fills remaining height -->
+            <div id="viewer-scroll">
+                <div id="viewer-placeholder" class="viewer-placeholder">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M21 15l-5-5L5 21"/>
+                    </svg>
+                    <p>Upload an image to begin</p>
+                </div>
+                <div id="image-container" class="hidden">
+                    <img id="page-image">
+                    <canvas id="overlay-canvas"></canvas>
+                </div>
+            </div>
+        </section>
+        <div class="panel-resize-handle" id="resize-right" title="Drag to resize"></div>
+
+        <!-- Right: Transcription results -->
+        <section id="results-panel" class="panel" data-panel="results">
+            <div class="results-header">
+                <div class="results-header-row">
+                    <h2>Transcription</h2>
+                    <div class="results-header-controls">
+                        <button id="btn-compare-toggle" class="btn btn-small btn-outline hidden" title="Compare this transcription against another engine">⇄ Compare</button>
+                        <select id="font-select" class="font-select" title="Transcription font"></select>
+                        <button id="btn-col-layout" class="btn-icon hidden" title="Toggle column layout">⊞</button>
+                    </div>
+                </div>
+                <div id="results-search-row" class="results-search-row hidden">
+                    <input type="search" id="results-search" placeholder="Search lines…" autocomplete="off">
+                    <span id="results-search-count" class="muted"></span>
+                </div>
+                <div id="conf-filter-row" class="conf-filter-row hidden">
+                    <label>Min conf: <strong id="conf-threshold-val">0%</strong></label>
+                    <input type="range" id="conf-threshold" min="0" max="100" value="0" step="5">
+                </div>
+                <div id="progress-container" class="hidden">
+                    <div id="progress-bar"><div id="progress-fill"></div></div>
+                    <div class="progress-row">
+                        <p id="progress-text" class="muted">0 / 0 lines</p>
+                        <button id="btn-cancel" class="btn btn-small hidden">Cancel</button>
+                    </div>
+                </div>
+            </div>
+            <div id="transcription-lines"></div>
+            <div id="results-footer" class="hidden">
+                <p id="results-summary" class="muted"></p>
+                <div class="btn-row">
+                    <button id="btn-copy-text" class="btn btn-small">Copy Text</button>
+                    <button id="btn-export-txt" class="btn btn-small">TXT</button>
+                    <button id="btn-export-csv" class="btn btn-small">CSV</button>
+                    <button id="btn-export-xml" class="btn btn-small hidden">XML</button>
+                </div>
+            </div>
+            <section id="comparison-panel" class="comparison-panel hidden">
+                <div class="comparison-panel-header">
+                    <div>
+                        <h3>Compare</h3>
+                        <p id="comparison-base-summary" class="muted"></p>
+                    </div>
+                    <span id="comparison-status-badge" class="status-badge hidden"></span>
+                </div>
+                <p id="comparison-help" class="comparison-help muted">
+                    After the base transcription is ready, switch to another engine on the left, load its model, and run a comparison on the same segmented lines.
+                </p>
+                <div class="comparison-controls">
+                    <button id="btn-run-comparison" class="btn btn-outline btn-small" disabled>Run Comparison</button>
+                    <label for="comparison-slot-select" class="comparison-select-label hidden">View</label>
+                    <select id="comparison-slot-select" class="hidden"></select>
+                </div>
+                <div class="comparison-gt">
+                    <div class="comparison-gt-row">
+                        <label class="btn btn-outline btn-small" for="gt-file-input">Upload Ground Truth XML</label>
+                        <input type="file" id="gt-file-input" accept=".xml,text/xml,application/xml" hidden>
+                        <button id="btn-eval-gt" class="btn btn-outline btn-small" disabled>Evaluate vs Ground Truth</button>
+                        <span id="gt-status" class="muted comparison-gt-status">No ground truth loaded</span>
+                    </div>
+                    <div id="gt-leaderboard" class="gt-leaderboard hidden"></div>
+                </div>
+                <p id="comparison-status" class="muted"></p>
+                <div id="comparison-summary" class="comparison-summary hidden"></div>
+                <div id="comparison-lines" class="comparison-lines hidden"></div>
+            </section>
+        </section>
+    </main>
+
+    <!-- Mobile tab bar (visible < 700px) -->
+    <nav id="mobile-tabs">
+        <button class="tab-btn active" data-target="settings">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+            Settings
+        </button>
+        <button class="tab-btn" data-target="image">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clip-rule="evenodd"/></svg>
+            Image
+        </button>
+        <button class="tab-btn" data-target="results">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
+            Results
+        </button>
+    </nav>
+
+    <!-- Help modal -->
+    <dialog id="help-modal">
+        <div class="modal-header">
+            <h2>Polyscriptor HTR — Quick Guide</h2>
+            <button id="btn-help-close" class="btn-icon">✕</button>
+        </div>
+        <div class="modal-body">
+            <h3>Quick Start</h3>
+            <ol>
+                <li><strong>Select an engine</strong> from the dropdown and configure it (model path, API key, etc.).</li>
+                <li>Click <strong>Load Model</strong> and wait for the green status badge.</li>
+                <li><strong>Upload an image</strong> by dragging it onto the upload area or clicking to browse.</li>
+                <li>Optionally click <strong>Segment</strong> to preview line detection before transcribing.</li>
+                <li>Click <strong>Transcribe</strong>. Lines appear one by one as they are processed.</li>
+                <li><strong>Export</strong> the result as TXT, CSV, or PAGE XML.</li>
+            </ol>
+
+            <h3>Engines</h3>
+            <table>
+                <tr><th>Engine</th><th>Best for</th></tr>
+                <tr><td>CRNN-CTC</td><td>Fastest; works well on Church Slavonic, Glagolitic, Ukrainian with trained models</td></tr>
+                <tr><td>TrOCR</td><td>HuggingFace Transformer OCR; good general-purpose accuracy</td></tr>
+                <tr><td>Qwen3-VL</td><td>Large vision-language model; best quality but slow, needs GPU</td></tr>
+                <tr><td>Kraken</td><td>Classical HTR; good for Latin scripts</td></tr>
+                <tr><td>Party</td><td>Whole-page transformer; requires PAGE XML with line segmentation</td></tr>
+                <tr><td>Commercial APIs</td><td>OpenAI / Gemini / Claude — cloud inference, no local GPU needed</td></tr>
+                <tr><td>OpenWebUI</td><td>Locally hosted models via OpenWebUI/Ollama</td></tr>
+            </table>
+
+            <h3>Segmentation</h3>
+            <ul>
+                <li><strong>Kraken Classical</strong> — fast, reliable for single-column pages.</li>
+                <li><strong>Kraken Neural (blla)</strong> — handles multi-column layouts and complex page structures. Use <em>Max columns</em> to tune how many sub-columns to detect.</li>
+                <li><strong>HPP</strong> — horizontal projection profile, very fast fallback.</li>
+                <li><strong>PAGE XML upload</strong> — skip segmentation entirely by uploading an existing PAGE XML annotation (e.g. from Transkribus).</li>
+            </ul>
+
+            <h3>Tips</h3>
+            <ul>
+                <li>Click a transcription line to highlight the corresponding bounding box in the image.</li>
+                <li>Confidence badges: <span class="conf-high demo-badge">high ≥90%</span> <span class="conf-mid demo-badge">mid ≥75%</span> <span class="conf-low demo-badge">low &lt;75%</span></li>
+                <li>Line-segmenting engines (CRNN-CTC, TrOCR, Kraken) use the segmentation method above. Page-level engines (Party, Qwen3-VL, Commercial APIs) do their own segmentation.</li>
+                <li>API keys can be saved on the server — enter the key once, check <em>Save key on server</em>.</li>
+                <li>Uploads are kept for 24 hours, then cleaned up automatically.</li>
+            </ul>
+
+            <h3>Keyboard</h3>
+            <ul>
+                <li><kbd>Esc</kbd> — close this dialog</li>
+            </ul>
+        </div>
+    </dialog>
+
+    <!-- Toast notification container -->
+    <div id="toast-container"></div>
+
+    <script type="module" src="/static/app.js"></script>
+    <script>
+        // Help modal
+        const modal = document.getElementById('help-modal');
+        document.getElementById('btn-help').addEventListener('click', () => modal.showModal());
+        document.getElementById('btn-help-close').addEventListener('click', () => modal.close());
+        modal.addEventListener('click', e => { if (e.target === modal) modal.close(); });
+
+        // Mobile tab bar
+        const tabBtns = document.querySelectorAll('.tab-btn');
+        const panels = document.querySelectorAll('[data-panel]');
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = btn.dataset.target;
+                tabBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                panels.forEach(p => {
+                    p.classList.toggle('panel-active', p.dataset.panel === target);
+                });
+            });
+        });
+        // Default: settings active on mobile
+        document.querySelector('[data-panel="settings"]').classList.add('panel-active');
+    </script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 HTR Engine Plugin System - Base Classes and Registry
 
 This module defines the plugin architecture for HTR (Handwritten Text Recognition) engines.
-All HTR engines (TrOCR, Qwen3, PyLaia, Kraken, etc.) implement the HTREngine interface.
+All HTR engines (TrOCR, Qwen3, CRNN-CTC, Kraken, etc.) implement the HTREngine interface.
 
 Design principles:
 - Abstraction: Each engine is self-contained and interchangeable
@@ -14,6 +14,8 @@ Design principles:
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
+import importlib
+import os
 import numpy as np
 
 try:
@@ -22,6 +24,35 @@ try:
 except ImportError:
     PYQT_AVAILABLE = False
     QWidget = object
+
+
+_runtime_profile = None
+_runtime_profile_loaded = False
+
+
+def load_runtime_profile():
+    """Return the optional deployment-profile module named by POLYSCRIPTOR_PROFILE.
+
+    A deployment may point this env var at an importable module that customises
+    engine discovery, model presets and segmentation (see the optional hooks
+    consumed in ``discover_engines``, ``inference_pylaia_native`` and the web
+    server). This keeps environment-specific behaviour out of the core code.
+
+    Returns None when the variable is unset or the module cannot be imported.
+    The result is cached after the first call.
+    """
+    global _runtime_profile, _runtime_profile_loaded
+    if _runtime_profile_loaded:
+        return _runtime_profile
+    _runtime_profile_loaded = True
+    name = os.environ.get("POLYSCRIPTOR_PROFILE", "").strip()
+    if name:
+        try:
+            _runtime_profile = importlib.import_module(name)
+        except ImportError as e:
+            print(f"Warning: runtime profile '{name}' could not be imported: {e}")
+            _runtime_profile = None
+    return _runtime_profile
 
 
 @dataclass
@@ -161,7 +192,7 @@ class HTREngine(ABC):
         """Check if engine requires pre-segmented lines or can process full pages.
 
         Returns:
-            bool: True if lines must be segmented first (TrOCR, PyLaia),
+            bool: True if lines must be segmented first (TrOCR, CRNN-CTC),
                   False if engine handles full pages (Qwen3, Commercial APIs)
         """
         return True  # Default: most engines need line segmentation
@@ -188,6 +219,14 @@ class HTREngine(ABC):
             bool: True if transcribe_lines() is optimized, False if it just loops
         """
         return False
+
+    def get_aliases(self) -> List[str]:
+        """Get alternative names for this engine (e.g., short CLI aliases).
+
+        Returns:
+            List[str]: Alternative names accepted by the registry (default: none)
+        """
+        return []
 
     def get_capabilities(self) -> Dict[str, bool]:
         """Get engine capabilities.
@@ -227,12 +266,19 @@ class HTREngineRegistry:
         """
         self.engines.append(engine)
         self._engine_cache[engine.get_name()] = engine
+        for alias in engine.get_aliases():
+            self._engine_cache[alias] = engine
 
     def discover_engines(self):
         """Automatically discover and register all available engines.
 
         Tries to import each engine module and registers it if available.
         """
+        profile = load_runtime_profile()
+        if profile is not None and hasattr(profile, "discover_engines"):
+            if profile.discover_engines(self):
+                return
+
         # Import and register TrOCR engine
         try:
             from engines.trocr_engine import TrOCREngine
@@ -254,12 +300,12 @@ class HTREngineRegistry:
         except ImportError as e:
             print(f"Warning: Failed to load Churro engine: {e}")
 
-        # Import and register PyLaia engine
+        # Import and register CRNN-CTC engine
         try:
             from engines.pylaia_engine import PyLaiaEngine
             self.register(PyLaiaEngine())
         except ImportError as e:
-            print(f"Warning: Failed to load PyLaia engine: {e}")
+            print(f"Warning: Failed to load CRNN-CTC engine: {e}")
 
         # Import and register Kraken engine
         try:
@@ -302,6 +348,34 @@ class HTREngineRegistry:
             self.register(LightOnOCREngine())
         except ImportError as e:
             print(f"Warning: Failed to load LightOnOCR engine: {e}")
+
+        # Import and register LapaOCR engine
+        try:
+            from engines.lapa_ocr_engine import LapaOCREngine
+            self.register(LapaOCREngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load LapaOCR engine: {e}")
+
+        # Import and register PaddleOCR engine
+        try:
+            from engines.paddle_engine import PaddleOCREngine
+            self.register(PaddleOCREngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load PaddleOCR engine: {e}")
+
+        # Import and register PaddleOCR-VL engine
+        try:
+            from engines.paddle_vl_engine import PaddleOCRVLEngine
+            self.register(PaddleOCRVLEngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load PaddleOCR-VL engine: {e}")
+
+        # Import and register Chandra engine
+        try:
+            from engines.chandra_engine import ChandraEngine
+            self.register(ChandraEngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load Chandra engine: {e}")
 
     def get_available_engines(self) -> List[HTREngine]:
         """Get list of engines with satisfied dependencies.

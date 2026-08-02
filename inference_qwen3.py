@@ -84,6 +84,17 @@ class Qwen3VLMInference:
                 print(f"  Using single GPU (cuda:0) to avoid multi-GPU hanging issue")
             else:
                 effective_device_map = "cpu"
+        elif device.startswith("cuda:") and torch.cuda.is_available():
+            # Use device_map="auto" with max_memory to pin to a specific GPU.
+            # Passing device_map="cuda:N" directly triggers a HuggingFace
+            # caching_allocator_warmup bug when another model already occupies that GPU.
+            gpu_idx = int(device.split(":")[-1])
+            num_gpus = torch.cuda.device_count()
+            total_gb = int(torch.cuda.get_device_properties(gpu_idx).total_memory * 0.92 / 1e9)
+            # Give 0 MiB to all other GPUs so auto-placement goes entirely to gpu_idx
+            max_memory = {i: ("0MiB" if i != gpu_idx else f"{total_gb}GiB") for i in range(num_gpus)}
+            effective_device_map = "auto"
+            print(f"  Pinning to {device} via max_memory={max_memory}")
 
         self.model = Qwen3VLForConditionalGeneration.from_pretrained(
             base_model,
