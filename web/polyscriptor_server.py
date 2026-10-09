@@ -669,17 +669,14 @@ def _scan_trocr_models() -> list:
     options = [
         {"label": "Custom HuggingFace ID or local path…", "value": "__custom__"},
         # Our own published TrOCR models (Hugging Face, downloaded on first load).
-        # CER figures are the in-training validation numbers from the model cards.
-        {"label": "cyrillic-trocr/trocr-church-slavonic-handwritten — Church Slavonic (val CER 4.99%)",
+        # CER figures as in the README (beam 4, no repeat block, measured 8 Oct 2026).
+        {"label": "cyrillic-trocr/trocr-church-slavonic-handwritten — Church Slavonic (val CER 3.80%)",
          "value": "cyrillic-trocr/trocr-church-slavonic-handwritten",
          "source": "huggingface"},
-        {"label": "cyrillic-trocr/trocr-ukrainian-handwritten — Ukrainian, 19th–20th c. (val CER 9.94%)",
+        {"label": "cyrillic-trocr/trocr-ukrainian-handwritten — Ukrainian, 19th–20th c. (val CER 4.99%)",
          "value": "cyrillic-trocr/trocr-ukrainian-handwritten",
          "source": "huggingface"},
-        {"label": "cyrillic-trocr/trocr-handwritten-cyrillic — Church Slavonic, Russian, Ukrainian (val CER 25.3%)",
-         "value": "cyrillic-trocr/trocr-handwritten-cyrillic",
-         "source": "huggingface"},
-        {"label": "achimrabus/trocr-glagolitic-handwritten — Glagolitic, Latin transliteration (val CER 6.42%)",
+        {"label": "achimrabus/trocr-glagolitic-handwritten — Glagolitic, Latin transliteration (val CER 5.72%)",
          "value": "achimrabus/trocr-glagolitic-handwritten",
          "source": "huggingface"},
         {"label": "kazars24/trocr-base-handwritten-ru (HuggingFace)",

@@ -123,7 +123,7 @@ def test_trocr_presets_include_own_published_models():
     values = [o["value"] for o in server_mod._scan_trocr_models()]
     for repo in ("cyrillic-trocr/trocr-church-slavonic-handwritten",
                  "cyrillic-trocr/trocr-ukrainian-handwritten",
-                 "cyrillic-trocr/trocr-handwritten-cyrillic",
                  "achimrabus/trocr-glagolitic-handwritten"):
         assert repo in values
+    assert "cyrillic-trocr/trocr-handwritten-cyrillic" not in values
     assert values[0] == "__custom__"

@@ -140,7 +140,9 @@ class TrOCREngine(HTREngine):
         self._hf_preset_combo = QComboBox()
         self._hf_preset_combo.addItems([
             "Custom (enter below)",
-            "cyrillic-trocr/trocr-handwritten-cyrillic",
+            "cyrillic-trocr/trocr-church-slavonic-handwritten",
+            "cyrillic-trocr/trocr-ukrainian-handwritten",
+            "achimrabus/trocr-glagolitic-handwritten",
             "kazars24/trocr-base-handwritten-ru",
             "Kansallisarkisto/cyrillic-htr-model",
             "dh-unibe/trocr-kurrent",
@@ -156,8 +158,8 @@ class TrOCREngine(HTREngine):
         # Custom model ID entry
         hf_layout.addWidget(QLabel("Model ID:"))
         self._hf_model_edit = QLineEdit()
-        self._hf_model_edit.setPlaceholderText("e.g., cyrillic-trocr/trocr-handwritten-cyrillic")
-        self._hf_model_edit.setText("cyrillic-trocr/trocr-handwritten-cyrillic")
+        self._hf_model_edit.setPlaceholderText("e.g., cyrillic-trocr/trocr-ukrainian-handwritten")
+        self._hf_model_edit.setText("cyrillic-trocr/trocr-ukrainian-handwritten")
         hf_layout.addWidget(self._hf_model_edit)
 
         self._hf_group.setLayout(hf_layout)

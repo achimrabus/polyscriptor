@@ -222,15 +222,14 @@ A collection of TrOCR models for Cyrillic handwriting (Russian, Ukrainian, Churc
 
 **[https://huggingface.co/cyrillic-trocr](https://huggingface.co/cyrillic-trocr)**
 
-Built-in presets of the TrOCR engine (downloaded on first load); CER as reported on each
-model's validation set at training time:
+Built-in presets of the TrOCR engine (downloaded on first load). CER measured on 8 October 2026 with
+the decoding Polyscriptor uses (beam 4, no repeat block, `max_length` 128) on held-out validation pages:
 
 | Model | Script / Language | Validation CER | Note |
 |-------|-------------------|-----|------|
-| [cyrillic-trocr/trocr-church-slavonic-handwritten](https://huggingface.co/cyrillic-trocr/trocr-church-slavonic-handwritten) | Church Slavonic | 4.99% | same data as the CRNN-CTC model (2.89%) |
-| [cyrillic-trocr/trocr-ukrainian-handwritten](https://huggingface.co/cyrillic-trocr/trocr-ukrainian-handwritten) | Ukrainian | 9.94% | |
-| [cyrillic-trocr/trocr-handwritten-cyrillic](https://huggingface.co/cyrillic-trocr/trocr-handwritten-cyrillic) | Church Slavonic, Russian, Ukrainian | 25.3% | noisy ground truth, see model card |
-| [achimrabus/trocr-glagolitic-handwritten](https://huggingface.co/achimrabus/trocr-glagolitic-handwritten) | Croatian Glagolitic | 6.42% | outputs Latin transliteration |
+| [cyrillic-trocr/trocr-church-slavonic-handwritten](https://huggingface.co/cyrillic-trocr/trocr-church-slavonic-handwritten) | Church Slavonic | 3.80% | 20,679 lines; same data as the CRNN-CTC model |
+| [cyrillic-trocr/trocr-ukrainian-handwritten](https://huggingface.co/cyrillic-trocr/trocr-ukrainian-handwritten) | Ukrainian | 4.99% | v2.0; 970 lines, 19th–20th c. manuscripts |
+| [achimrabus/trocr-glagolitic-handwritten](https://huggingface.co/achimrabus/trocr-glagolitic-handwritten) | Croatian Glagolitic | 5.72% | 1,551 lines; outputs Latin transliteration |
 
 Any other TrOCR model can be loaded by entering its HuggingFace ID or a local path.
 
