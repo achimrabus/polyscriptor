@@ -1,0 +1,138 @@
+"""TrOCR decoding: no_repeat_ngram_size defaults to 0 and reaches generate().
+
+Checkpoints from optimized_training.py store no_repeat_ngram_size=3 in their
+generation_config; unless the call overrides it, generate() inherits it and forbids
+legitimate repetitions inside a line.
+"""
+import sys
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from polyscriptor.engines.trocr_engine import TrOCREngine
+
+
+class _FakeInference:
+    def __init__(self):
+        self.calls = []
+
+    def transcribe_line(self, image, **kwargs):
+        self.calls.append(kwargs)
+        return "text", 0.9, [0.9]
+
+
+def _engine(**state):
+    engine = TrOCREngine()
+    engine.model = _FakeInference()
+    for k, v in state.items():
+        setattr(engine, k, v)
+    return engine
+
+
+def test_default_turns_the_inherited_ngram_block_off():
+    engine = _engine()
+    engine.transcribe_line(np.zeros((32, 64, 3), dtype=np.uint8), config={})
+    assert engine.model.calls[0]["no_repeat_ngram_size"] == 0
+
+
+def test_value_from_load_config_is_used():
+    engine = _engine(_no_repeat_ngram_size=3)
+    engine.transcribe_line(np.zeros((32, 64, 3), dtype=np.uint8), config={})
+    assert engine.model.calls[0]["no_repeat_ngram_size"] == 3
+
+
+def test_transcribe_line_signature_defaults_to_zero():
+    import inspect
+    from polyscriptor.inference.page import TrOCRInference
+    sig = inspect.signature(TrOCRInference.transcribe_line)
+    assert sig.parameters["no_repeat_ngram_size"].default == 0
+
+
+def test_batch_cli_flag_defaults_to_zero(monkeypatch, tmp_path):
+    import polyscriptor.cli.batch
+    monkeypatch.setattr(sys, "argv", ["batch_processing.py", "--input-folder", str(tmp_path),
+                                      "--engine", "TrOCR", "--model-id", "x/y"])
+    args = polyscriptor.cli.batch.parse_args()
+    assert args.no_repeat_ngram_size == 0
+
+
+# ── Switch in the web form (single shared field definition) ──
+
+import math
+
+import pytest
+
+from polyscriptor.engines.trocr_engine import REPEAT_BLOCK_FIELD, repeat_block_size
+
+
+@pytest.mark.parametrize("raw, expected", [
+    (None, 0), ("", 0), (0, 0), (3, 3), ("3", 3), (3.0, 3), (" 4 ", 4),
+    (-2, 0), ("-1", 0), (float("nan"), 0), ("abc", 0), (2.7, 2), (float("inf"), 0), (True, 0),
+])
+def test_repeat_block_size_coerces_form_values(raw, expected):
+    assert repeat_block_size(raw) == expected
+
+
+def test_field_definition_defaults_to_off():
+    assert REPEAT_BLOCK_FIELD["key"] == "no_repeat_ngram_size"
+    assert REPEAT_BLOCK_FIELD["type"] == "number"
+    assert REPEAT_BLOCK_FIELD["default"] == 0
+    assert REPEAT_BLOCK_FIELD["min"] == 0
+    assert REPEAT_BLOCK_FIELD["hint"]
+
+
+def test_per_call_value_from_the_form_reaches_generate():
+    engine = _engine()
+    engine.transcribe_line(np.zeros((32, 64, 3), dtype=np.uint8),
+                           config={"no_repeat_ngram_size": "3"})
+    assert engine.model.calls[0]["no_repeat_ngram_size"] == 3
+
+
+def test_per_call_zero_overrides_a_block_set_at_load():
+    engine = _engine(_no_repeat_ngram_size=3)
+    engine.transcribe_line(np.zeros((32, 64, 3), dtype=np.uint8),
+                           config={"no_repeat_ngram_size": 0})
+    assert engine.model.calls[0]["no_repeat_ngram_size"] == 0
+
+
+def test_invalid_per_call_value_falls_back_to_off():
+    engine = _engine(_no_repeat_ngram_size=3)
+    engine.transcribe_line(np.zeros((32, 64, 3), dtype=np.uint8),
+                           config={"no_repeat_ngram_size": float("nan")})
+    assert engine.model.calls[0]["no_repeat_ngram_size"] == 0
+
+
+def test_metadata_reports_the_block_used():
+    engine = _engine()
+    res = engine.transcribe_line(np.zeros((32, 64, 3), dtype=np.uint8),
+                                 config={"no_repeat_ngram_size": 2})
+    assert res.metadata["no_repeat_ngram_size"] == 2
+
+
+def test_web_schema_carries_the_shared_field():
+    from fastapi.testclient import TestClient
+    from polyscriptor.web.polyscriptor_server import app
+    fields = TestClient(app).get("/api/engine/TrOCR/config-schema").json()["fields"]
+    field = next(f for f in fields if f["key"] == "no_repeat_ngram_size")
+    assert field == REPEAT_BLOCK_FIELD
+    keys = [f["key"] for f in fields]
+    assert keys.index("no_repeat_ngram_size") == keys.index("num_beams") + 1
+
+
+def test_web_live_override_is_not_reload_only(monkeypatch):
+    """Changing the field in the form must take effect without reloading the model."""
+    from types import SimpleNamespace
+    import polyscriptor.web.polyscriptor_server as srv
+
+    class _Loaded:
+        def is_model_loaded(self):
+            return True
+
+    monkeypatch.setattr(srv, "loaded_engine", _Loaded())
+    monkeypatch.setattr(srv, "loaded_config", {"no_repeat_ngram_size": 0})
+    monkeypatch.setattr(srv, "loaded_engine_name", "TrOCR")
+    _slot, _eng, cfg, _name, _key = srv._resolve_effective_engine(
+        SimpleNamespace(pool_key=None), {"no_repeat_ngram_size": 3})
+    assert cfg["no_repeat_ngram_size"] == 3

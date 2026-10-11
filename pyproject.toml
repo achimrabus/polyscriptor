@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polyscriptor"
+version = "0.2.0"
+description = "Multi-engine HTR toolkit for training and comparing handwriting recognition models on historical manuscripts"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Achim Rabus" }]
+keywords = ["htr", "ocr", "trocr", "kraken", "manuscripts", "cyrillic"]
+
+dependencies = [
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+    "transformers>=5.0.0",
+    "accelerate==1.5.1",
+    "peft>=0.10.0",
+    "numpy>=1.26.4",
+    "pandas==2.2.3",
+    "pillow==11.1.0",
+    "opencv-python-headless==4.11.0.86",
+    "scikit-learn>=1.6.1",
+    "pyarrow==19.0.0",
+    "evaluate==0.4.3",
+    "jiwer==4.0.0",
+    "python-Levenshtein>=0.23.0",
+    "pyyaml==6.0.2",
+    "tensorboard==2.8.0",
+    "tqdm==4.67.1",
+    "click>=8.1",
+    "rich>=13.0",
+    "python-dotenv>=1.0",
+    # Web interface (served by default with `polyscriptor serve`)
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "python-multipart>=0.0.9",
+    "pymupdf>=1.24.0",
+    # Vision API engines
+    "openai>=1.0.0",
+    "anthropic>=0.20.0",
+    "google-generativeai>=0.8.0",
+    # Training / evaluation plots
+    "matplotlib==3.10.1",
+]
+
+[project.optional-dependencies]
+kraken = ["kraken==7.1.1"]
+gpu = ["nvidia-ml-py>=12.0.0"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+polyscriptor = "polyscriptor.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["polyscriptor*"]
+
+[tool.setuptools.package-data]
+"polyscriptor.data" = ["*.mlmodel", "*.md"]
+"polyscriptor.web" = ["*.yaml"]
+"polyscriptor.web.static" = ["**/*"]
