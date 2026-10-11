@@ -3,15 +3,15 @@
 Manage Polyscriptor API keys: create, list, remove.
 
 Usage (on the server, from the repo directory):
-    source htr_gui/bin/activate
-    python web/generate_api_key.py --name alice            # create key for alice
-    python web/generate_api_key.py --name achim --admin    # create admin key
-    python web/generate_api_key.py --list                  # show registered keys
-    python web/generate_api_key.py --remove alice          # revoke alice's key(s)
+    python -m polyscriptor.web.generate_api_key --name alice            # create key for alice
+    python -m polyscriptor.web.generate_api_key --name achim --admin    # create admin key
+    python -m polyscriptor.web.generate_api_key --list                  # show registered keys
+    python -m polyscriptor.web.generate_api_key --remove alice          # revoke alice's key(s)
 
 The raw key is printed ONCE on creation and never stored — only its SHA-256
-hash goes into the key file (default: web/api_keys.yaml, gitignored).
-Changes take effect after a server restart (./deploy/restart_server.sh).
+hash goes into the key file (default: web/api_keys.yaml, gitignored;
+override with POLYSCRIPTOR_API_KEYS_FILE). Changes take effect after a
+server restart.
 """
 
 import argparse

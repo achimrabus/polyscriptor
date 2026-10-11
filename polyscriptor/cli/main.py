@@ -11,7 +11,9 @@ from importlib import import_module
 
 import click
 
-_CONTEXT = dict(ignore_unknown_options=True, allow_extra_args=True)
+# help_option_names=[] keeps -h/--help out of click's hands so it reaches the
+# underlying argparse main() and shows that module's real flag list.
+_CONTEXT = dict(ignore_unknown_options=True, allow_extra_args=True, help_option_names=[])
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
