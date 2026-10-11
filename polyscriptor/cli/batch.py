@@ -29,7 +29,7 @@ from collections import defaultdict
 
 import numpy as np
 from PIL import Image
-from tqdm import tqdm
+from polyscriptor.cli.progress import tqdm
 
 # Disable PIL DecompressionBomb protection for large manuscript images
 # Some high-resolution scans exceed the default 178MP limit
@@ -47,15 +47,8 @@ def pdf_to_images(pdf_path: Path, dpi: int = 300) -> List[Image.Image]:
     """Render each page of a PDF to a PIL Image at the given DPI."""
     if not PDF_AVAILABLE:
         raise RuntimeError("PyMuPDF not installed. Install with: pip install pymupdf")
-    import fitz as _fitz
-    doc = _fitz.open(str(pdf_path))
-    mat = _fitz.Matrix(dpi / 72, dpi / 72)
-    images = []
-    for page in doc:
-        pix = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
-        images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
-    doc.close()
-    return images
+    from polyscriptor.core.imaging import render_pdf_pages
+    return list(render_pdf_pages(pdf_path, dpi=dpi))
 
 
 # HTR Engine imports

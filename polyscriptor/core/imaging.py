@@ -79,3 +79,24 @@ def crop_line(
     if target_height is not None:
         result = resize_with_aspect_ratio(result, target_height)
     return result
+
+
+def render_pdf_pages(pdf_source, dpi: int = 300):
+    """Yield one RGB PIL image per PDF page.
+
+    *pdf_source* may be a path or bytes. Raises RuntimeError if PyMuPDF is
+    not installed.
+    """
+    try:
+        import pymupdf as _fitz
+    except ImportError:  # older PyMuPDF
+        import fitz as _fitz
+    doc = _fitz.open(stream=pdf_source, filetype="pdf") if isinstance(pdf_source, bytes) \
+        else _fitz.open(str(pdf_source))
+    try:
+        mat = _fitz.Matrix(dpi / 72, dpi / 72)
+        for page in doc:
+            pix = page.get_pixmap(matrix=mat, colorspace=_fitz.csRGB)
+            yield Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    finally:
+        doc.close()
