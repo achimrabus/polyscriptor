@@ -1293,6 +1293,7 @@ async def _run_job(job: TranscriptionJob) -> None:
                 "index": i,
                 "text": text,
                 "confidence": confidence,
+                    "error": getattr(result, "error", None),
                 "bbox": list(line.bbox),
                 "region": line_regions[i] if i < len(line_regions) else 0,
             })
@@ -2579,6 +2580,7 @@ async def transcribe(request: Request, req: TranscribeRequest):
                     "index": i,
                     "text": text,
                     "confidence": confidence,
+                    "error": getattr(result, "error", None),
                     "bbox": list(line.bbox),
                     "region": line_regions[i] if i < len(line_regions) else 0,
                 }
@@ -2730,6 +2732,7 @@ async def compare_run(request: Request, req: CompareRunRequest):
                     "index": i,
                     "text": text,
                     "confidence": confidence,
+                    "error": getattr(result, "error", None),
                     "bbox": list(line.bbox),
                     "region": line_regions[i] if i < len(line_regions) else 0,
                 }

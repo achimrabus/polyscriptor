@@ -420,7 +420,7 @@ class PyLaiaEngine(HTREngine):
             import traceback
             print(f"Error in PyLaia transcription: {e}")
             print(traceback.format_exc())
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
 
     def get_capabilities(self) -> Dict[str, bool]:
         """PyLaia capabilities."""

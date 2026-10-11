@@ -528,76 +528,16 @@ class Qwen3Engine(HTREngine):
             import traceback
             print(f"Error in Qwen3 transcription: {e}")
             print(traceback.format_exc())
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
-
-    def transcribe_lines(self, images: list[np.ndarray], config: Optional[Dict[str, Any]] = None) -> list[TranscriptionResult]:
-        """Batch transcription with Qwen3 (processes each line with custom prompt)."""
-        if self.model is None:
-            return [TranscriptionResult(text="[Model not loaded]", confidence=0.0) for _ in images]
-
-        try:
-            # Extract prompt from config (same logic as transcribe_line)
-            prompt = "Transcribe the text shown in this image."  # Default
-            if config:
-                prompt_preset = config.get("prompt_preset", "default")
-                prompt_text = config.get("prompt_text", "")
-
-                # Determine which prompt to use
-                if PROMPTS_AVAILABLE:
-                    prompt = get_prompt(prompt_preset, prompt_text)
-                elif prompt_preset == "custom" and prompt_text:
-                    prompt = prompt_text
-
-            # Process each image with the custom prompt
-            from PIL import Image
-            results = []
-
-            for img_array in images:
-                # Convert to PIL
-                if isinstance(img_array, np.ndarray):
-                    pil_img = Image.fromarray(img_array)
-                else:
-                    pil_img = img_array
-
-                # Transcribe with custom prompt
-                generation_kwargs = {}
-                if config:
-                    generation_kwargs["do_sample"] = config.get("do_sample", False)
-                    generation_kwargs["temperature"] = config.get("temperature", 1.0) if config.get("do_sample") else None
-                    generation_kwargs["max_new_tokens"] = config.get("max_new_tokens", 2048)
-
-                result = self.model.transcribe_page(pil_img, prompt=prompt, return_confidence=True, **generation_kwargs)
-
-                # Extract text and confidence
-                text = result.text if hasattr(result, 'text') else str(result)
-                confidence = result.confidence if hasattr(result, 'confidence') else 1.0
-
-                results.append(TranscriptionResult(
-                    text=text,
-                    confidence=confidence if confidence is not None else 1.0,
-                    metadata={
-                        "model": "qwen3-vlm",
-                        "prompt": prompt,
-                        "prompt_preset": config.get("prompt_preset", "default") if config else "default"
-                    }
-                ))
-
-            return results
-
-        except Exception as e:
-            print(f"Error in Qwen3 batch transcription: {e}")
-            import traceback
-            traceback.print_exc()
-            return [TranscriptionResult(text=f"[Error: {e}]", confidence=0.0) for _ in images]
+            return TranscriptionResult.error_result(f"{e}")
 
     def supports_batch(self) -> bool:
-        """Qwen3 supports batch processing."""
-        return True
+        """VLM calls run one image at a time; the base sequential loop applies."""
+        return False
 
     def get_capabilities(self) -> Dict[str, bool]:
         """Qwen3 capabilities."""
         return {
-            "batch": True,
+            "batch": False,
             "confidence_scores": True,  # VLM can provide confidence
             "beam_search": False,  # Uses sampling/greedy decoding
             "language_model": True,  # VLM has built-in language understanding

@@ -392,7 +392,7 @@ class PaddleOCRVLEngine(HTREngine):
                         logger.error("[PaddleOCR-VL] Worker error: %s", err_msg)
                         if tb:
                             logger.debug("[PaddleOCR-VL] Traceback:\n%s", tb)
-                        return TranscriptionResult(text=f"[Error: {err_msg}]", confidence=0.0)
+                        return TranscriptionResult.error_result(f"{err_msg}")
                 except (json.JSONDecodeError, ValueError):
                     pass
                 stderr = result.stderr[-2000:] if result.stderr else "(no stderr)"
@@ -403,7 +403,7 @@ class PaddleOCRVLEngine(HTREngine):
 
             if "error" in output:
                 logger.error("[PaddleOCR-VL] Worker error: %s", output["error"])
-                return TranscriptionResult(text=f"[Error: {output['error']}]", confidence=0.0)
+                return TranscriptionResult.error_result(f"{output['error']}")
 
             text = output.get("text", "")
             lines = output.get("lines", [])
@@ -436,7 +436,7 @@ class PaddleOCRVLEngine(HTREngine):
             return TranscriptionResult(text="[PaddleOCR-VL output parse error]", confidence=0.0)
         except Exception as e:
             logger.error("[PaddleOCR-VL] Unexpected error: %s", e)
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

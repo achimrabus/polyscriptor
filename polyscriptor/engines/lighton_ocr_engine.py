@@ -495,7 +495,7 @@ class LightOnOCREngine(HTREngine):
             import traceback
             print(f"Error in LightOnOCR transcription: {e}")
             traceback.print_exc()
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
 
     def transcribe_lines(self, images: List[np.ndarray], config: Optional[Dict[str, Any]] = None) -> List[TranscriptionResult]:
         """Transcribe multiple line images."""

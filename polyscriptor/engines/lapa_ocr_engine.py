@@ -430,7 +430,7 @@ class LapaOCREngine(HTREngine):
             )
 
         except Exception as e:
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
 
     def transcribe_lines(self, images: List[np.ndarray], config: Optional[Dict[str, Any]] = None) -> List[TranscriptionResult]:
         return [self.transcribe_line(img, config) for img in images]

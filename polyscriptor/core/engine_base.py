@@ -57,14 +57,29 @@ def load_runtime_profile():
 
 @dataclass
 class TranscriptionResult:
-    """Result from HTR engine transcription."""
+    """Result from HTR engine transcription.
+
+    ``error`` is the honest failure channel: engines that could not transcribe
+    set it (while keeping the bracketed ``[Error: ...]`` text for older
+    consumers). ``is_error`` is the single test consumers should use.
+    """
     text: str
     confidence: float = 1.0
     metadata: Dict[str, Any] = None
+    error: Optional[str] = None
 
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
+
+    @property
+    def is_error(self) -> bool:
+        return self.error is not None
+
+    @classmethod
+    def error_result(cls, message: str) -> "TranscriptionResult":
+        """Standard error result: bracketed text for old consumers, real field for new."""
+        return cls(text=f"[Error: {message}]", confidence=0.0, error=message)
 
 
 class HTREngine(ABC):

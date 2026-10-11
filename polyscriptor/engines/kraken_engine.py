@@ -475,7 +475,7 @@ class KrakenEngine(HTREngine):
             import traceback
             print(f"Error in Kraken transcription: {e}")
             print(traceback.format_exc())
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
 
     def get_capabilities(self) -> Dict[str, bool]:
         """Kraken capabilities."""

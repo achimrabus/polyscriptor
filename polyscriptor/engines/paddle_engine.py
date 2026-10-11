@@ -358,7 +358,7 @@ class PaddleOCREngine(HTREngine):
                     timeout=180, logger=logger, tag="PaddleOCR",
                 )
             except WorkerError as e:
-                return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+                return TranscriptionResult.error_result(f"{e}")
 
             lines = output.get("lines", [])
             confidences = output.get("confidences", [])
@@ -384,7 +384,7 @@ class PaddleOCREngine(HTREngine):
             return TranscriptionResult(text="[PaddleOCR output parse error]", confidence=0.0)
         except Exception as e:
             logger.error("[PaddleOCR] Unexpected error: %s", e)
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

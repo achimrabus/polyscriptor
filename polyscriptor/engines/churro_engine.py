@@ -513,7 +513,7 @@ class ChurroEngine(HTREngine):
             import traceback
             print(f"Error in Churro transcription: {e}")
             print(traceback.format_exc())
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
 
     def transcribe_lines(self, images: list[np.ndarray], config: Optional[Dict[str, Any]] = None) -> list[TranscriptionResult]:
         """Batch transcription with Churro."""
@@ -568,7 +568,7 @@ class ChurroEngine(HTREngine):
             print(f"Error in Churro batch transcription: {e}")
             import traceback
             traceback.print_exc()
-            return [TranscriptionResult(text=f"[Error: {e}]", confidence=0.0) for _ in images]
+            return [TranscriptionResult.error_result(f"{e}") for _ in images]
 
     def supports_batch(self) -> bool:
         """Churro supports batch processing."""

@@ -536,7 +536,7 @@ class PartyEngine(HTREngine):
             traceback.print_exc()
 
             # Return empty results for all images
-            return [TranscriptionResult(text=f"[Error: {str(e)}]", confidence=0.0) for _ in images]
+            return [TranscriptionResult.error_result(f"{str(e)}") for _ in images]
 
     def _create_page_xml(self, image_paths: List[Path], temp_dir: Path) -> Path:
         """

@@ -421,7 +421,7 @@ class TrOCREngine(HTREngine):
 
         except Exception as e:
             print(f"Error in TrOCR transcription: {e}")
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
 
     def get_capabilities(self) -> Dict[str, bool]:
         """TrOCR capabilities."""

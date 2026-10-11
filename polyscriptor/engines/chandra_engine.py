@@ -373,7 +373,7 @@ class ChandraEngine(HTREngine):
                     timeout=900, logger=logger, tag="Chandra", env=env,
                 )
             except WorkerError as e:
-                return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+                return TranscriptionResult.error_result(f"{e}")
 
             text = output.get("text", "")
             lines = output.get("lines", [])
@@ -400,7 +400,7 @@ class ChandraEngine(HTREngine):
             return TranscriptionResult(text="[Chandra output parse error]", confidence=0.0)
         except Exception as e:
             logger.error("[Chandra] Unexpected error: %s", e)
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 

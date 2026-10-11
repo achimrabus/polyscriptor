@@ -486,7 +486,7 @@ class DeepSeekOCREngine(HTREngine):
                         logger.error("[DeepSeek-OCR] Worker error: %s", err_msg)
                         if tb:
                             logger.debug("[DeepSeek-OCR] Traceback:\n%s", tb)
-                        return TranscriptionResult(text=f"[Error: {err_msg}]", confidence=0.0)
+                        return TranscriptionResult.error_result(f"{err_msg}")
                 except (json.JSONDecodeError, ValueError):
                     pass
                 stderr = result.stderr[-2000:] if result.stderr else "(no stderr)"
@@ -497,9 +497,7 @@ class DeepSeekOCREngine(HTREngine):
 
             if "error" in output:
                 logger.error("[DeepSeek-OCR] Worker error: %s", output["error"])
-                return TranscriptionResult(
-                    text=f"[Error: {output['error']}]", confidence=0.0
-                )
+                return TranscriptionResult.error_result(f"{output['error']}")
 
             text = output.get("text", "")
             return TranscriptionResult(
@@ -520,7 +518,7 @@ class DeepSeekOCREngine(HTREngine):
             return TranscriptionResult(text="[DeepSeek-OCR output parse error]", confidence=0.0)
         except Exception as e:
             logger.error("[DeepSeek-OCR] Unexpected error: %s", e)
-            return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
+            return TranscriptionResult.error_result(f"{e}")
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
