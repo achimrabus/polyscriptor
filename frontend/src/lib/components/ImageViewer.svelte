@@ -229,7 +229,6 @@
 			onmousedown={ondown}
 			onmousemove={onmove}
 			onmouseup={onup}
-			role="img"
 			aria-label="page image with segmentation overlay"
 		></canvas>
 		{#if !src}

@@ -53,6 +53,8 @@
 		running = false;
 	}
 
+	const FORMATS = ['txt', 'csv', 'xml'] as const;
+
 	async function exportZip(fmt: 'txt' | 'csv' | 'xml') {
 		const blob = await api.exportBatch(exportIds, fmt);
 		const a = document.createElement('a');
@@ -79,6 +81,12 @@
 			ondrop={ondrop}
 			ondragover={(e) => e.preventDefault()}
 			onclick={() => inputEl?.click()}
+			onkeydown={(e) => {
+				if (e.key === 'Enter' || e.key === ' ') {
+					e.preventDefault();
+					inputEl?.click();
+				}
+			}}
 			role="button"
 			tabindex="0"
 			aria-label="Add files to batch queue"
@@ -120,7 +128,7 @@
 				<button class="btn !py-1 text-xs" onclick={() => (cancelled = true)}>Stop</button>
 			{/if}
 			<div class="ml-auto flex gap-1">
-				{#each ['txt', 'csv', 'xml'] as fmt}
+				{#each FORMATS as fmt}
 					<button class="btn !px-2 !py-0.5 text-xs" onclick={() => exportZip(fmt)} disabled={!exportIds.length}>
 						ZIP {fmt}
 					</button>

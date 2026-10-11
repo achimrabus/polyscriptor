@@ -15,6 +15,7 @@
 	}
 
 	let tab = $state<'workspace' | 'batch' | 'compare'>('workspace');
+	const TABS = [['workspace', 'Workspace'], ['compare', 'Compare'], ['batch', 'Batch']] as const;
 
 	let images = $state<{ image_id: string; filename: string }[]>([]);
 	let currentId = $state<string | null>(null);
@@ -271,7 +272,7 @@
 		<input class="input !w-36 !py-1" placeholder="custom .mlmodel (optional)" bind:value={segModel} />
 		<button class="btn !py-1" onclick={runSegment} disabled={!currentId || busy}>Segment</button>
 		<div class="ml-auto flex rounded border border-zinc-300 dark:border-zinc-700">
-			{#each [['workspace', 'Workspace'], ['compare', 'Compare'], ['batch', 'Batch']] as [t, label]}
+			{#each TABS as [t, label]}
 				<button
 					class="px-3 py-1 {tab === t ? 'bg-sky-600 text-white' : 'hover:bg-zinc-100 dark:hover:bg-zinc-800'}"
 					onclick={() => (tab = t)}>{label}</button>
