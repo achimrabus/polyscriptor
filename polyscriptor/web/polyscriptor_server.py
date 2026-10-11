@@ -2439,6 +2439,68 @@ async def segment_image(
         raise HTTPException(500, f"Segmentation failed: {e}")
 
 
+class ResegmentRequest(BaseModel):
+    rects: List[List[int]]          # [[x1, y1, x2, y2], ...] in image pixel coords
+    device: str = "cpu"
+    model_path: Optional[str] = None  # custom .mlmodel; default blla
+    max_columns: int = 4
+    split_width_fraction: float = 0.40
+    min_lines_to_split: int = 10
+    text_direction: str = "horizontal-lr"
+
+
+@app.post("/api/image/{image_id}/resegment")
+async def resegment_image(request: Request, image_id: str, req: ResegmentRequest):
+    """Re-run blla segmentation inside drawn rectangles.
+
+    Regions overlapping a rectangle are replaced by its fresh segmentation;
+    all other regions keep their layout. Returns segmentation data in the
+    same shape as /segment so the client can redraw.
+    """
+    session = _get_session(request)
+    if image_id not in session.image_cache:
+        raise HTTPException(404, "Image not found — upload first")
+    img_data = session.image_cache[image_id]
+    if not req.rects:
+        raise HTTPException(400, "No rectangles given")
+    if not img_data.get("seg_regions"):
+        raise HTTPException(400, "No region layout — run Kraken Neural (blla) segmentation first")
+
+    from polyscriptor.core.resegment import resegment_rects
+
+    try:
+        lines, regions, line_regions = await asyncio.to_thread(
+            resegment_rects,
+            img_data["pil_image"],
+            img_data.get("lines") or [],
+            img_data.get("seg_regions") or [],
+            img_data.get("line_regions") or [],
+            req.rects,
+            device=req.device,
+            model_path=req.model_path,
+            max_columns=req.max_columns,
+            split_width_fraction=req.split_width_fraction,
+            min_lines_to_split=req.min_lines_to_split,
+            text_direction=req.text_direction,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Re-segmentation failed: {e}")
+
+    img_data["lines"] = lines
+    img_data["seg_regions"] = regions
+    img_data["line_regions"] = line_regions
+    img_data["seg_source"] = "kraken-blla"
+
+    return {
+        "num_lines": len(lines),
+        "bboxes": [list(l.bbox) for l in lines],
+        "source": "kraken-blla",
+        "regions": regions,
+    }
+
+
 @app.post("/api/transcribe")
 async def transcribe(request: Request, req: TranscribeRequest):
     session = _get_session(request)
