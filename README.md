@@ -234,6 +234,15 @@ polyscriptor/
 frontend/          # SvelteKit SPA (built into frontend/build, served at /)
 ```
 
+## Credits
+
+Polyscriptor is written and maintained by **Achim Rabus**.
+
+The 2026 restructuring — packaging into a `polyscriptor` package with a Click CLI,
+removal of the PyQt6 GUI, the SvelteKit web interface, the honest error channel,
+and the CI setup — was done by **`johnlockejrr`** using [ZCode](https://zcode.ai)
+with the Qwen38-Flash-Next model.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
