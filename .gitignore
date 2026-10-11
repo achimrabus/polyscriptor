@@ -269,3 +269,5 @@ eval_*_trainaudit.json
 # away, so the repo keeps the DOI and not the payload
 kraken_models/
 *.mlmodel
+htr_env/
+.zcode/
