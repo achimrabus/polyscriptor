@@ -14,21 +14,6 @@ import numpy as np
 
 from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
-try:
-    from PyQt6.QtWidgets import (
-        QWidget,
-        QVBoxLayout,
-        QHBoxLayout,
-        QLabel,
-        QLineEdit,
-        QComboBox,
-        QSpinBox,
-        QTextEdit,
-    )
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 
 LAPA_AVAILABLE = False
@@ -75,15 +60,7 @@ class LapaOCREngine(HTREngine):
     def __init__(self):
         self.model = None
         self.processor = None
-        self._config_widget: Optional[QWidget] = None
 
-        self._base_model_edit: Optional[QLineEdit] = None
-        self._adapter_edit: Optional[QLineEdit] = None
-        self._quant_combo: Optional[QComboBox] = None
-        self._attn_combo: Optional[QComboBox] = None
-        self._max_tokens_spin: Optional[QSpinBox] = None
-        self._prompt_edit: Optional[QTextEdit] = None
-        self._device_combo: Optional[QComboBox] = None
 
     def get_name(self) -> str:
         return "LapaOCR"
@@ -106,105 +83,8 @@ class LapaOCREngine(HTREngine):
             "Install: pip install -U torch transformers peft"
         )
 
-    def get_config_widget(self) -> QWidget:
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
 
-        base_layout = QHBoxLayout()
-        base_layout.addWidget(QLabel("Base Model:"))
-        self._base_model_edit = QLineEdit(self.DEFAULT_BASE_MODEL)
-        base_layout.addWidget(self._base_model_edit)
-        layout.addLayout(base_layout)
-
-        adapter_layout = QHBoxLayout()
-        adapter_layout.addWidget(QLabel("Adapter:"))
-        self._adapter_edit = QLineEdit(self.DEFAULT_ADAPTER)
-        adapter_layout.addWidget(self._adapter_edit)
-        layout.addLayout(adapter_layout)
-
-        quant_layout = QHBoxLayout()
-        quant_layout.addWidget(QLabel("Quantization:"))
-        self._quant_combo = QComboBox()
-        self._quant_combo.addItems(["none", "8bit", "4bit"])
-        quant_layout.addWidget(self._quant_combo)
-        layout.addLayout(quant_layout)
-
-        attn_layout = QHBoxLayout()
-        attn_layout.addWidget(QLabel("Attention:"))
-        self._attn_combo = QComboBox()
-        self._attn_combo.addItems(["auto", "sdpa", "eager"])
-        attn_layout.addWidget(self._attn_combo)
-        layout.addLayout(attn_layout)
-
-        tokens_layout = QHBoxLayout()
-        tokens_layout.addWidget(QLabel("Max New Tokens:"))
-        self._max_tokens_spin = QSpinBox()
-        self._max_tokens_spin.setRange(64, 1024)
-        self._max_tokens_spin.setSingleStep(32)
-        self._max_tokens_spin.setValue(self.DEFAULT_MAX_NEW_TOKENS)
-        tokens_layout.addWidget(self._max_tokens_spin)
-        layout.addLayout(tokens_layout)
-
-        prompt_label = QLabel("Prompt:")
-        layout.addWidget(prompt_label)
-        self._prompt_edit = QTextEdit()
-        self._prompt_edit.setPlainText(self.DEFAULT_PROMPT)
-        self._prompt_edit.setMaximumHeight(90)
-        layout.addWidget(self._prompt_edit)
-
-        device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Device:"))
-        self._device_combo = QComboBox()
-        self._device_combo.addItems(["auto", "cuda:0", "cuda:1", "cpu"])
-        device_layout.addWidget(self._device_combo)
-        layout.addLayout(device_layout)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-        self._config_widget = widget
-        return widget
-
-    def get_config(self) -> Dict[str, Any]:
-        if self._config_widget is None:
-            return {}
-
-        return {
-            "base_model": self._base_model_edit.text().strip() or self.DEFAULT_BASE_MODEL,
-            "adapter": self._adapter_edit.text().strip() or self.DEFAULT_ADAPTER,
-            "quantization": self._quant_combo.currentText(),
-            "attn_implementation": self._attn_combo.currentText(),
-            "max_new_tokens": self._max_tokens_spin.value(),
-            "prompt": self._prompt_edit.toPlainText().strip() or self.DEFAULT_PROMPT,
-            "device": self._device_combo.currentText(),
-        }
-
-    def set_config(self, config: Dict[str, Any]):
-        if self._config_widget is None:
-            return
-
-        self._base_model_edit.setText(config.get("base_model", self.DEFAULT_BASE_MODEL))
-        self._adapter_edit.setText(config.get("adapter", self.DEFAULT_ADAPTER))
-
-        quant = str(config.get("quantization", "none"))
-        q_idx = self._quant_combo.findText(quant)
-        if q_idx >= 0:
-            self._quant_combo.setCurrentIndex(q_idx)
-
-        attn = str(config.get("attn_implementation", "auto"))
-        a_idx = self._attn_combo.findText(attn)
-        if a_idx >= 0:
-            self._attn_combo.setCurrentIndex(a_idx)
-
-        self._max_tokens_spin.setValue(int(config.get("max_new_tokens", self.DEFAULT_MAX_NEW_TOKENS)))
-        self._prompt_edit.setPlainText(config.get("prompt", self.DEFAULT_PROMPT))
-
-        device = str(config.get("device", "auto"))
-        d_idx = self._device_combo.findText(device)
-        if d_idx >= 0:
-            self._device_combo.setCurrentIndex(d_idx)
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         if not LAPA_AVAILABLE:

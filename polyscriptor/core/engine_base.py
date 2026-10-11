@@ -18,14 +18,6 @@ import importlib
 import os
 import numpy as np
 
-try:
-    from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
-
-
 _runtime_profile = None
 _runtime_profile_loaded = False
 
@@ -125,40 +117,20 @@ class HTREngine(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_config_widget(self) -> QWidget:
-        """Create and return configuration widget for this engine.
-
-        The widget should contain all engine-specific controls (model selection,
-        beam search, preprocessing options, etc.). The GUI will embed this widget
-        in the configuration panel.
-
-        Returns:
-            QWidget: Qt widget with engine configuration controls
-        """
-        pass
-
-    @abstractmethod
     def get_config(self) -> Dict[str, Any]:
-        """Get current configuration from the config widget.
+        """Default configuration for headless use.
 
-        This method extracts values from the widget controls and returns
-        them as a dictionary that can be passed to transcribe_line().
+        The web UI builds its config from the engine's JSON schema
+        (see polyscriptor_server._get_config_schema), so engines receive an
+        explicit dict; this default is only the None-config fallback.
 
         Returns:
             Dict[str, Any]: Configuration parameters
         """
-        pass
+        return {}
 
-    @abstractmethod
     def set_config(self, config: Dict[str, Any]):
-        """Set configuration values in the config widget.
-
-        Used to restore saved settings when switching engines.
-
-        Args:
-            config: Configuration parameters
-        """
+        """Store configuration for engines that keep widget-free state."""
         pass
 
     @abstractmethod

@@ -47,16 +47,6 @@ from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
-try:
-    from PyQt6.QtWidgets import (
-        QComboBox, QFileDialog, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-        QSpinBox, QVBoxLayout, QWidget,
-    )
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 _DEFAULT_MODEL_ID = "datalab-to/chandra-ocr-2"
 _DEFAULT_MAX_NEW_TOKENS = 4096
@@ -95,14 +85,6 @@ class ChandraEngine(HTREngine):
         self._venv_python: Optional[Path] = None
         self._is_loaded: bool = False
 
-        # Config widget references
-        self._config_widget: Optional[QWidget] = None
-        self._venv_edit: Optional[QLineEdit] = None
-        self._device_combo: Optional[QComboBox] = None
-        self._gpu_index_spin: Optional[QSpinBox] = None
-        self._prompt_mode_combo: Optional[QComboBox] = None
-        self._custom_prompt_edit: Optional[QPlainTextEdit] = None
-        self._max_tokens_spin: Optional[QSpinBox] = None
 
     # ------------------------------------------------------------------
     # Identity
@@ -145,148 +127,15 @@ class ChandraEngine(HTREngine):
         return ""
 
     # ------------------------------------------------------------------
-    # Configuration widget
     # ------------------------------------------------------------------
 
-    def get_config_widget(self) -> QWidget:
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
-
-        # Venv path
-        venv_group = QGroupBox("Chandra venv")
-        venv_layout = QVBoxLayout()
-        venv_layout.addWidget(QLabel("Path to isolated venv:"))
-        venv_row = QHBoxLayout()
-        self._venv_edit = QLineEdit(str(self._venv_path))
-        self._venv_edit.setToolTip(
-            "Isolated Python venv with chandra-ocr[hf] installed.\n"
-            f"Default: {_default_venv()}\n"
-            "Kept separate because Chandra needs transformers >= 5.x."
-        )
-        venv_row.addWidget(self._venv_edit)
-        btn_browse = QPushButton("Browse…")
-        btn_browse.clicked.connect(self._browse_venv)
-        venv_row.addWidget(btn_browse)
-        venv_layout.addLayout(venv_row)
-        venv_group.setLayout(venv_layout)
-        layout.addWidget(venv_group)
-
-        # Device
-        device_group = QGroupBox("Device")
-        device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Device:"))
-        self._device_combo = QComboBox()
-        self._device_combo.addItems(["GPU", "CPU"])
-        self._device_combo.setToolTip(
-            "GPU strongly recommended — 5B model, ~12 GB VRAM in bf16.\n"
-            "CPU works but is extremely slow."
-        )
-        device_layout.addWidget(self._device_combo)
-        device_layout.addWidget(QLabel("GPU index:"))
-        self._gpu_index_spin = QSpinBox()
-        self._gpu_index_spin.setRange(0, 15)
-        self._gpu_index_spin.setValue(0)
-        self._gpu_index_spin.setToolTip(
-            "Physical GPU index (CUDA_VISIBLE_DEVICES). The worker pins this GPU "
-            "and addresses it as cuda:0 internally."
-        )
-        device_layout.addWidget(self._gpu_index_spin)
-        device_layout.addStretch()
-        device_group.setLayout(device_layout)
-        layout.addWidget(device_group)
-
-        # Prompt mode
-        prompt_group = QGroupBox("Prompt")
-        prompt_layout = QVBoxLayout()
-        prompt_row = QHBoxLayout()
-        prompt_row.addWidget(QLabel("Mode:"))
-        self._prompt_mode_combo = QComboBox()
-        self._prompt_mode_combo.addItems(["ocr", "ocr_layout", "custom"])
-        self._prompt_mode_combo.setToolTip(
-            "ocr        – plain OCR to HTML (default, recommended)\n"
-            "ocr_layout – HTML with layout blocks and bounding boxes\n"
-            "custom     – use the custom prompt below"
-        )
-        prompt_row.addWidget(self._prompt_mode_combo)
-        prompt_row.addWidget(QLabel("Max new tokens:"))
-        self._max_tokens_spin = QSpinBox()
-        self._max_tokens_spin.setRange(64, 16384)
-        self._max_tokens_spin.setValue(_DEFAULT_MAX_NEW_TOKENS)
-        prompt_row.addWidget(self._max_tokens_spin)
-        prompt_row.addStretch()
-        prompt_layout.addLayout(prompt_row)
-        prompt_layout.addWidget(QLabel("Custom prompt (mode = custom):"))
-        self._custom_prompt_edit = QPlainTextEdit("")
-        self._custom_prompt_edit.setMaximumHeight(60)
-        prompt_layout.addWidget(self._custom_prompt_edit)
-        prompt_group.setLayout(prompt_layout)
-        layout.addWidget(prompt_group)
-
-        # Info
-        info = QLabel(
-            "Chandra 2 (5B VLM) runs in an isolated venv. First run downloads ~10 GB\n"
-            "of weights to the HF cache. Each transcription spawns a subprocess that\n"
-            "loads the model (~30 s) and OCRs the page.\n\n"
-            "Universal engine: 90+ languages, print + handwriting, tables, math.\n"
-            "Good default for modern documents and materials without a specialized\n"
-            "model; for historical scripts a fine-tuned CRNN-CTC / TrOCR model is\n"
-            "far more accurate."
-        )
-        info.setStyleSheet("color: gray; font-size: 9pt; padding: 8px;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-        self._config_widget = widget
-        return widget
-
-    def _browse_venv(self):
-        folder = QFileDialog.getExistingDirectory(
-            self._config_widget, "Select Chandra venv directory", str(self._venv_path)
-        )
-        if folder:
-            self._venv_edit.setText(folder)
 
     # ------------------------------------------------------------------
     # Config get / set
     # ------------------------------------------------------------------
 
-    def get_config(self) -> Dict[str, Any]:
-        if self._config_widget is None:
-            return {
-                "venv_path": str(self._venv_path),
-                "model_id": _DEFAULT_MODEL_ID,
-                "use_gpu": True,
-                "gpu_index": 0,
-                "prompt_mode": "ocr",
-                "custom_prompt": "",
-                "max_new_tokens": _DEFAULT_MAX_NEW_TOKENS,
-            }
-        return {
-            "venv_path": self._venv_edit.text().strip(),
-            "model_id": _DEFAULT_MODEL_ID,
-            "use_gpu": self._device_combo.currentText() == "GPU",
-            "gpu_index": self._gpu_index_spin.value(),
-            "prompt_mode": self._prompt_mode_combo.currentText(),
-            "custom_prompt": self._custom_prompt_edit.toPlainText().strip(),
-            "max_new_tokens": self._max_tokens_spin.value(),
-        }
 
-    def set_config(self, config: Dict[str, Any]):
-        if self._config_widget is None:
-            return
-        if "venv_path" in config:
-            self._venv_edit.setText(config["venv_path"])
-        self._device_combo.setCurrentText("GPU" if config.get("use_gpu", True) else "CPU")
-        self._gpu_index_spin.setValue(int(config.get("gpu_index", 0)))
-        if config.get("prompt_mode"):
-            self._prompt_mode_combo.setCurrentText(config["prompt_mode"])
-        self._custom_prompt_edit.setPlainText(config.get("custom_prompt", ""))
-        self._max_tokens_spin.setValue(int(config.get("max_new_tokens", _DEFAULT_MAX_NEW_TOKENS)))
 
     # ------------------------------------------------------------------
     # Model loading

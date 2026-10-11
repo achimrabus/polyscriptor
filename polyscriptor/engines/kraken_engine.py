@@ -20,16 +20,6 @@ def _print(msg: str) -> None:
 
 from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
-try:
-    from PyQt6.QtWidgets import (
-        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-        QPushButton, QLineEdit, QFileDialog, QGroupBox, QCheckBox
-    )
-    from PyQt6.QtCore import Qt
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 try:
     from kraken import rpred
@@ -73,13 +63,7 @@ class KrakenEngine(HTREngine):
 
     def __init__(self):
         self.model: Optional[Any] = None  # TorchSeqRecognizer
-        self._config_widget: Optional[QWidget] = None
 
-        # Widget references
-        self._model_source_combo: Optional[QComboBox] = None
-        self._preset_combo: Optional[QComboBox] = None
-        self._custom_model_edit: Optional[QLineEdit] = None
-        self._bidi_reorder_check: Optional[QCheckBox] = None
 
     def get_name(self) -> str:
         return "Kraken"
@@ -95,187 +79,12 @@ class KrakenEngine(HTREngine):
             return "Kraken not installed. Install it in a fresh environment together with the rest: pip install -e '.[kraken]' (see README)"
         return ""
 
-    def get_config_widget(self) -> QWidget:
-        """Create Kraken configuration panel."""
-        if not PYQT_AVAILABLE:
-            raise RuntimeError("PyQt6 not installed. Install with: pip install PyQt6")
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
 
-        # Model source selection
-        source_group = QGroupBox("Model Source")
-        source_layout = QVBoxLayout()
 
-        self._model_source_combo = QComboBox()
-        self._model_source_combo.addItems(["Preset Models", "Custom Model File"])
-        self._model_source_combo.currentTextChanged.connect(self._on_model_source_changed)
-        source_layout.addWidget(self._model_source_combo)
 
-        source_group.setLayout(source_layout)
-        layout.addWidget(source_group)
 
-        # Preset models group
-        self._preset_group = QGroupBox("Preset Model")
-        preset_layout = QVBoxLayout()
 
-        self._preset_combo = QComboBox()
-        self._populate_preset_models()
-        self._preset_combo.currentIndexChanged.connect(self._on_preset_model_changed)
-        preset_layout.addWidget(QLabel("Model:"))
-        preset_layout.addWidget(self._preset_combo)
-
-        preset_hint = QLabel("Note: Zenodo models auto-download on first use")
-        preset_hint.setStyleSheet("color: gray; font-size: 9pt;")
-        preset_layout.addWidget(preset_hint)
-
-        self._preset_group.setLayout(preset_layout)
-        layout.addWidget(self._preset_group)
-
-        # Custom model group
-        self._custom_group = QGroupBox("Custom Model")
-        custom_layout = QVBoxLayout()
-
-        custom_layout.addWidget(QLabel("Model File (.mlmodel):"))
-        model_layout = QHBoxLayout()
-        self._custom_model_edit = QLineEdit()
-        self._custom_model_edit.setPlaceholderText("Path to .mlmodel file")
-        model_layout.addWidget(self._custom_model_edit)
-
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self._browse_model)
-        model_layout.addWidget(browse_btn)
-        custom_layout.addLayout(model_layout)
-
-        self._custom_group.setLayout(custom_layout)
-        self._custom_group.setVisible(False)  # Hidden by default
-        layout.addWidget(self._custom_group)
-
-        # Recognition settings
-        settings_group = QGroupBox("Recognition Settings")
-        settings_layout = QVBoxLayout()
-
-        self._bidi_reorder_check = QCheckBox("Bidirectional Text Reordering")
-        self._bidi_reorder_check.setChecked(True)
-        self._bidi_reorder_check.setToolTip("Enable for RTL languages (Arabic, Hebrew, etc.)")
-        settings_layout.addWidget(self._bidi_reorder_check)
-
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-
-        self._config_widget = widget
-        return widget
-
-    def _populate_preset_models(self):
-        """Populate preset models dropdown with local and Zenodo models."""
-        if self._preset_combo is None:
-            return
-
-        self._preset_combo.clear()
-
-        if not KRAKEN_MODELS:
-            self._preset_combo.addItem("No presets available")
-            return
-
-        # Local model first
-        for model_id, info in KRAKEN_MODELS.items():
-            if info.get("source") == "local":
-                desc = info.get('description', model_id)
-                self._preset_combo.addItem(f"[local] {desc}", userData=model_id)
-                break
-
-        self._preset_combo.insertSeparator(self._preset_combo.count())
-
-        # Zenodo models
-        for model_id, info in KRAKEN_MODELS.items():
-            if info.get("source") == "zenodo":
-                desc = info.get('description', model_id)
-                lang = info.get('language', '')
-                self._preset_combo.addItem(f"[download] {desc} ({lang})", userData=model_id)
-
-        self._preset_combo.insertSeparator(self._preset_combo.count())
-        self._preset_combo.addItem("Browse Custom File...", userData="__custom__")
-
-    def _on_model_source_changed(self, source: str):
-        """Toggle between preset and custom model selection."""
-        is_preset = (source == "Preset Models")
-        self._preset_group.setVisible(is_preset)
-        self._custom_group.setVisible(not is_preset)
-
-    def _on_preset_model_changed(self, index: int):
-        """Handle preset selection — open file browser for custom option."""
-        model_id = self._preset_combo.currentData()
-        if model_id == "__custom__":
-            file_path, _ = QFileDialog.getOpenFileName(
-                self._config_widget,
-                "Select Kraken Model File",
-                "",
-                "Kraken Models (*.mlmodel);;All Files (*)"
-            )
-            if file_path:
-                self._model_source_combo.setCurrentText("Custom Model File")
-                self._custom_model_edit.setText(file_path)
-            self._preset_combo.blockSignals(True)
-            self._preset_combo.setCurrentIndex(0)
-            self._preset_combo.blockSignals(False)
-
-    def _browse_model(self):
-        """Open file dialog to select model file."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self._config_widget,
-            "Select Kraken Model",
-            "models",
-            "Kraken Models (*.mlmodel);;All Files (*)"
-        )
-
-        if file_path:
-            self._custom_model_edit.setText(file_path)
-
-    def get_config(self) -> Dict[str, Any]:
-        """Extract configuration from widget controls."""
-        if self._config_widget is None:
-            return {}
-
-        is_preset = (self._model_source_combo.currentText() == "Preset Models")
-
-        config = {
-            "model_source": "preset" if is_preset else "custom",
-            "bidi_reordering": self._bidi_reorder_check.isChecked(),
-        }
-
-        if is_preset:
-            model_id = self._preset_combo.currentData()
-            if model_id and model_id in KRAKEN_MODELS:
-                config["preset_id"] = model_id
-                config["model_path"] = KRAKEN_MODELS[model_id].get("path")
-        else:
-            config["model_path"] = self._custom_model_edit.text()
-
-        return config
-
-    def set_config(self, config: Dict[str, Any]):
-        """Restore configuration to widget controls."""
-        if self._config_widget is None:
-            return
-
-        model_source = config.get("model_source", "preset")
-        self._model_source_combo.setCurrentText("Preset Models" if model_source == "preset" else "Custom Model File")
-
-        if model_source == "preset":
-            preset_id = config.get("preset_id", "")
-            for i in range(self._preset_combo.count()):
-                if self._preset_combo.itemData(i) == preset_id:
-                    self._preset_combo.setCurrentIndex(i)
-                    break
-        else:
-            self._custom_model_edit.setText(config.get("model_path", ""))
-
-        self._bidi_reorder_check.setChecked(config.get("bidi_reordering", True))
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load Kraken model (local or Zenodo auto-download)."""

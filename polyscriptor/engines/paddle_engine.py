@@ -48,16 +48,6 @@ from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
-try:
-    from PyQt6.QtWidgets import (
-        QCheckBox, QComboBox, QFileDialog, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QPushButton,
-        QSpinBox, QVBoxLayout, QWidget,
-    )
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 # Default venv path
 from polyscriptor.engines._venv_worker import (
@@ -91,13 +81,6 @@ class PaddleOCREngine(HTREngine):
         self._venv_python: Optional[Path] = None
         self._is_loaded: bool = False
 
-        # Config widget references
-        self._config_widget: Optional[QWidget] = None
-        self._venv_edit: Optional[QLineEdit] = None
-        self._lang_edit: Optional[QLineEdit] = None
-        self._device_combo: Optional[QComboBox] = None
-        self._angle_cls_check: Optional[QCheckBox] = None
-        self._det_db_thresh_spin: Optional[QSpinBox] = None
 
     # ------------------------------------------------------------------
     # Identity
@@ -142,149 +125,15 @@ class PaddleOCREngine(HTREngine):
         return ""
 
     # ------------------------------------------------------------------
-    # Configuration widget
     # ------------------------------------------------------------------
 
-    def get_config_widget(self) -> QWidget:
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
-
-        # Venv path
-        venv_group = QGroupBox("PaddleOCR venv")
-        venv_layout = QVBoxLayout()
-        venv_layout.addWidget(QLabel("Path to venv_paddle:"))
-        venv_row = QHBoxLayout()
-        self._venv_edit = QLineEdit(str(self._venv_path))
-        self._venv_edit.setToolTip(
-            "Path to the isolated Python venv with PaddleOCR installed.\n"
-            "Default: <project>/venv_paddle\n"
-            "Create with: python -m venv venv_paddle && pip install paddlepaddle paddleocr"
-        )
-        venv_row.addWidget(self._venv_edit)
-        btn_browse = QPushButton("Browse…")
-        btn_browse.clicked.connect(self._browse_venv)
-        venv_row.addWidget(btn_browse)
-        venv_layout.addLayout(venv_row)
-        venv_group.setLayout(venv_layout)
-        layout.addWidget(venv_group)
-
-        # Language
-        lang_group = QGroupBox("Language / Script")
-        lang_layout = QVBoxLayout()
-        lang_layout.addWidget(QLabel("Language code:"))
-        self._lang_edit = QLineEdit(_DEFAULT_LANG)
-        self._lang_edit.setToolTip(
-            "PaddleOCR language code. Examples:\n"
-            "  en        – English\n"
-            "  ch        – Chinese + English (strongest model)\n"
-            "  de/french/german – German / French\n"
-            "  ru/uk/bg  – Russian / Ukrainian / Bulgarian (Cyrillic)\n"
-            "  la        – Latin\n"
-            "  ar        – Arabic\n"
-            "  japan/korean – Japanese / Korean\n"
-            "Full list: paddlepaddle.github.io/PaddleOCR/main/en/ppocr/blog/multi_languages.html"
-        )
-        lang_layout.addWidget(self._lang_edit)
-        lang_group.setLayout(lang_layout)
-        layout.addWidget(lang_group)
-
-        # Device
-        device_group = QGroupBox("Device")
-        device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Device:"))
-        self._device_combo = QComboBox()
-        self._device_combo.addItems(["CPU", "GPU (cuda:0)"])
-        self._device_combo.setToolTip(
-            "CPU: always available.\nGPU: requires paddlepaddle-gpu and CUDA."
-        )
-        device_layout.addWidget(self._device_combo)
-        device_layout.addStretch()
-        device_group.setLayout(device_layout)
-        layout.addWidget(device_group)
-
-        # Recognition options
-        opts_group = QGroupBox("Recognition Options")
-        opts_layout = QVBoxLayout()
-        self._angle_cls_check = QCheckBox("Enable text-angle classifier (use_angle_cls)")
-        self._angle_cls_check.setChecked(True)
-        self._angle_cls_check.setToolTip(
-            "Detect and correct 180° text rotation.\n"
-            "Disable to save ~10% inference time on well-oriented pages."
-        )
-        opts_layout.addWidget(self._angle_cls_check)
-        thresh_row = QHBoxLayout()
-        thresh_row.addWidget(QLabel("Det. threshold (×100):"))
-        self._det_db_thresh_spin = QSpinBox()
-        self._det_db_thresh_spin.setRange(1, 99)
-        self._det_db_thresh_spin.setValue(30)
-        self._det_db_thresh_spin.setToolTip(
-            "DB detection threshold × 100 (default 30 = 0.30).\n"
-            "Lower = more regions detected; higher = stricter."
-        )
-        thresh_row.addWidget(self._det_db_thresh_spin)
-        thresh_row.addStretch()
-        opts_layout.addLayout(thresh_row)
-        opts_group.setLayout(opts_layout)
-        layout.addWidget(opts_group)
-
-        # Info
-        info = QLabel(
-            "PaddleOCR runs in an isolated venv (venv_paddle) to avoid\n"
-            "OpenCV conflicts. First run downloads model weights (~100–400 MB).\n"
-            "Each transcription spawns a subprocess — expect ~5–15s per page."
-        )
-        info.setStyleSheet("color: gray; font-size: 9pt; padding: 8px;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-        self._config_widget = widget
-        return widget
-
-    def _browse_venv(self):
-        folder = QFileDialog.getExistingDirectory(
-            self._config_widget, "Select venv_paddle directory", str(self._venv_path)
-        )
-        if folder:
-            self._venv_edit.setText(folder)
 
     # ------------------------------------------------------------------
     # Config get / set
     # ------------------------------------------------------------------
 
-    def get_config(self) -> Dict[str, Any]:
-        if self._config_widget is None:
-            return {
-                "venv_path": str(self._venv_path),
-                "lang": "en",
-                "use_gpu": False,
-                "use_angle_cls": True,
-                "det_db_thresh": 0.30,
-            }
-        return {
-            "venv_path": self._venv_edit.text().strip(),
-            "lang": self._lang_edit.text().strip() or "en",
-            "use_gpu": self._device_combo.currentText().startswith("GPU"),
-            "use_angle_cls": self._angle_cls_check.isChecked(),
-            "det_db_thresh": self._det_db_thresh_spin.value() / 100.0,
-        }
 
-    def set_config(self, config: Dict[str, Any]):
-        if self._config_widget is None:
-            return
-        if "venv_path" in config:
-            self._venv_edit.setText(config["venv_path"])
-        self._lang_edit.setText(config.get("lang", "en"))
-        self._device_combo.setCurrentText(
-            "GPU (cuda:0)" if config.get("use_gpu", False) else "CPU"
-        )
-        self._angle_cls_check.setChecked(config.get("use_angle_cls", True))
-        thresh_int = round(config.get("det_db_thresh", 0.30) * 100)
-        self._det_db_thresh_spin.setValue(max(1, min(99, thresh_int)))
 
     # ------------------------------------------------------------------
     # Model loading

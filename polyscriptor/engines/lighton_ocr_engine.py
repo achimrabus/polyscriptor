@@ -20,16 +20,6 @@ import numpy as np
 
 from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
-try:
-    from PyQt6.QtWidgets import (
-        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-        QGroupBox, QSlider, QSpinBox, QTextEdit, QLineEdit
-    )
-    from PyQt6.QtCore import Qt
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 # Check for LightOnOCR dependencies
 LIGHTON_AVAILABLE = False
@@ -80,18 +70,8 @@ class LightOnOCREngine(HTREngine):
     def __init__(self):
         self.model = None
         self.processor = None
-        self._config_widget: Optional[QWidget] = None
         self._device = "cuda:0"
 
-        # Widget references
-        self._model_variant_combo: Optional[QComboBox] = None
-        self._custom_model_edit: Optional[QLineEdit] = None
-        self._longest_edge_slider: Optional[QSlider] = None
-        self._longest_edge_label: Optional[QLabel] = None
-        self._max_tokens_spin: Optional[QSpinBox] = None
-        self._prompt_text_edit: Optional[QTextEdit] = None
-        self._device_combo: Optional[QComboBox] = None
-        self._model_desc_label: Optional[QLabel] = None
 
     def get_name(self) -> str:
         return "LightOnOCR"
@@ -110,228 +90,10 @@ class LightOnOCREngine(HTREngine):
             reasons.append("Install transformers from git: pip install git+https://github.com/huggingface/transformers.git")
         return " | ".join(reasons) if reasons else ""
 
-    def get_config_widget(self) -> QWidget:
-        """Create LightOnOCR configuration panel."""
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
 
-        # Model variant selection
-        model_group = QGroupBox("Model Selection")
-        model_layout = QVBoxLayout()
 
-        # Preset models dropdown
-        model_layout.addWidget(QLabel("Preset Model:"))
-        self._model_variant_combo = QComboBox()
 
-        # Populate with available models
-        models = get_available_models()
-        for name, info in models.items():
-            display = f"{name} ({info.get('vram', '~4GB')})"
-            self._model_variant_combo.addItem(display, userData=name)
-
-        # Add "Custom" option
-        self._model_variant_combo.addItem("Custom HuggingFace Model", userData="custom")
-        self._model_variant_combo.currentIndexChanged.connect(self._on_model_changed)
-        model_layout.addWidget(self._model_variant_combo)
-
-        # Model description
-        self._model_desc_label = QLabel("")
-        self._model_desc_label.setWordWrap(True)
-        self._model_desc_label.setStyleSheet("color: gray; font-size: 9pt;")
-        model_layout.addWidget(self._model_desc_label)
-
-        # Custom model ID input
-        model_layout.addWidget(QLabel("Custom Model ID:"))
-        self._custom_model_edit = QLineEdit()
-        self._custom_model_edit.setPlaceholderText("e.g., username/LightOnOCR-2-1B-custom")
-        self._custom_model_edit.setEnabled(False)  # Disabled until "Custom" selected
-        model_layout.addWidget(self._custom_model_edit)
-
-        model_group.setLayout(model_layout)
-        layout.addWidget(model_group)
-
-        # Inference settings
-        settings_group = QGroupBox("Inference Settings")
-        settings_layout = QVBoxLayout()
-
-        # Longest edge
-        edge_layout = QVBoxLayout()
-        edge_layout.addWidget(QLabel("Longest Edge (image resize):"))
-
-        edge_slider_layout = QHBoxLayout()
-        self._longest_edge_slider = QSlider(Qt.Orientation.Horizontal)
-        self._longest_edge_slider.setRange(512, 1024)
-        self._longest_edge_slider.setValue(700)
-        self._longest_edge_slider.setTickInterval(100)
-        self._longest_edge_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._longest_edge_slider.valueChanged.connect(self._on_edge_changed)
-        edge_slider_layout.addWidget(self._longest_edge_slider)
-
-        self._longest_edge_label = QLabel("700px")
-        self._longest_edge_label.setMinimumWidth(60)
-        edge_slider_layout.addWidget(self._longest_edge_label)
-
-        edge_layout.addLayout(edge_slider_layout)
-        edge_hint = QLabel("Larger = better quality but slower, more VRAM")
-        edge_hint.setStyleSheet("color: gray; font-size: 9pt;")
-        edge_layout.addWidget(edge_hint)
-        settings_layout.addLayout(edge_layout)
-
-        # Max new tokens
-        tokens_layout = QHBoxLayout()
-        tokens_layout.addWidget(QLabel("Max New Tokens:"))
-        self._max_tokens_spin = QSpinBox()
-        self._max_tokens_spin.setRange(64, 512)
-        self._max_tokens_spin.setValue(256)
-        self._max_tokens_spin.setSingleStep(32)
-        tokens_layout.addWidget(self._max_tokens_spin)
-        tokens_hint = QLabel("Maximum output length")
-        tokens_hint.setStyleSheet("color: gray; font-size: 8pt;")
-        tokens_layout.addWidget(tokens_hint)
-        settings_layout.addLayout(tokens_layout)
-
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
-
-        # Custom prompt
-        prompt_group = QGroupBox("Custom Prompt (Optional)")
-        prompt_layout = QVBoxLayout()
-
-        self._prompt_text_edit = QTextEdit()
-        self._prompt_text_edit.setPlaceholderText(
-            "Leave empty for default prompt, or enter custom prompt...\n"
-            "Example: 'Transcribe the German shorthand text.'"
-        )
-        self._prompt_text_edit.setMaximumHeight(80)
-        prompt_layout.addWidget(self._prompt_text_edit)
-
-        prompt_hint = QLabel("Tip: Include language or script type for better results.")
-        prompt_hint.setStyleSheet("color: gray; font-size: 9pt;")
-        prompt_layout.addWidget(prompt_hint)
-
-        prompt_group.setLayout(prompt_layout)
-        layout.addWidget(prompt_group)
-
-        # Device selection
-        device_group = QGroupBox("Device")
-        device_layout = QHBoxLayout()
-
-        device_layout.addWidget(QLabel("GPU:"))
-        self._device_combo = QComboBox()
-
-        # Detect available devices
-        devices = ["cuda:0"]
-        try:
-            import torch
-            if torch.cuda.is_available():
-                devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
-        except:
-            pass
-        devices.append("cpu")
-
-        self._device_combo.addItems(devices)
-        device_layout.addWidget(self._device_combo)
-
-        device_group.setLayout(device_layout)
-        layout.addWidget(device_group)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-
-        # Initialize model description
-        self._on_model_changed(0)
-
-        self._config_widget = widget
-        return widget
-
-    def _on_model_changed(self, index: int):
-        """Update UI when model selection changes."""
-        if self._model_variant_combo is None:
-            return
-
-        model_name = self._model_variant_combo.currentData()
-        is_custom = (model_name == "custom")
-
-        # Enable/disable custom model input
-        if self._custom_model_edit:
-            self._custom_model_edit.setEnabled(is_custom)
-
-        # Update description
-        if self._model_desc_label:
-            if is_custom:
-                self._model_desc_label.setText("Enter a HuggingFace model ID below")
-            else:
-                info = get_model_info(model_name)
-                if info:
-                    desc = info.get("description", "")
-                    lang = info.get("language", "")
-                    if lang:
-                        desc += f"\nLanguage: {lang}"
-                    self._model_desc_label.setText(desc)
-                else:
-                    self._model_desc_label.setText("")
-
-    def _on_edge_changed(self, value: int):
-        """Update longest edge label."""
-        if self._longest_edge_label:
-            self._longest_edge_label.setText(f"{value}px")
-
-    def get_config(self) -> Dict[str, Any]:
-        """Extract configuration from widget controls."""
-        if self._config_widget is None:
-            return {}
-
-        model_name = self._model_variant_combo.currentData()
-
-        if model_name == "custom":
-            model_id = self._custom_model_edit.text().strip()
-        else:
-            model_id = get_model_id(model_name) or "lightonai/LightOnOCR-2-1B-base"
-
-        custom_prompt = self._prompt_text_edit.toPlainText().strip()
-
-        return {
-            "model_variant": model_name,
-            "model_id": model_id,
-            "longest_edge": self._longest_edge_slider.value(),
-            "max_new_tokens": self._max_tokens_spin.value(),
-            "custom_prompt": custom_prompt if custom_prompt else None,
-            "device": self._device_combo.currentText(),
-        }
-
-    def set_config(self, config: Dict[str, Any]):
-        """Restore configuration to widget controls."""
-        if self._config_widget is None:
-            return
-
-        # Model variant
-        model_variant = config.get("model_variant", "Base Model (1B)")
-        for i in range(self._model_variant_combo.count()):
-            if self._model_variant_combo.itemData(i) == model_variant:
-                self._model_variant_combo.setCurrentIndex(i)
-                break
-
-        # Custom model ID
-        if model_variant == "custom":
-            self._custom_model_edit.setText(config.get("model_id", ""))
-
-        # Inference settings
-        self._longest_edge_slider.setValue(config.get("longest_edge", 700))
-        self._max_tokens_spin.setValue(config.get("max_new_tokens", 256))
-
-        # Custom prompt
-        custom_prompt = config.get("custom_prompt")
-        if custom_prompt:
-            self._prompt_text_edit.setPlainText(custom_prompt)
-
-        # Device
-        device = config.get("device", "cuda:0")
-        idx = self._device_combo.findText(device)
-        if idx >= 0:
-            self._device_combo.setCurrentIndex(idx)
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load LightOnOCR model."""

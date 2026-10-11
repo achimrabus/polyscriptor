@@ -53,16 +53,6 @@ from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
-try:
-    from PyQt6.QtWidgets import (
-        QComboBox, QFileDialog, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-        QSpinBox, QVBoxLayout, QWidget,
-    )
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 # Isolated venv location. Override with POLYSCRIPTOR_PADDLE_VL_VENV (or the
 # venv_path config field). Defaults to venv_paddle_vl in the project root,
@@ -93,10 +83,10 @@ _DEFAULT_PIPELINE_VERSION = "v1.5"
 _WORKER_SCRIPT = Path(__file__).resolve().parent / "paddle_vl_worker.py"
 
 
-_find_venv_python = find_venv_python
+from polyscriptor.engines._venv_worker import find_venv_python as _find_venv_python, venv_has_package as _venv_has_probe_fn
 
 
-_venv_has_probe = lambda p: venv_has_package(p, 'paddleocr')
+_venv_has_probe = lambda p: _venv_has_probe_fn(p, 'paddleocr')
 
 
 class PaddleOCRVLEngine(HTREngine):
@@ -114,12 +104,6 @@ class PaddleOCRVLEngine(HTREngine):
         self._venv_python: Optional[Path] = None
         self._is_loaded: bool = False
 
-        # Config widget references
-        self._config_widget: Optional[QWidget] = None
-        self._venv_edit: Optional[QLineEdit] = None
-        self._device_combo: Optional[QComboBox] = None
-        self._gpu_index_spin: Optional[QSpinBox] = None
-        self._prompt_edit: Optional[QPlainTextEdit] = None
 
     # ------------------------------------------------------------------
     # Identity
@@ -164,133 +148,15 @@ class PaddleOCRVLEngine(HTREngine):
         return ""
 
     # ------------------------------------------------------------------
-    # Configuration widget
     # ------------------------------------------------------------------
 
-    def get_config_widget(self) -> QWidget:
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
-
-        # Venv path
-        venv_group = QGroupBox("PaddleOCR-VL venv")
-        venv_layout = QVBoxLayout()
-        venv_layout.addWidget(QLabel("Path to isolated venv:"))
-        venv_row = QHBoxLayout()
-        self._venv_edit = QLineEdit(str(self._venv_path))
-        self._venv_edit.setToolTip(
-            "Isolated Python venv with paddleocr[doc-parser] installed.\n"
-            f"Default: {_DEFAULT_VENV}\n"
-            "Kept separate from venv_paddle to avoid transformers/paddlex conflicts."
-        )
-        venv_row.addWidget(self._venv_edit)
-        btn_browse = QPushButton("Browse…")
-        btn_browse.clicked.connect(self._browse_venv)
-        venv_row.addWidget(btn_browse)
-        venv_layout.addLayout(venv_row)
-        venv_group.setLayout(venv_layout)
-        layout.addWidget(venv_group)
-
-        # Device
-        device_group = QGroupBox("Device")
-        device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Device:"))
-        self._device_combo = QComboBox()
-        self._device_combo.addItems(["GPU", "CPU"])
-        self._device_combo.setToolTip(
-            "GPU strongly recommended (needs CC >= 8.0, e.g. RTX 30/40/50, A100, L40S).\n"
-            "CPU works but is very slow for a VLM."
-        )
-        device_layout.addWidget(self._device_combo)
-        device_layout.addWidget(QLabel("GPU index:"))
-        self._gpu_index_spin = QSpinBox()
-        self._gpu_index_spin.setRange(0, 15)
-        self._gpu_index_spin.setValue(0)
-        self._gpu_index_spin.setToolTip(
-            "Physical GPU index (CUDA_VISIBLE_DEVICES). The worker pins this GPU "
-            "and addresses it as gpu:0 internally."
-        )
-        device_layout.addWidget(self._gpu_index_spin)
-        device_layout.addStretch()
-        device_group.setLayout(device_layout)
-        layout.addWidget(device_group)
-
-        # Prompt
-        prompt_group = QGroupBox("Task Prompt")
-        prompt_layout = QVBoxLayout()
-        prompt_layout.addWidget(QLabel("Prompt (default 'OCR:'):"))
-        self._prompt_edit = QPlainTextEdit(_DEFAULT_PROMPT)
-        self._prompt_edit.setMaximumHeight(60)
-        self._prompt_edit.setToolTip(
-            "PaddleOCR-VL task prompt. Common values:\n"
-            "  OCR:                  – plain text recognition (default)\n"
-            "  Table Recognition:    – tables\n"
-            "  Formula Recognition:  – formulas\n"
-            "Leave as 'OCR:' for manuscript transcription."
-        )
-        prompt_layout.addWidget(self._prompt_edit)
-        prompt_group.setLayout(prompt_layout)
-        layout.addWidget(prompt_group)
-
-        # Info
-        info = QLabel(
-            "PaddleOCR-VL-1.5 runs in an isolated venv (default: venv_paddle_vl in\n"
-            "the project root) to avoid OpenCV / transformers conflicts. First run\n"
-            "downloads model weights (~2 GB) into the venv's cache directory. Each\n"
-            "transcription spawns a subprocess.\n\n"
-            "NOTE: Cyrillic handwriting is experimental — this model targets multilingual\n"
-            "document parsing. Compare against TrOCR / CRNN-CTC for Slavic manuscripts."
-        )
-        info.setStyleSheet("color: gray; font-size: 9pt; padding: 8px;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-        self._config_widget = widget
-        return widget
-
-    def _browse_venv(self):
-        folder = QFileDialog.getExistingDirectory(
-            self._config_widget, "Select PaddleOCR-VL venv directory", str(self._venv_path)
-        )
-        if folder:
-            self._venv_edit.setText(folder)
 
     # ------------------------------------------------------------------
     # Config get / set
     # ------------------------------------------------------------------
 
-    def get_config(self) -> Dict[str, Any]:
-        if self._config_widget is None:
-            return {
-                "venv_path": str(self._venv_path),
-                "use_gpu": True,
-                "gpu_index": 0,
-                "prompt": _DEFAULT_PROMPT,
-                "pipeline_version": _DEFAULT_PIPELINE_VERSION,
-                "prompt_label": None,
-                "max_new_tokens": None,
-                "repetition_penalty": None,
-            }
-        return {
-            "venv_path": self._venv_edit.text().strip(),
-            "use_gpu": self._device_combo.currentText() == "GPU",
-            "gpu_index": self._gpu_index_spin.value(),
-            "prompt": self._prompt_edit.toPlainText().strip() or _DEFAULT_PROMPT,
-            "pipeline_version": _DEFAULT_PIPELINE_VERSION,
-        }
 
-    def set_config(self, config: Dict[str, Any]):
-        if self._config_widget is None:
-            return
-        if "venv_path" in config:
-            self._venv_edit.setText(config["venv_path"])
-        self._device_combo.setCurrentText("GPU" if config.get("use_gpu", True) else "CPU")
-        self._gpu_index_spin.setValue(int(config.get("gpu_index", 0)))
-        self._prompt_edit.setPlainText(config.get("prompt", _DEFAULT_PROMPT))
 
     # ------------------------------------------------------------------
     # Model loading

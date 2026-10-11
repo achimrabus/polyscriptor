@@ -58,7 +58,7 @@ def test_batch_cli_flag_defaults_to_zero(monkeypatch, tmp_path):
     assert args.no_repeat_ngram_size == 0
 
 
-# ── Switch in the web form (shared definition, also meant for the PyQt widget) ──
+# ── Switch in the web form (single shared field definition) ──
 
 import math
 
@@ -136,48 +136,3 @@ def test_web_live_override_is_not_reload_only(monkeypatch):
     _slot, _eng, cfg, _name, _key = srv._resolve_effective_engine(
         SimpleNamespace(pool_key=None), {"no_repeat_ngram_size": 3})
     assert cfg["no_repeat_ngram_size"] == 3
-
-
-# ── PyQt widget: same field, built from REPEAT_BLOCK_FIELD ─────────────────────
-
-@pytest.fixture
-def qt_engine(monkeypatch):
-    pytest.importorskip("PyQt6.QtWidgets")
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    engine = TrOCREngine()
-    engine.get_config_widget()
-    yield engine
-    del app
-
-
-def test_pyqt_spin_box_follows_the_shared_field(qt_engine):
-    spin = qt_engine._repeat_spin
-    assert spin.minimum() == REPEAT_BLOCK_FIELD["min"]
-    assert spin.maximum() == REPEAT_BLOCK_FIELD["max"]
-    assert spin.value() == REPEAT_BLOCK_FIELD["default"] == 0
-    assert spin.toolTip() == REPEAT_BLOCK_FIELD["hint"]
-
-
-def test_pyqt_get_config_reports_the_block(qt_engine):
-    assert qt_engine.get_config()["no_repeat_ngram_size"] == 0
-    qt_engine._repeat_spin.setValue(3)
-    assert qt_engine.get_config()["no_repeat_ngram_size"] == 3
-
-
-def test_pyqt_set_config_restores_and_defaults_to_off(qt_engine):
-    qt_engine.set_config({"no_repeat_ngram_size": 2})
-    assert qt_engine._repeat_spin.value() == 2
-    qt_engine.set_config({})                    # an old saved config without the key
-    assert qt_engine._repeat_spin.value() == 0
-    qt_engine.set_config({"no_repeat_ngram_size": "junk"})
-    assert qt_engine._repeat_spin.value() == 0
-
-
-def test_pyqt_value_reaches_generate(qt_engine):
-    qt_engine.model = _FakeInference()
-    qt_engine._repeat_spin.setValue(3)
-    # the GUI calls transcribe_line without a config: the widget is read
-    qt_engine.transcribe_line(np.zeros((32, 64, 3), dtype=np.uint8))
-    assert qt_engine.model.calls[0]["no_repeat_ngram_size"] == 3

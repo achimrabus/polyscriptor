@@ -10,17 +10,6 @@ import numpy as np
 
 from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
-try:
-    from PyQt6.QtWidgets import (
-        QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
-        QPushButton, QSpinBox, QCheckBox, QLineEdit, QFileDialog,
-        QGroupBox, QRadioButton, QButtonGroup
-    )
-    from PyQt6.QtCore import Qt
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 try:
     from polyscriptor.inference.page import TrOCRInference
@@ -31,7 +20,7 @@ except ImportError:
 
 # The n-gram repeat block as a user setting. Defined once here so that every front end
 # offers the same field with the same default and explanation: the web form and the
-# PyQt spin box are both built from this dict.
+# the web config schema are both built from this dict.
 REPEAT_BLOCK_FIELD = {
     "key": "no_repeat_ngram_size",
     "type": "number",
@@ -66,20 +55,10 @@ class TrOCREngine(HTREngine):
 
     def __init__(self):
         self.model: Optional[TrOCRInference] = None
-        self._config_widget: Optional[QWidget] = None
         self._current_model_path: Optional[str] = None  # Store loaded model path
         self._num_beams: int = 4  # Effective decoding beams (set in load_model for headless/batch)
         self._no_repeat_ngram_size: int = 0  # 0 = off; overrides the checkpoint's generation_config
 
-        # Widget references (set when config widget is created)
-        self._model_source_combo: Optional[QComboBox] = None
-        self._local_model_combo: Optional[QComboBox] = None
-        self._hf_preset_combo: Optional[QComboBox] = None
-        self._hf_model_edit: Optional[QLineEdit] = None
-        self._beam_spin: Optional[QSpinBox] = None
-        self._repeat_spin: Optional[QSpinBox] = None
-        self._normalize_check: Optional[QCheckBox] = None
-        self._flip_rtl_check: Optional[QCheckBox] = None
 
     def get_name(self) -> str:
         return "TrOCR"
@@ -95,218 +74,12 @@ class TrOCREngine(HTREngine):
             return "TrOCR inference module not available. Check that inference_page.py exists."
         return ""
 
-    def get_config_widget(self) -> QWidget:
-        """Create TrOCR configuration panel."""
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
 
-        # Model source selection
-        source_group = QGroupBox("Model Source")
-        source_layout = QVBoxLayout()
 
-        self._model_source_combo = QComboBox()
-        self._model_source_combo.addItems(["Local Models", "HuggingFace Hub"])
-        self._model_source_combo.currentTextChanged.connect(self._on_model_source_changed)
-        source_layout.addWidget(self._model_source_combo)
 
-        source_group.setLayout(source_layout)
-        layout.addWidget(source_group)
 
-        # Local models group
-        self._local_group = QGroupBox("Local Model")
-        local_layout = QVBoxLayout()
 
-        self._local_model_combo = QComboBox()
-        self._populate_local_models()
-        local_layout.addWidget(QLabel("Model:"))
-        local_layout.addWidget(self._local_model_combo)
-
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self._browse_local_model)
-        local_layout.addWidget(browse_btn)
-
-        self._local_group.setLayout(local_layout)
-        layout.addWidget(self._local_group)
-
-        # HuggingFace models group
-        self._hf_group = QGroupBox("HuggingFace Model")
-        hf_layout = QVBoxLayout()
-
-        # Predefined models dropdown
-        hf_layout.addWidget(QLabel("Preset Models:"))
-        self._hf_preset_combo = QComboBox()
-        self._hf_preset_combo.addItems([
-            "Custom (enter below)",
-            "cyrillic-trocr/trocr-handwritten-cyrillic",
-            "kazars24/trocr-base-handwritten-ru",
-            "Kansallisarkisto/cyrillic-htr-model",
-            "dh-unibe/trocr-kurrent",
-            "dh-unibe/trocr-kurrent-XVI-XVII",
-            "microsoft/trocr-base-handwritten",
-            "microsoft/trocr-large-handwritten",
-            "microsoft/trocr-base-printed",
-            "microsoft/trocr-large-printed"
-        ])
-        self._hf_preset_combo.currentTextChanged.connect(self._on_preset_changed)
-        hf_layout.addWidget(self._hf_preset_combo)
-
-        # Custom model ID entry
-        hf_layout.addWidget(QLabel("Model ID:"))
-        self._hf_model_edit = QLineEdit()
-        self._hf_model_edit.setPlaceholderText("e.g., cyrillic-trocr/trocr-handwritten-cyrillic")
-        self._hf_model_edit.setText("cyrillic-trocr/trocr-handwritten-cyrillic")
-        hf_layout.addWidget(self._hf_model_edit)
-
-        self._hf_group.setLayout(hf_layout)
-        self._hf_group.setVisible(False)  # Hidden by default
-        layout.addWidget(self._hf_group)
-
-        # Inference settings
-        settings_group = QGroupBox("Inference Settings")
-        settings_layout = QVBoxLayout()
-
-        # Beam search
-        beam_layout = QHBoxLayout()
-        beam_layout.addWidget(QLabel("Beam Search:"))
-        self._beam_spin = QSpinBox()
-        self._beam_spin.setRange(1, 10)
-        self._beam_spin.setValue(4)
-        self._beam_spin.setToolTip("Higher = better quality but slower (1 = greedy, 4 = recommended)")
-        beam_layout.addWidget(self._beam_spin)
-        beam_layout.addStretch()
-        settings_layout.addLayout(beam_layout)
-
-        # Repeat block: the same field the web form shows (REPEAT_BLOCK_FIELD)
-        f = REPEAT_BLOCK_FIELD
-        repeat_layout = QHBoxLayout()
-        repeat_layout.addWidget(QLabel(f"{f['label']}:"))
-        self._repeat_spin = QSpinBox()
-        self._repeat_spin.setRange(f["min"], f["max"])
-        self._repeat_spin.setValue(f["default"])
-        self._repeat_spin.setSpecialValueText("off")   # shown for 0
-        self._repeat_spin.setToolTip(f["hint"])
-        repeat_layout.addWidget(self._repeat_spin)
-        repeat_layout.addStretch()
-        settings_layout.addLayout(repeat_layout)
-
-        # Normalize background
-        self._normalize_check = QCheckBox("Normalize Background")
-        self._normalize_check.setToolTip("Apply CLAHE normalization (use if model was trained with it)")
-        settings_layout.addWidget(self._normalize_check)
-
-        self._flip_rtl_check = QCheckBox("RTL manuscript (flip line images)")
-        self._flip_rtl_check.setToolTip("Flip line images horizontally for RTL scripts (Ottoman, Arabic, Hebrew)")
-        settings_layout.addWidget(self._flip_rtl_check)
-
-        settings_group.setLayout(settings_layout)
-        layout.addWidget(settings_group)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-
-        self._config_widget = widget
-        return widget
-
-    def _populate_local_models(self):
-        """Scan models directory for TrOCR checkpoints."""
-        if self._local_model_combo is None:
-            return
-
-        self._local_model_combo.clear()
-
-        models_dir = Path("models")
-        if not models_dir.exists():
-            self._local_model_combo.addItem("No models found")
-            return
-
-        # Find checkpoint directories
-        checkpoints = []
-        for model_dir in models_dir.iterdir():
-            if not model_dir.is_dir():
-                continue
-
-            # Check if it's a TrOCR model (has pytorch_model.bin or model.safetensors)
-            if (model_dir / "pytorch_model.bin").exists() or (model_dir / "model.safetensors").exists():
-                checkpoints.append(str(model_dir))
-
-            # Also check for checkpoint subdirectories
-            for subdir in model_dir.glob("checkpoint-*"):
-                if subdir.is_dir():
-                    if (subdir / "pytorch_model.bin").exists() or (subdir / "model.safetensors").exists():
-                        checkpoints.append(str(subdir))
-
-        if checkpoints:
-            self._local_model_combo.addItems(sorted(checkpoints))
-        else:
-            self._local_model_combo.addItem("No local models found")
-
-    def _browse_local_model(self):
-        """Open file dialog to select model directory."""
-        directory = QFileDialog.getExistingDirectory(
-            self._config_widget,
-            "Select Model Directory",
-            "models"
-        )
-
-        if directory:
-            # Add to combo box if not already present
-            if self._local_model_combo.findText(directory) == -1:
-                self._local_model_combo.addItem(directory)
-            self._local_model_combo.setCurrentText(directory)
-
-    def _on_model_source_changed(self, source: str):
-        """Toggle between local and HuggingFace model selection."""
-        is_local = (source == "Local Models")
-        self._local_group.setVisible(is_local)
-        self._hf_group.setVisible(not is_local)
-
-    def _on_preset_changed(self, preset: str):
-        """Update model ID when preset is selected."""
-        if preset != "Custom (enter below)":
-            self._hf_model_edit.setText(preset)
-
-    def get_config(self) -> Dict[str, Any]:
-        """Extract configuration from widget controls."""
-        if self._config_widget is None:
-            return {}
-
-        is_local = (self._model_source_combo.currentText() == "Local Models")
-
-        return {
-            "model_source": "local" if is_local else "huggingface",
-            "model_path": self._local_model_combo.currentText() if is_local else self._hf_model_edit.text(),
-            "beam_search": self._beam_spin.value(),
-            "no_repeat_ngram_size": self._repeat_spin.value(),
-            "normalize_background": self._normalize_check.isChecked(),
-            "flip_rtl": self._flip_rtl_check.isChecked(),
-        }
-
-    def set_config(self, config: Dict[str, Any]):
-        """Restore configuration to widget controls."""
-        if self._config_widget is None:
-            return
-
-        model_source = config.get("model_source", "local")
-        self._model_source_combo.setCurrentText("Local Models" if model_source == "local" else "HuggingFace Hub")
-
-        model_path = config.get("model_path", "")
-        if model_source == "local":
-            idx = self._local_model_combo.findText(model_path)
-            if idx >= 0:
-                self._local_model_combo.setCurrentIndex(idx)
-        else:
-            self._hf_model_edit.setText(model_path)
-
-        self._beam_spin.setValue(config.get("beam_search", 4))
-        if self._repeat_spin:
-            self._repeat_spin.setValue(repeat_block_size(
-                config.get("no_repeat_ngram_size", REPEAT_BLOCK_FIELD["default"])))
-        self._normalize_check.setChecked(config.get("normalize_background", False))
-        if self._flip_rtl_check:
-            self._flip_rtl_check.setChecked(config.get("flip_rtl", False))
 
     def load_model(self, config: Dict[str, Any]) -> bool:
         """Load TrOCR model."""
@@ -322,7 +95,6 @@ class TrOCREngine(HTREngine):
 
             # Capture effective decoding beams from CLI/batch config so that
             # transcribe_line() uses it in headless mode (where get_config()
-            # returns {} because there is no Qt widget). Accept both keys:
             # 'beam_search' (GUI) and 'num_beams' (CLI / polyscriptor.cli.batch).
             self._num_beams = int(config.get("beam_search", config.get("num_beams", 4)))
             self._no_repeat_ngram_size = repeat_block_size(config.get("no_repeat_ngram_size", 0))
@@ -376,7 +148,6 @@ class TrOCREngine(HTREngine):
 
         # Prefer an explicit per-call value (GUI passes 'beam_search', CLI may
         # pass 'num_beams'); otherwise use the value captured at load_model time.
-        # NOTE: in headless/batch mode config is {} (no Qt widget), so without
         # the self._num_beams fallback this silently defaulted to 4 and ignored
         # the CLI --num-beams entirely.
         beam_search = config.get("beam_search", config.get("num_beams", self._num_beams))

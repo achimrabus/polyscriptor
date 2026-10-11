@@ -49,7 +49,6 @@ dependencies = [
 [project.optional-dependencies]
 kraken = ["kraken==7.1.1"]
 gpu = ["nvidia-ml-py>=12.0.0"]
-qt = ["PyQt6>=6.6.0"]
 dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]

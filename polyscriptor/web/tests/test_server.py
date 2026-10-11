@@ -105,7 +105,7 @@ def test_config_schema_crnn_ctc():
     data = resp.json()
     assert "fields" in data
     assert isinstance(data["fields"], list)
-    # Fields may be empty in headless test environments without PyQt
+    # Dynamic fields are empty until an API key triggers a live model fetch
 
 
 # ── Kraken presets ────────────────────────────────────────────────────────────

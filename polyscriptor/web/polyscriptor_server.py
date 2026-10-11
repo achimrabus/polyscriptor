@@ -3,7 +3,7 @@ Polyscriptor Web UI — FastAPI Backend
 
 Thin wrapper around existing HTR engine code. Provides REST API + SSE
 for browser-based transcription. All heavy lifting done by the same
-modules the PyQt6 GUI uses.
+the engines and segmentation modules.
 
 Usage:
     source htr_gui/bin/activate
@@ -519,7 +519,7 @@ async def _periodic_cleanup():
 # API key resolution — keys never stored or shared server-side (Phase 3)
 # Web UI users MUST provide their own keys via browser localStorage.
 # Server env vars (.env) are NOT used by the web UI — they exist only for
-# the PyQt GUI and CLI tools which run locally on the admin's machine.
+# the CLI tools which run locally on the admin's machine.
 # ---------------------------------------------------------------------------
 
 # Known key slots (for validation only — env vars are NOT consulted)

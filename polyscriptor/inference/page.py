@@ -13,7 +13,7 @@ Usage:
     # With Transkribus PAGE XML (uses existing segmentation)
     python inference_page.py --image page.jpg --xml page.xml --checkpoint checkpoint-3000
 
-Future: Can be extended with a GUI using tkinter or PyQt.
+Used by the web UI and CLI for whole-page segmentation and transcription.
 """
 
 import argparse

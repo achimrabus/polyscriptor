@@ -37,17 +37,6 @@ from polyscriptor.core.engine_base import HTREngine, TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
-try:
-    from PyQt6.QtWidgets import (
-        QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QPushButton,
-        QSlider, QSpinBox, QVBoxLayout, QWidget,
-    )
-    from PyQt6.QtCore import Qt
-    PYQT_AVAILABLE = True
-except ImportError:
-    PYQT_AVAILABLE = False
-    QWidget = object
 
 # Default venv path (sibling of the project root, same convention as venv_paddle)
 from polyscriptor.engines._venv_worker import (
@@ -88,18 +77,8 @@ class DeepSeekOCREngine(HTREngine):
         self._venv_python: Optional[Path] = None
         self._is_loaded: bool = False
 
-        # Config widget references
-        self._config_widget: Optional[QWidget] = None
-        self._venv_edit: Optional[QLineEdit] = None
-        self._ocr_mode_combo: Optional[QComboBox] = None
         self._strip_markdown_checkbox: Optional[QCheckBox] = None
-        self._base_size_slider: Optional[QSlider] = None
-        self._base_size_label: Optional[QLabel] = None
-        self._image_size_slider: Optional[QSlider] = None
-        self._image_size_label: Optional[QLabel] = None
         self._crop_mode_checkbox: Optional[QCheckBox] = None
-        self._device_combo: Optional[QComboBox] = None
-        self._repetition_penalty_spin: Optional[QDoubleSpinBox] = None
 
     # ------------------------------------------------------------------
     # Identity
@@ -146,248 +125,17 @@ class DeepSeekOCREngine(HTREngine):
         return ""
 
     # ------------------------------------------------------------------
-    # Configuration widget
     # ------------------------------------------------------------------
 
-    def get_config_widget(self) -> QWidget:
-        """Create DeepSeek-OCR configuration panel."""
-        if self._config_widget is not None:
-            return self._config_widget
 
-        widget = QWidget()
-        layout = QVBoxLayout()
 
-        # Venv path
-        venv_group = QGroupBox("DeepSeek venv")
-        venv_layout = QVBoxLayout()
-        venv_layout.addWidget(QLabel("Path to venv_deepseek:"))
-        venv_row = QHBoxLayout()
-        self._venv_edit = QLineEdit(str(self._venv_path))
-        self._venv_edit.setToolTip(
-            "Path to the isolated Python venv with DeepSeek-OCR dependencies.\n"
-            "Default: <project>/venv_deepseek\n"
-            'Create with: python -m venv venv_deepseek\n'
-            '  source venv_deepseek/bin/activate\n'
-            '  pip install "transformers==4.46.3" einops addict easydict pillow'
-        )
-        venv_row.addWidget(self._venv_edit)
-        btn_browse = QPushButton("Browse…")
-        btn_browse.clicked.connect(self._browse_venv)
-        venv_row.addWidget(btn_browse)
-        venv_layout.addLayout(venv_row)
-        venv_group.setLayout(venv_layout)
-        layout.addWidget(venv_group)
 
-        # OCR Mode selection
-        mode_group = QGroupBox("OCR Mode")
-        mode_layout = QVBoxLayout()
-
-        self._ocr_mode_combo = QComboBox()
-        self._ocr_mode_combo.addItems(["Document OCR", "Free OCR"])
-        mode_layout.addWidget(QLabel("Mode:"))
-        mode_layout.addWidget(self._ocr_mode_combo)
-
-        mode_hint = QLabel(
-            "Document OCR: Preserves layout with markdown formatting\n"
-            "Free OCR: Plain text without layout structure"
-        )
-        mode_hint.setStyleSheet("color: gray; font-size: 9pt;")
-        mode_hint.setWordWrap(True)
-        mode_layout.addWidget(mode_hint)
-
-        mode_group.setLayout(mode_layout)
-        layout.addWidget(mode_group)
-
-        # Output settings
-        output_group = QGroupBox("Output Settings")
-        output_layout = QVBoxLayout()
-
-        self._strip_markdown_checkbox = QCheckBox("Strip Markdown formatting")
-        self._strip_markdown_checkbox.setChecked(False)
-        strip_hint = QLabel("Remove headers, bold, lists from output (plain text only)")
-        strip_hint.setStyleSheet("color: gray; font-size: 9pt;")
-        output_layout.addWidget(self._strip_markdown_checkbox)
-        output_layout.addWidget(strip_hint)
-
-        # Repetition penalty
-        rep_row = QHBoxLayout()
-        rep_row.addWidget(QLabel("Repetition penalty:"))
-        self._repetition_penalty_spin = QDoubleSpinBox()
-        self._repetition_penalty_spin.setRange(1.0, 2.0)
-        self._repetition_penalty_spin.setSingleStep(0.05)
-        self._repetition_penalty_spin.setDecimals(2)
-        self._repetition_penalty_spin.setValue(1.3)
-        self._repetition_penalty_spin.setToolTip(
-            "Penalise repeated tokens during generation.\n"
-            "1.0 = disabled (risk of loops), 1.3 = recommended,\n"
-            "1.5+ = strong suppression (may hurt accuracy)."
-        )
-        rep_row.addWidget(self._repetition_penalty_spin)
-        rep_row.addStretch()
-        output_layout.addLayout(rep_row)
-        rep_hint = QLabel("1.3 recommended — reduces hallucination/repetition loops")
-        rep_hint.setStyleSheet("color: gray; font-size: 9pt;")
-        output_layout.addWidget(rep_hint)
-
-        output_group.setLayout(output_layout)
-        layout.addWidget(output_group)
-
-        # Image processing settings
-        image_group = QGroupBox("Image Processing")
-        image_layout = QVBoxLayout()
-
-        # Base Size
-        base_layout = QVBoxLayout()
-        base_layout.addWidget(QLabel("Base Size (patch resolution):"))
-
-        base_slider_layout = QHBoxLayout()
-        self._base_size_slider = QSlider(Qt.Orientation.Horizontal)
-        self._base_size_slider.setRange(512, 2048)
-        self._base_size_slider.setValue(1024)
-        self._base_size_slider.setTickInterval(256)
-        self._base_size_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._base_size_slider.valueChanged.connect(self._on_base_size_changed)
-        base_slider_layout.addWidget(self._base_size_slider)
-
-        self._base_size_label = QLabel("1024px")
-        self._base_size_label.setMinimumWidth(60)
-        base_slider_layout.addWidget(self._base_size_label)
-
-        base_layout.addLayout(base_slider_layout)
-        image_layout.addLayout(base_layout)
-
-        # Image Size
-        img_layout = QVBoxLayout()
-        img_layout.addWidget(QLabel("Image Size (output resolution):"))
-
-        img_slider_layout = QHBoxLayout()
-        self._image_size_slider = QSlider(Qt.Orientation.Horizontal)
-        self._image_size_slider.setRange(512, 1024)
-        self._image_size_slider.setValue(640)
-        self._image_size_slider.setTickInterval(128)
-        self._image_size_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._image_size_slider.valueChanged.connect(self._on_image_size_changed)
-        img_slider_layout.addWidget(self._image_size_slider)
-
-        self._image_size_label = QLabel("640px")
-        self._image_size_label.setMinimumWidth(60)
-        img_slider_layout.addWidget(self._image_size_label)
-
-        img_layout.addLayout(img_slider_layout)
-        image_layout.addLayout(img_layout)
-
-        # Crop Mode
-        self._crop_mode_checkbox = QCheckBox("Enable Crop Mode")
-        self._crop_mode_checkbox.setChecked(True)
-        crop_hint = QLabel("Crop to content region (recommended for documents)")
-        crop_hint.setStyleSheet("color: gray; font-size: 9pt;")
-        image_layout.addWidget(self._crop_mode_checkbox)
-        image_layout.addWidget(crop_hint)
-
-        image_group.setLayout(image_layout)
-        layout.addWidget(image_group)
-
-        # Device selection
-        device_group = QGroupBox("Device")
-        device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Device:"))
-        self._device_combo = QComboBox()
-        self._device_combo.addItems(["cuda:0", "cuda:1", "cpu"])
-        self._device_combo.setToolTip(
-            "GPU device for inference (runs inside venv_deepseek subprocess).\n"
-            "cuda:0 is recommended; use cpu only as fallback (very slow)."
-        )
-        device_layout.addWidget(self._device_combo)
-        device_layout.addStretch()
-        device_group.setLayout(device_layout)
-        layout.addWidget(device_group)
-
-        # Info
-        info = QLabel(
-            "DeepSeek-OCR-2 runs in an isolated venv (venv_deepseek) to avoid\n"
-            "transformers version conflicts with LightOnOCR.\n"
-            "First run downloads model weights (~6 GB). Each call spawns a\n"
-            "subprocess — expect ~30–120 s per page depending on GPU."
-        )
-        info.setStyleSheet("color: gray; font-size: 9pt; padding: 8px;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        layout.addStretch()
-        widget.setLayout(layout)
-        self._config_widget = widget
-        return widget
-
-    def _browse_venv(self):
-        folder = QFileDialog.getExistingDirectory(
-            self._config_widget, "Select venv_deepseek directory", str(self._venv_path)
-        )
-        if folder:
-            self._venv_edit.setText(folder)
-
-    def _on_base_size_changed(self, value: int):
-        if self._base_size_label:
-            self._base_size_label.setText(f"{value}px")
-
-    def _on_image_size_changed(self, value: int):
-        if self._image_size_label:
-            self._image_size_label.setText(f"{value}px")
 
     # ------------------------------------------------------------------
     # Config get / set
     # ------------------------------------------------------------------
 
-    def get_config(self) -> Dict[str, Any]:
-        if self._config_widget is None:
-            return {
-                "venv_path": str(self._venv_path),
-                "model_id": "deepseek-ai/DeepSeek-OCR-2",
-                "ocr_mode": "document",
-                "strip_markdown": False,
-                "base_size": 1024,
-                "image_size": 640,
-                "crop_mode": True,
-                "device": "cuda:0",
-                "repetition_penalty": 1.3,
-            }
 
-        ocr_mode_text = self._ocr_mode_combo.currentText()
-        ocr_mode = "document" if ocr_mode_text == "Document OCR" else "free"
-
-        return {
-            "venv_path": self._venv_edit.text().strip() or str(self._venv_path),
-            "model_id": "deepseek-ai/DeepSeek-OCR-2",
-            "ocr_mode": ocr_mode,
-            "strip_markdown": self._strip_markdown_checkbox.isChecked(),
-            "base_size": self._base_size_slider.value(),
-            "image_size": self._image_size_slider.value(),
-            "crop_mode": self._crop_mode_checkbox.isChecked(),
-            "device": self._device_combo.currentText(),
-            "repetition_penalty": self._repetition_penalty_spin.value(),
-        }
-
-    def set_config(self, config: Dict[str, Any]):
-        if self._config_widget is None:
-            return
-
-        if "venv_path" in config:
-            self._venv_edit.setText(config["venv_path"])
-
-        ocr_mode = config.get("ocr_mode", "document")
-        self._ocr_mode_combo.setCurrentText(
-            "Document OCR" if ocr_mode == "document" else "Free OCR"
-        )
-
-        self._strip_markdown_checkbox.setChecked(config.get("strip_markdown", False))
-        self._base_size_slider.setValue(config.get("base_size", 1024))
-        self._image_size_slider.setValue(config.get("image_size", 640))
-        self._crop_mode_checkbox.setChecked(config.get("crop_mode", True))
-        self._repetition_penalty_spin.setValue(config.get("repetition_penalty", 1.3))
-
-        device = config.get("device", "cuda:0")
-        idx = self._device_combo.findText(device)
-        if idx >= 0:
-            self._device_combo.setCurrentIndex(idx)
 
     # ------------------------------------------------------------------
     # Model loading (validates venv + worker; actual model loads lazily in subprocess)
@@ -398,9 +146,6 @@ class DeepSeekOCREngine(HTREngine):
         venv_path = Path(config.get("venv_path", str(self._venv_path)))
         self._venv_path = venv_path
 
-        # Sync venv_edit if widget is open
-        if self._venv_edit is not None:
-            self._venv_edit.setText(str(venv_path))
 
         python = _find_venv_python(venv_path)
         if python is None:
