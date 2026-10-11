@@ -24,12 +24,14 @@ except ImportError:
 
 try:
     # Use native Linux implementation (no WSL dependency)
-    from inference_pylaia_native import PyLaiaInference, PYLAIA_MODELS
+    from inference_pylaia_native import PyLaiaInference, PYLAIA_MODELS, preset_source, _local_file
     PYLAIA_AVAILABLE = True
     PYLAIA_LM_AVAILABLE = False  # Language model not yet implemented
 except ImportError:
     PYLAIA_AVAILABLE = False
     PYLAIA_MODELS = {}
+    preset_source = lambda info: None
+    _local_file = lambda path: None
     PYLAIA_LM_AVAILABLE = False
 
 
@@ -182,8 +184,13 @@ class PyLaiaEngine(HTREngine):
             self._model_combo.addItem("No preset models found")
             return
 
-        for model_id in PYLAIA_MODELS.keys():
-            self._model_combo.addItem(model_id)
+        # Presets whose files are missing here and that are not on Hugging Face
+        # cannot load, so they are not offered
+        for model_id, info in PYLAIA_MODELS.items():
+            if preset_source(info) is not None:
+                self._model_combo.addItem(model_id)
+        if self._model_combo.count() == 0:
+            self._model_combo.addItem("No preset models found")
 
     def _on_preset_changed(self, preset_name: str):
         """Update when preset changes."""
@@ -279,7 +286,9 @@ class PyLaiaEngine(HTREngine):
             if model_path in PYLAIA_MODELS:
                 preset_info = PYLAIA_MODELS[model_path]
                 if isinstance(preset_info, dict):
-                    if preset_info.get("repo_id"):
+                    if preset_source(preset_info) == "hf":
+                        # Published model whose files are not here: fetch from the
+                        # Hugging Face repo (cached after the first load)
                         try:
                             from huggingface_hub import hf_hub_download
                         except ImportError as exc:
@@ -289,15 +298,19 @@ class PyLaiaEngine(HTREngine):
                         repo_id = preset_info["repo_id"]
                         model_path = hf_hub_download(
                             repo_id=repo_id,
-                            filename=preset_info.get("checkpoint", "best_model.pt"),
+                            filename=preset_info.get("hf_checkpoint", "best_model.pt"),
                         )
                         syms_path = hf_hub_download(
                             repo_id=repo_id,
-                            filename=preset_info.get("syms", "symbols.txt"),
+                            filename=preset_info.get("hf_syms", "symbols.txt"),
                         )
                     else:
                         model_path = preset_info.get("checkpoint", preset_info.get("path", model_path))
                         syms_path = preset_info.get("syms")
+                        # Registry paths are relative to the repository root
+                        model_path = str(_local_file(model_path) or model_path)
+                        if syms_path:
+                            syms_path = str(_local_file(syms_path) or syms_path)
                 # If preset_info is just a string, use it as the path
                 elif isinstance(preset_info, str):
                     model_path = preset_info
@@ -322,10 +335,16 @@ class PyLaiaEngine(HTREngine):
                 # Load without language model
                 # PyLaiaInference expects checkpoint_path, syms_path, and enable_spaces
                 enable_spaces = config.get("enable_spaces", True)
+                # batch_processing.py passes --device here; without it the reader
+                # picked cuda whenever a GPU was visible, even for --device cpu
+                device = config.get("device")
+                if device in (None, "", "auto"):
+                    device = None
                 self.model = PyLaiaInference(
                     checkpoint_path=model_path,
                     syms_path=syms_path,
-                    enable_spaces=enable_spaces
+                    enable_spaces=enable_spaces,
+                    device=device
                 )
                 self.model_lm = None
 

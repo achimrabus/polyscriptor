@@ -26,7 +26,7 @@ try:
     # Local module
     from kraken_segmenter import KrakenLineSegmenter
 except Exception as e:
-    raise ImportError("kraken_segmenter.py not found or Kraken is not installed. Install with: pip install kraken")
+    raise ImportError("kraken_segmenter.py not found or Kraken is not installed. Install it in a fresh environment together with the rest: pip install -r requirements.txt -r requirements-kraken.txt (see README)")
 
 import xml.etree.ElementTree as ET
 

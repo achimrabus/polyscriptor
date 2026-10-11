@@ -1,6 +1,6 @@
 # Multi-Engine HTR Training & Comparison Tool
 
-A comprehensive toolkit for training and comparing different Handwritten Text Recognition (HTR) engines on historical manuscript datasets. Supports TrOCR, CRNN-CTC, Qwen3-VL, LightOnOCR, Party, and Kraken engines with a unified GUI interface.
+A comprehensive toolkit for training and comparing different Handwritten Text Recognition (HTR) engines on historical manuscript datasets. Supports TrOCR, CRNN-CTC, Qwen3-VL, LightOnOCR, Party, and Kraken engines through a browser-based web interface (plus a PyQt6 desktop GUI and a batch CLI).
 
 **Primary Focus:** Cyrillic manuscripts (Russian, Ukrainian, Church Slavonic, Glagolitic)
 
@@ -24,7 +24,8 @@ A comprehensive toolkit for training and comparing different Handwritten Text Re
 - **Unified interface**: All models accessible through same engine plugin system
 
 ### Core Capabilities
-- **Plugin GUI**: Compare engines side-by-side with unified interface
+- **Web interface**: Upload, segment, transcribe, correct and export in the browser; runs locally or on a server
+- **Engine comparison**: Compare engines side-by-side (web interface and desktop GUI)
 - **Model management**: Easy switching between trained models and API providers
 - **Export formats**: TXT, CSV, PAGE XML
 
@@ -58,54 +59,57 @@ source htr_env/bin/activate  # Linux/Mac
 # or: htr_env\Scripts\activate  # Windows
 ```
 
-**GPU install (CUDA 12.1 — Linux/Windows with NVIDIA GPU):**
+Install everything in **one** pip call into the fresh environment. `requirements-kraken.txt`
+adds Kraken segmentation; it is optional but recommended (without it, the fast but much weaker
+HPP segmentation is used).
+
+**GPU install (CUDA 12.8 — Linux/Windows with NVIDIA GPU):**
 ```bash
-# Install CUDA torch first, then the rest
-pip install -r requirements-gpu.txt --extra-index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt
+pip install -r requirements-gpu.txt -r requirements.txt -r requirements-kraken.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu128
 ```
 
 **CPU-only install (no GPU required):**
 ```bash
 # Linux/Mac:
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-kraken.txt
 
 # Windows (avoids a torch DLL load error on CPU-only machines):
-pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt -r requirements-kraken.txt --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
-### 2. Launch GUI for inference
+> **Do not add Kraken to an existing environment later** (`pip install kraken` or
+> `pip install -r requirements-kraken.txt` as a second step). Kraken pins several shared packages
+> tightly; installed afterwards, pip downgrades them and `transformers` stops importing. If you
+> need Kraken in an environment that was set up without it, create a new environment and use
+> the one-call install above.
 
-**Local usage (Linux/Mac):**
+### 2. Start the web interface
+
 ```bash
-source htr_env/bin/activate
-python3 transcription_gui_plugin.py
+source htr_env/bin/activate        # Windows: htr_env\Scripts\activate
+uvicorn web.polyscriptor_server:app --host 0.0.0.0 --port 8765
 ```
 
-**Local usage (Windows):**
-```bat
-htr_env\Scripts\activate
-python transcription_gui_plugin.py
-```
+Open **http://localhost:8765** in your browser. On a remote server, tunnel the port from your
+laptop with `ssh -L 8765:localhost:8765 user@server` and open the same address locally. No
+display, X11 or Qt is needed. Details: [Web Interface](#-web-interface).
 
-> **Note:** The plugin GUI requires `PyQt6` (included in `requirements.txt`). The web UI (`uvicorn web.polyscriptor_server:app`) works without PyQt6.
-
-**Remote server usage (GUI over X11):**
+**Alternative: desktop GUI (PyQt6)**
 ```bash
-# X11 forwarding (e.g. with MobaXterm or ssh -X)
-ssh -X user@server
-cd ~/htr_gui/dhlab-slavistik
-source htr_env/bin/activate
-python3 transcription_gui_plugin.py
+python3 transcription_gui_plugin.py      # single pages
+python3 polyscriptor_batch_gui.py        # folders
 ```
 
-**Recommended for remote: CLI batch processing**
+> **Linux:** PyQt6 (Qt ≥ 6.5) needs the system library `libxcb-cursor0`. If the GUI fails with *"Could not load the Qt platform plugin "xcb""*, install it: `sudo apt install libxcb-cursor0` (Debian/Ubuntu).
+
+**For many pages: batch CLI**
 ```bash
-# More efficient than GUI for server workflows
 python3 batch_processing.py \
     --input-folder HTR_Images/my_folder \
     --engine crnn-ctc \
     --model-path models/crnn_ctc_model/best_model.pt \
+    --segmentation-method kraken-blla \
     --use-pagexml
 ```
 
@@ -141,6 +145,54 @@ python3 train_pylaia.py \
 
 ---
 
+## 🌐 Web Interface
+
+**The web interface is the main way to use Polyscriptor** — run inference locally or on a remote server and interact from any browser. No X11 forwarding needed; when running on a remote server, no local Python install is required either.
+
+### Starting the server
+
+```bash
+source htr_env/bin/activate    # Windows: htr_env\Scripts\activate
+uvicorn web.polyscriptor_server:app --host 0.0.0.0 --port 8765   # run from the project root
+# open http://localhost:8765
+```
+
+> **Works without a GPU.** Commercial APIs (Gemini, Claude, OpenAI) and TrOCR run on CPU. CRNN-CTC also runs on CPU — inference is slower (~1–2 min/page) but fully functional, and our published Church Slavonic, Ukrainian and Glagolitic models all work this way. Only Qwen3-VL and LightOnOCR require a GPU.
+
+### Remote Access via SSH Tunnel
+
+```bash
+# On your laptop — tunnel port 8765 through SSH
+ssh -L 8765:localhost:8765 user@your.server.edu
+
+# Then open: http://localhost:8765
+# No firewall issues — works on any university network
+```
+
+### Features
+
+- **Engine selection** with dynamic configuration forms (CRNN-CTC, TrOCR, Kraken, etc.)
+- **Image upload** — drag-and-drop, file picker, or PDF upload (multi-page PDFs become batch items)
+- **Segmentation** — Kraken (neural blla or classical) with color-coded region overlay
+- **Live transcription** — Server-Sent Events stream, lines appear as processed
+- **Batch queue** — multi-image queue, drag-to-reorder, cancel, prev/next navigation
+- **Inline editing** — double-click any transcription line to correct it
+- **Confidence filter** — slider to dim low-confidence lines
+- **Export** — TXT, CSV, PAGE XML (single image or ZIP for entire batch)
+- **Font selector** — Monomakh Unicode (recommended for Church Slavonic), Old Standard TT, and others
+- **Kraken model presets** — local blla segmentation model and CATMuS-Print (Zenodo, one-click download); any other Kraken `.mlmodel` can be loaded from a local path
+- **Resizable panels** — drag handles to adjust column widths, saved across sessions
+
+### Running Tests
+
+```bash
+source htr_env/bin/activate
+pip install pytest httpx
+pytest web/tests/test_server.py -v
+```
+
+---
+
 ## 🤖 Pre-trained Models
 
 Polyscriptor works with models from several sources. The table below lists tested, ready-to-use options for each engine.
@@ -157,8 +209,12 @@ Ready-to-use models for Cyrillic and Glagolitic manuscripts, trained with Polysc
 | [crnn-ctc-prosta-mova](https://huggingface.co/achimrabus/crnn-ctc-prosta-mova) | Prosta Mova (Old Ruthenian) | 3.77% | Continslav corpus (Martin Meindl) |
 | [crnn-ctc-ukrainian](https://huggingface.co/achimrabus/crnn-ctc-ukrainian) | Ukrainian (Cyrillic) | 4.76% | 19th–20th c. manuscripts (MultiHTR) |
 | [crnn-ctc-glagolitic](https://huggingface.co/achimrabus/crnn-ctc-glagolitic) | Croatian Glagolitic | 5.33% | Outputs Latin transliteration |
+| [crnn-ctc-russian](https://huggingface.co/achimrabus/crnn-ctc-russian) | Russian (Cyrillic) | 6.92% | 18th–20th c. manuscripts, print and typescript; pre- and post-reform orthography |
 
-All models run on CPU (no GPU required) and can be loaded directly in the CRNN-CTC engine.
+All models run on CPU (no GPU required). They are presets of the CRNN-CTC engine: in a fresh
+clone they appear as "[Hugging Face, auto-download]" and are downloaded on first load (then
+cached); no `models/` folder needs to be set up. A model placed under the registry path in
+`models/` is used instead of the download.
 
 ### TrOCR
 
@@ -166,7 +222,23 @@ A collection of TrOCR models for Cyrillic handwriting (Russian, Ukrainian, Churc
 
 **[https://huggingface.co/cyrillic-trocr](https://huggingface.co/cyrillic-trocr)**
 
-These can be loaded in the TrOCR engine by entering the HuggingFace model ID (e.g. `cyrillic-trocr/trocr-base-handwritten-ru`).
+Built-in presets of the TrOCR engine (downloaded on first load); CER as reported on each
+model's validation set at training time:
+
+| Model | Script / Language | Validation CER | Note |
+|-------|-------------------|-----|------|
+| [cyrillic-trocr/trocr-church-slavonic-handwritten](https://huggingface.co/cyrillic-trocr/trocr-church-slavonic-handwritten) | Church Slavonic | 4.99% | same data as the CRNN-CTC model (2.89%) |
+| [cyrillic-trocr/trocr-ukrainian-handwritten](https://huggingface.co/cyrillic-trocr/trocr-ukrainian-handwritten) | Ukrainian | 9.94% | |
+| [cyrillic-trocr/trocr-handwritten-cyrillic](https://huggingface.co/cyrillic-trocr/trocr-handwritten-cyrillic) | Church Slavonic, Russian, Ukrainian | 25.3% | noisy ground truth, see model card |
+| [achimrabus/trocr-glagolitic-handwritten](https://huggingface.co/achimrabus/trocr-glagolitic-handwritten) | Croatian Glagolitic | 6.42% | outputs Latin transliteration |
+
+Any other TrOCR model can be loaded by entering its HuggingFace ID or a local path.
+
+**Decoding.** Polyscriptor decodes TrOCR without the n-gram repeat block (`no_repeat_ngram_size=0`)
+and with `max_length=128`. TrOCR's tokenizer splits Cyrillic into single letters or smaller pieces,
+so a repeat block suppresses ordinary letter sequences; switching it off improved every Cyrillic and
+Glagolitic model we tested. The block can be set as "Repeat block" in the web interface and the
+desktop GUI, or with `--no-repeat-ngram-size`; for Latin-script models it is untested.
 
 ### LightOnOCR
 
@@ -188,9 +260,14 @@ Load any compatible Qwen3-VL model via its HuggingFace ID in the Qwen3-VL engine
 
 ### Kraken
 
-Segmentation and recognition models for historical manuscripts are available on Zenodo. The default `blla` layout analysis model for neural line segmentation:
+The default `blla` model for neural line segmentation ships with Kraken itself; the repository
+carries an identical copy as `pagexml/blla.mlmodel`. Further segmentation and recognition models
+are published on Zenodo, for example:
 
-**[https://zenodo.org/records/7755483](https://zenodo.org/records/7755483)**
+- **[CATMuS-Print](https://zenodo.org/records/10592716)** — printed text, multilingual (built-in preset)
+- **[Generic HTR model for Old Cyrillic uncial and semi-uncial](https://zenodo.org/records/7755483)** — Church Slavonic, 11th–16th c.
+
+Load a downloaded `.mlmodel` in the Kraken engine via its local path.
 
 ### Party
 
@@ -207,8 +284,8 @@ Party OCR models with Church Slavonic in the pretraining data:
 ├── train_pylaia.py                  # CRNN-CTC training script
 ├── inference_pylaia_native.py       # CRNN-CTC inference (native Linux)
 ├── inference_page.py                # Line segmentation + OCR pipeline
-├── transcription_gui_plugin.py      # Main GUI application
-├── polyscriptor_batch_gui.py        # Batch processing GUI
+├── transcription_gui_plugin.py      # Desktop GUI (PyQt6)
+├── polyscriptor_batch_gui.py        # Desktop batch GUI (PyQt6)
 ├── batch_processing.py              # Batch processing CLI
 ├── htr_engine_base.py              # HTR engine interface
 │
@@ -282,11 +359,11 @@ Party OCR models with Church Slavonic in the pretraining data:
        --batch_size 32 \
        --epochs 250
    ```
-5. **Use in GUI**: Model will appear in the CRNN-CTC engine dropdown
+5. **Use it**: Model will appear in the CRNN-CTC engine dropdown (web interface and desktop GUI)
 
 ### Using Trained Models
 
-Trained models can be loaded in the GUI:
+Trained models can be loaded in the web interface or the desktop GUI:
 - CRNN-CTC models: Select from dropdown or browse to model directory
 - TrOCR models: Specify HuggingFace Hub ID or local checkpoint path
 - Commercial APIs: Enter API keys in engine configuration
@@ -405,9 +482,9 @@ python3 inference_page.py \
     --flip-rtl
 ```
 
-**GUI (PyQt):** Enable the "RTL manuscript (flip line images)" checkbox in the engine's settings panel before loading the model.
+**Web interface:** Enable "RTL manuscript (flip line images)" in the CRNN-CTC or TrOCR config form. For TrOCR, this setting is applied at model load time (same as "Normalize Background") — reload the model after changing it.
 
-**Web UI:** Enable "RTL manuscript (flip line images)" in the CRNN-CTC or TrOCR config form. For TrOCR, this setting is applied at model load time (same as "Normalize Background") — reload the model after changing it.
+**Desktop GUI (PyQt):** Enable the "RTL manuscript (flip line images)" checkbox in the engine's settings panel before loading the model.
 
 ### Which engines support `--flip-rtl`?
 
@@ -470,66 +547,14 @@ PaddleOCR uses **ISO language codes** (not script names). Enter the code in the 
 
 ---
 
-## 🌐 Web UI (Browser-Based Interface)
-
-**Polyscriptor includes a browser-based web interface** — run inference locally or on a remote server and interact from any browser. No X11 forwarding needed; when running on a remote server, no local Python install is required either.
-
-### Quick Start
-
-```bash
-# Web dependencies are included in requirements.txt — no extra install needed.
-
-# Activate your virtual environment first:
-source htr_env/bin/activate    # Linux/Mac
-# or: htr_env\Scripts\activate  # Windows
-
-# Start the server (run from the project root)
-uvicorn web.polyscriptor_server:app --host 0.0.0.0 --port 8765
-
-# Open in browser
-# Local: http://localhost:8765
-# Remote: use SSH tunnel (see below)
-```
-
-> **Works without a GPU.** Commercial APIs (Gemini, Claude, OpenAI) and TrOCR run on CPU. CRNN-CTC also runs on CPU — inference is slower (~1–2 min/page) but fully functional, and our published Church Slavonic, Ukrainian and Glagolitic models all work this way. Only Qwen3-VL and LightOnOCR require a GPU.
-
-### Remote Access via SSH Tunnel
-
-```bash
-# On your laptop — tunnel port 8765 through SSH
-ssh -L 8765:localhost:8765 user@your.server.edu
-
-# Then open: http://localhost:8765
-# No firewall issues — works on any university network
-```
-
-### Features
-
-- **Engine selection** with dynamic configuration forms (CRNN-CTC, TrOCR, Kraken, etc.)
-- **Image upload** — drag-and-drop, file picker, or PDF upload (multi-page PDFs become batch items)
-- **Segmentation** — Kraken (neural blla or classical) with color-coded region overlay
-- **Live transcription** — Server-Sent Events stream, lines appear as processed
-- **Batch queue** — multi-image queue, drag-to-reorder, cancel, prev/next navigation
-- **Inline editing** — double-click any transcription line to correct it
-- **Confidence filter** — slider to dim low-confidence lines
-- **Export** — TXT, CSV, PAGE XML (single image or ZIP for entire batch)
-- **Font selector** — Monomakh Unicode (recommended for Church Slavonic), Old Standard TT, and others
-- **Kraken model presets** — 12 Zenodo community models with one-click download
-- **Resizable panels** — drag handles to adjust column widths, saved across sessions
-
-### Running Tests
-
-```bash
-source htr_env/bin/activate
-pip install pytest httpx
-pytest web/tests/test_server.py -v
-```
-
----
-
 ## 🖥️ Remote Server Usage
 
-Running on a remote Linux server without GUI? You have several options:
+Running on a remote Linux server without a display? You have several options.
+
+### Option 0: Web interface via SSH tunnel (recommended)
+
+**Best for**: Interactive work, model comparison, correcting transcriptions; nothing to install locally.
+See [Web Interface](#-web-interface): start the server, then `ssh -L 8765:localhost:8765 user@server` and open http://localhost:8765.
 
 ### Option 1: CLI Batch Processing
 

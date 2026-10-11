@@ -167,6 +167,9 @@ check_*.py
 test_*.py
 # Exception: web API test suite is a proper test, not a throwaway script
 !web/tests/test_*.py
+# Exception: the training guard is a real test of train_pylaia.py, not a scratch script
+!tests/test_train_guard.py
+!tests/test_eval_sets.py
 
 # Accidentally created files
 =*
@@ -257,3 +260,12 @@ _disabled_models/
 
 # Kaggle competition data (downloaded, reproducible via kaggle CLI)
 kaggle_handwritten_to_data/
+
+# Per-line eval dumps (regenerate with eval_russian_crnn.py)
+eval_*_lines.json
+eval_*_trainaudit.json
+
+# Kraken recognition models fetched from Zenodo: binaries that are a download
+# away, so the repo keeps the DOI and not the payload
+kraken_models/
+*.mlmodel

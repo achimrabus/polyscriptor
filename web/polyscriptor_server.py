@@ -616,9 +616,17 @@ async def startup_event():
 
 def _get_pylaia_model_options() -> list:
     _import_segmenters()
-    from inference_pylaia_native import _scan_pylaia_models
+    from inference_pylaia_native import _scan_pylaia_models, preset_source
     _scan_pylaia_models(str(Path(__file__).resolve().parents[1] / "models"))
-    options = [{"label": k, "value": k} for k in PYLAIA_MODELS.keys()]
+    # Presets whose files are missing here and that are not on Hugging Face cannot
+    # load, so they are not offered (a fresh clone has no models/ folder)
+    options = []
+    for key, info in PYLAIA_MODELS.items():
+        source = preset_source(info)
+        if source == "local":
+            options.append({"label": key, "value": key})
+        elif source == "hf":
+            options.append({"label": f"{key} [Hugging Face, auto-download]", "value": key})
     options.append({"label": "Custom / local path…", "value": "__custom__"})
     return options
 
@@ -660,6 +668,20 @@ def _scan_trocr_models() -> list:
     models_dir = PROJECT_ROOT / "models"
     options = [
         {"label": "Custom HuggingFace ID or local path…", "value": "__custom__"},
+        # Our own published TrOCR models (Hugging Face, downloaded on first load).
+        # CER figures are the in-training validation numbers from the model cards.
+        {"label": "cyrillic-trocr/trocr-church-slavonic-handwritten — Church Slavonic (val CER 4.99%)",
+         "value": "cyrillic-trocr/trocr-church-slavonic-handwritten",
+         "source": "huggingface"},
+        {"label": "cyrillic-trocr/trocr-ukrainian-handwritten — Ukrainian, 19th–20th c. (val CER 9.94%)",
+         "value": "cyrillic-trocr/trocr-ukrainian-handwritten",
+         "source": "huggingface"},
+        {"label": "cyrillic-trocr/trocr-handwritten-cyrillic — Church Slavonic, Russian, Ukrainian (val CER 25.3%)",
+         "value": "cyrillic-trocr/trocr-handwritten-cyrillic",
+         "source": "huggingface"},
+        {"label": "achimrabus/trocr-glagolitic-handwritten — Glagolitic, Latin transliteration (val CER 6.42%)",
+         "value": "achimrabus/trocr-glagolitic-handwritten",
+         "source": "huggingface"},
         {"label": "kazars24/trocr-base-handwritten-ru (HuggingFace)",
          "value": "kazars24/trocr-base-handwritten-ru",
          "source": "huggingface"},
@@ -788,6 +810,16 @@ def _scan_vlm_models(engine_type: str = "qwen3") -> list:
     return options
 
 
+def _trocr_repeat_block_field() -> dict:
+    """The repeat-block field, defined once in the engine so other front ends can reuse it.
+
+    Imported here rather than at module level: engines are loaded lazily, and importing
+    the TrOCR engine pulls in inference_page and torch.
+    """
+    from engines.trocr_engine import REPEAT_BLOCK_FIELD
+    return dict(REPEAT_BLOCK_FIELD)
+
+
 ENGINE_SCHEMAS = {
     "CRNN-CTC (PyLaia-inspired)": lambda: {
         "fields": [
@@ -810,6 +842,7 @@ ENGINE_SCHEMAS = {
              "custom_placeholder": "HuggingFace model ID (e.g. microsoft/trocr-base-handwritten) or absolute local path"},
             {"key": "num_beams", "type": "number", "label": "Beam Search",
              "min": 1, "max": 10, "default": 4},
+            _trocr_repeat_block_field(),
             {"key": "normalize_background", "type": "checkbox",
              "label": "Normalize Background", "default": False},
             {"key": "flip_rtl", "type": "checkbox",

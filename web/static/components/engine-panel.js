@@ -502,6 +502,12 @@ function createField(field) {
             if (field.max != null) input.max = field.max;
             input.value = field.default ?? '';
             wrapper.appendChild(input);
+            if (field.hint) {
+                const hint = document.createElement('small');
+                hint.textContent = field.hint;
+                hint.style.color = 'var(--text-muted, #888)';
+                wrapper.appendChild(hint);
+            }
         } else if (field.type === 'password') {
             const input = document.createElement('input');
             input.type = 'password';

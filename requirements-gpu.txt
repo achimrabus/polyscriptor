@@ -1,15 +1,16 @@
-# GPU requirements — install BEFORE requirements.txt
+# GPU requirements (Linux/Windows with an NVIDIA GPU, CUDA 12.8 wheels)
 #
-# Usage (Linux/Windows, CUDA 12.1):
-#   pip install -r requirements-gpu.txt --extra-index-url https://download.pytorch.org/whl/cu121
-#   pip install -r requirements.txt
+# Install in ONE pip call together with requirements.txt, so the CUDA build of
+# torch is chosen and never replaced by a CPU build:
 #
-# After this, pip install -r requirements.txt will see torch>=2.5.1 already satisfied
-# by torch==2.5.1+cu121 and will not downgrade to a CPU build.
+#   pip install -r requirements-gpu.txt -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
+#
+# With Kraken segmentation (recommended), add requirements-kraken.txt to the
+# same call - see the note in that file.
 
-# CUDA 12.1 torch wheels (from https://download.pytorch.org/whl/cu121)
-torch==2.5.1+cu121
-torchvision==0.20.1+cu121
+# CUDA 12.8 torch wheels (from https://download.pytorch.org/whl/cu128)
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
 
 # GPU utilization monitoring (pynvml-compatible; used by web UI GPU widget)
 nvidia-ml-py>=12.0.0

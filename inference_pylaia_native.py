@@ -111,7 +111,8 @@ class PyLaiaInference:
     Loads PyTorch checkpoint directly and runs inference on Linux.
     """
 
-    def __init__(self, checkpoint_path: str, syms_path: str = None, enable_spaces: bool = True):
+    def __init__(self, checkpoint_path: str, syms_path: str = None, enable_spaces: bool = True,
+                 device: str = None):
         """
         Initialize PyLaia inference.
 
@@ -119,8 +120,14 @@ class PyLaiaInference:
             checkpoint_path: Path to .ckpt checkpoint file
             syms_path: Path to symbols file. If None, will look in data directory.
             enable_spaces: If True, convert <space> tokens to actual spaces. If False, keep as <space>.
+            device: torch device, e.g. "cuda:2" or "cpu". Defaults to cuda:0 when a GPU is
+                present, which is what every caller got before this parameter existed. On a
+                multi-GPU box that default is a trap: four readers started with four
+                different --device flags all loaded here and queued on the same card,
+                turning a four-way split into a four-way wait.
         """
         self.enable_spaces = enable_spaces
+        self.requested_device = device
         self.checkpoint_path = Path(checkpoint_path)
 
         if not self.checkpoint_path.exists():
@@ -234,7 +241,9 @@ class PyLaiaInference:
         self.model.load_state_dict(state_dict, strict=True)
 
         # Set device
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device(
+            self.requested_device if self.requested_device
+            else ('cuda' if torch.cuda.is_available() else 'cpu'))
         self.model = self.model.to(self.device)
         self.model.eval()
 
@@ -342,26 +351,42 @@ class PyLaiaInference:
 
 
 # Model registry (updated for trained models)
+#
+# Entries with a ``repo_id`` are published on Hugging Face: the local files are used
+# when present, otherwise best_model.pt and symbols.txt are downloaded from the repo
+# on first load (override the file names with ``hf_checkpoint`` / ``hf_syms``).
+# Entries without a ``repo_id`` only exist where their files exist; the preset
+# lists hide them elsewhere (see ``preset_source``).
 PYLAIA_MODELS = {
     "Church Slavonic (2.89% CER)": {
         "checkpoint": "models/pylaia_church_slavonic_20251103_222215/best_model.pt",
         "syms": "models/pylaia_church_slavonic_20251103_222215/symbols.txt",
-        "description": "PyLaia CRNN - Church Slavonic manuscript (2.89% CER)"
+        "description": "PyLaia CRNN - Church Slavonic manuscript (2.89% CER)",
+        "repo_id": "achimrabus/crnn-ctc-church-slavonic"
     },
     "Prosta Mova (3.77% CER)": {
         "checkpoint": "models/pylaia_prosta_mova_v4_20251121_155322/best_model.pt",
         "syms": "models/pylaia_prosta_mova_v4_20251121_155322/symbols.txt",
-        "description": "PyLaia CRNN - Prosta Mova (3.77% CER)"
+        "description": "PyLaia CRNN - Prosta Mova (3.77% CER)",
+        "repo_id": "achimrabus/crnn-ctc-prosta-mova"
     },
     "Glagolitic (5.33% CER)": {
         "checkpoint": "models/pylaia_glagolitic_with_spaces_20251102_182103/best_model.pt",
         "syms": "data/pylaia_glagolitic/syms.txt",
-        "description": "PyLaia CRNN - Glagolitic manuscript (76 symbols, 5.33% CER)"
+        "description": "PyLaia CRNN - Glagolitic manuscript (76 symbols, 5.33% CER)",
+        "repo_id": "achimrabus/crnn-ctc-glagolitic"
     },
     "Ukrainian (4.76% CER)": {
         "checkpoint": "models/pylaia_ukrainian_v2c_20251124_180634/best_model.pt",
         "syms": "models/pylaia_ukrainian_v2c_20251124_180634/symbols.txt",
-        "description": "PyLaia CRNN - Ukrainian manuscript (4.76% CER)"
+        "description": "PyLaia CRNN - Ukrainian manuscript (4.76% CER)",
+        "repo_id": "achimrabus/crnn-ctc-ukrainian"
+    },
+    "Russian (6.92% CER)": {
+        "checkpoint": "models/pylaia_russian_generic_20260806_123328/best_model.pt",
+        "syms": "models/pylaia_russian_generic_20260806_123328/symbols.txt",
+        "description": "PyLaia CRNN - Russian handwriting and print, 18th-20th c. (246 symbols, 6.92% CER)",
+        "repo_id": "achimrabus/crnn-ctc-russian"
     },
     "Ukrainian (13.53% CER - OLD)": {
         "checkpoint": "models/pylaia_ukrainian_retrain_20251102_213431/best_model.pt",
@@ -376,6 +401,31 @@ PYLAIA_MODELS = {
 }
 
 
+_REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _local_file(path) -> Optional[Path]:
+    """Find a registry path on disk: absolute, relative to the working directory,
+    or relative to the repository root (the server is not always started there)."""
+    if not path:
+        return None
+    p = Path(path)
+    candidates = [p] if p.is_absolute() else [Path.cwd() / p, _REPO_ROOT / p]
+    return next((c for c in candidates if c.is_file()), None)
+
+
+def preset_source(info) -> Optional[str]:
+    """Where a preset's model comes from: "local", "hf" (Hugging Face download),
+    or None when it cannot be loaded on this machine."""
+    if isinstance(info, str):
+        return "local" if _local_file(info) else None
+    if _local_file(info.get("checkpoint", info.get("path"))):
+        return "local"
+    if info.get("repo_id"):
+        return "hf"
+    return None
+
+
 def _scan_pylaia_models(models_dir: str = "models") -> None:
     """Scan models/ for CRNN-CTC checkpoints not already in PYLAIA_MODELS.
 
@@ -388,14 +438,18 @@ def _scan_pylaia_models(models_dir: str = "models") -> None:
     if not models_path.is_dir():
         return
 
-    registered = {
-        str(Path(info["checkpoint"])) if isinstance(info, dict) else str(Path(info))
-        for info in PYLAIA_MODELS.values()
-    }
+    # Compare resolved files: the web server scans with an absolute path while the
+    # registry holds paths relative to the repository root
+    registered = set()
+    for info in PYLAIA_MODELS.values():
+        path = info if isinstance(info, str) else info.get("checkpoint", info.get("path"))
+        local = _local_file(path)
+        if local is not None:
+            registered.add(local.resolve())
 
     for checkpoint in sorted(models_path.glob("*/best_model.pt")):
         checkpoint_str = str(checkpoint)
-        if checkpoint_str in registered:
+        if checkpoint.resolve() in registered:
             continue
         model_dir = checkpoint.parent
         folder_name = model_dir.name

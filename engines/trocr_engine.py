@@ -29,6 +29,38 @@ except ImportError:
     TROCR_AVAILABLE = False
 
 
+# The n-gram repeat block as a user setting. Defined once here so that every front end
+# offers the same field with the same default and explanation: the web form and the
+# PyQt spin box are both built from this dict.
+REPEAT_BLOCK_FIELD = {
+    "key": "no_repeat_ngram_size",
+    "type": "number",
+    "label": "Repeat block (n-gram size)",
+    "min": 0,
+    "max": 10,
+    "default": 0,
+    "hint": ("0 = off (recommended). N forbids any sequence of N tokens from occurring twice "
+             "in a line. TrOCR splits Cyrillic into single letters or smaller pieces, so a block "
+             "suppresses ordinary letter sequences; for Latin-script models it is untested."),
+}
+
+
+def repeat_block_size(value, default: int = 0) -> int:
+    """Turn a form or CLI value into a valid no_repeat_ngram_size.
+
+    Form values arrive as numbers, strings or NaN (an emptied browser number field).
+    Anything that is not a non-negative number becomes `default`, i.e. off; a block
+    must never be switched on by a malformed value.
+    """
+    try:
+        n = float(str(value).strip()) if value is not None else float("nan")
+    except ValueError:
+        return default
+    if n != n or n < 0 or n == float("inf"):   # NaN, negative, infinite
+        return default
+    return int(n)
+
+
 class TrOCREngine(HTREngine):
     """TrOCR HTR engine plugin."""
 
@@ -37,6 +69,7 @@ class TrOCREngine(HTREngine):
         self._config_widget: Optional[QWidget] = None
         self._current_model_path: Optional[str] = None  # Store loaded model path
         self._num_beams: int = 4  # Effective decoding beams (set in load_model for headless/batch)
+        self._no_repeat_ngram_size: int = 0  # 0 = off; overrides the checkpoint's generation_config
 
         # Widget references (set when config widget is created)
         self._model_source_combo: Optional[QComboBox] = None
@@ -44,6 +77,7 @@ class TrOCREngine(HTREngine):
         self._hf_preset_combo: Optional[QComboBox] = None
         self._hf_model_edit: Optional[QLineEdit] = None
         self._beam_spin: Optional[QSpinBox] = None
+        self._repeat_spin: Optional[QSpinBox] = None
         self._normalize_check: Optional[QCheckBox] = None
         self._flip_rtl_check: Optional[QCheckBox] = None
 
@@ -145,6 +179,19 @@ class TrOCREngine(HTREngine):
         beam_layout.addStretch()
         settings_layout.addLayout(beam_layout)
 
+        # Repeat block: the same field the web form shows (REPEAT_BLOCK_FIELD)
+        f = REPEAT_BLOCK_FIELD
+        repeat_layout = QHBoxLayout()
+        repeat_layout.addWidget(QLabel(f"{f['label']}:"))
+        self._repeat_spin = QSpinBox()
+        self._repeat_spin.setRange(f["min"], f["max"])
+        self._repeat_spin.setValue(f["default"])
+        self._repeat_spin.setSpecialValueText("off")   # shown for 0
+        self._repeat_spin.setToolTip(f["hint"])
+        repeat_layout.addWidget(self._repeat_spin)
+        repeat_layout.addStretch()
+        settings_layout.addLayout(repeat_layout)
+
         # Normalize background
         self._normalize_check = QCheckBox("Normalize Background")
         self._normalize_check.setToolTip("Apply CLAHE normalization (use if model was trained with it)")
@@ -232,6 +279,7 @@ class TrOCREngine(HTREngine):
             "model_source": "local" if is_local else "huggingface",
             "model_path": self._local_model_combo.currentText() if is_local else self._hf_model_edit.text(),
             "beam_search": self._beam_spin.value(),
+            "no_repeat_ngram_size": self._repeat_spin.value(),
             "normalize_background": self._normalize_check.isChecked(),
             "flip_rtl": self._flip_rtl_check.isChecked(),
         }
@@ -253,6 +301,9 @@ class TrOCREngine(HTREngine):
             self._hf_model_edit.setText(model_path)
 
         self._beam_spin.setValue(config.get("beam_search", 4))
+        if self._repeat_spin:
+            self._repeat_spin.setValue(repeat_block_size(
+                config.get("no_repeat_ngram_size", REPEAT_BLOCK_FIELD["default"])))
         self._normalize_check.setChecked(config.get("normalize_background", False))
         if self._flip_rtl_check:
             self._flip_rtl_check.setChecked(config.get("flip_rtl", False))
@@ -274,8 +325,10 @@ class TrOCREngine(HTREngine):
             # returns {} because there is no Qt widget). Accept both keys:
             # 'beam_search' (GUI) and 'num_beams' (CLI / batch_processing).
             self._num_beams = int(config.get("beam_search", config.get("num_beams", 4)))
+            self._no_repeat_ngram_size = repeat_block_size(config.get("no_repeat_ngram_size", 0))
             print(f"TrOCR decoding: num_beams={self._num_beams} "
-                  f"({'greedy' if self._num_beams <= 1 else 'beam search'})")
+                  f"({'greedy' if self._num_beams <= 1 else 'beam search'}), "
+                  f"no_repeat_ngram_size={self._no_repeat_ngram_size}")
 
             self.model = TrOCRInference(
                 model_path=model_path,
@@ -327,6 +380,8 @@ class TrOCREngine(HTREngine):
         # the self._num_beams fallback this silently defaulted to 4 and ignored
         # the CLI --num-beams entirely.
         beam_search = config.get("beam_search", config.get("num_beams", self._num_beams))
+        no_repeat = (repeat_block_size(config["no_repeat_ngram_size"])
+                     if "no_repeat_ngram_size" in config else self._no_repeat_ngram_size)
 
         try:
             # TrOCRInference expects PIL Image, convert from numpy
@@ -334,11 +389,13 @@ class TrOCREngine(HTREngine):
             pil_image = Image.fromarray(image)
 
             text, confidence, token_confidences = self.model.transcribe_line(
-                pil_image, num_beams=beam_search, return_confidence=True)
+                pil_image, num_beams=beam_search, return_confidence=True,
+                no_repeat_ngram_size=no_repeat)
 
             # Build metadata with model information
             metadata = {
                 "beam_search": beam_search,
+                "no_repeat_ngram_size": no_repeat,
                 "engine": "TrOCR"
             }
 

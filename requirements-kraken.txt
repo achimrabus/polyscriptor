@@ -1,17 +1,23 @@
-# Optional: Kraken segmentation support
+# Optional but recommended: Kraken segmentation (neural blla + classical)
 #
-# Kraken requires numpy~=2.0 and scikit-learn~=1.5, which conflict with the
-# numpy==1.26.4 and scikit-learn==1.6.1 pins in requirements.txt.
+# Without Kraken, the GUIs, the web UI and batch_processing.py fall back to
+# HPP (horizontal projection profile) segmentation, which is fast but can miss
+# most lines on complex pages.
 #
-# Install AFTER requirements.txt — pip will upgrade numpy/scikit-learn to
-# satisfy kraken's constraints.  All other engines (TrOCR, CRNN-CTC,
-# Qwen3-VL, Commercial APIs) are unaffected by these upgrades.
+# Install Kraken TOGETHER with the other requirements, in a FRESH virtual
+# environment, in a single pip call:
 #
-# Usage:
-#   pip install -r requirements.txt          # base install first
-#   pip install -r requirements-kraken.txt   # then add kraken
+#   python3 -m venv htr_env && source htr_env/bin/activate
+#   pip install -r requirements.txt -r requirements-kraken.txt
+#   # GPU: pip install -r requirements-gpu.txt -r requirements.txt -r requirements-kraken.txt \
+#   #          --extra-index-url https://download.pytorch.org/whl/cu128
 #
-# Without kraken the GUI and web UI fall back to HPP (Horizontal Projection
-# Profile) segmentation, which is faster but less accurate on complex layouts.
+# Do NOT add Kraken to an existing environment afterwards. Kraken pins several
+# shared packages tightly (safetensors, click, scikit-learn, torch); installed
+# in a second step, pip downgrades them without re-checking transformers and
+# huggingface_hub, which then fail to import. Resolved in one call, pip picks
+# versions that fit everything.
+#
+# Pinned to the version tested with this repository.
 
-kraken>=6.0.0
+kraken==7.1.1

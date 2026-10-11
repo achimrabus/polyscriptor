@@ -84,7 +84,7 @@ class OptimizedTrainingConfig:
 
     # Generation (for eval)
     predict_with_generate: bool = True
-    generation_max_length: int = 64
+    generation_max_length: int = 128  # Cyrillic needs ~1 token per character; 64 cut off long lines
     generation_num_beams: int = 1  # Beam=1 for faster eval (greedy)
 
     # Augmentation
@@ -508,13 +508,25 @@ def train(config: OptimizedTrainingConfig):
     model.generation_config.pad_token_id = processor.tokenizer.pad_token_id
     model.generation_config.eos_token_id = processor.tokenizer.sep_token_id
     model.generation_config.max_length = config.generation_max_length
-    model.generation_config.no_repeat_ngram_size = 3
+    # No repeat block. TrOCR's byte-level BPE splits Cyrillic into single letters or
+    # smaller pieces, so a 3-token block forbids ordinary letter sequences from recurring
+    # in a line. It distorted the eval CER that picks the best checkpoint, and it was
+    # stored with every model as its decoding default.
+    model.generation_config.no_repeat_ngram_size = 0
     model.generation_config.num_beams = config.generation_num_beams
     # early_stopping / length_penalty are beam-only flags. transformers>=5 validates
     # the generation config on save and refuses to write them when num_beams == 1.
+    # Not setting them is not enough: a pretrained checkpoint can carry them in its own
+    # generation_config.json, and then the first save crashes after the eval has already
+    # been paid for. kazars24/trocr-base-handwritten-ru ships early_stopping=True and
+    # length_penalty=2.0, which is how this surfaced. Reset them to the defaults the
+    # validator accepts instead of only declining to set them.
     if config.generation_num_beams > 1:
         model.generation_config.early_stopping = True
         model.generation_config.length_penalty = 2.0
+    else:
+        model.generation_config.early_stopping = False
+        model.generation_config.length_penalty = 1.0
 
     if is_main_process:
         print("\nGPU memory after model loading:")
@@ -535,9 +547,28 @@ def train(config: OptimizedTrainingConfig):
         print(f"  Number of GPUs: {num_gpus}")
         print(f"  Effective batch size: {effective_batch_size}")
     
+    # transformers 5.15 dropped `warmup_ratio`; 5.0.x still has it. `warmup_steps` exists
+    # in both, so the ratio is converted here and the same script runs on either stack --
+    # machines in the same setup often run different transformers versions, and pinning
+    # them to each other is worse than doing this arithmetic once.
+    import inspect
+    import math
+    _steps_per_epoch = math.ceil(
+        len(train_dataset) / (config.batch_size * config.gradient_accumulation_steps
+                              * max(1, num_gpus)))
+    _warmup = {}
+    if "warmup_ratio" in inspect.signature(Seq2SeqTrainingArguments.__init__).parameters:
+        _warmup["warmup_ratio"] = config.warmup_ratio
+    else:
+        _warmup["warmup_steps"] = int(config.warmup_ratio * _steps_per_epoch * config.epochs)
+        if is_main_process:
+            print(f"  warmup_ratio {config.warmup_ratio} -> warmup_steps "
+                  f"{_warmup['warmup_steps']} (transformers without warmup_ratio)")
+
     # Training arguments
     training_args = Seq2SeqTrainingArguments(
         output_dir=config.output_dir,
+        **_warmup,
 
         # Batch and accumulation
         per_device_train_batch_size=config.batch_size,
@@ -548,7 +579,6 @@ def train(config: OptimizedTrainingConfig):
         optim=config.optim,
         learning_rate=config.learning_rate,
         weight_decay=config.weight_decay,
-        warmup_ratio=config.warmup_ratio,
         num_train_epochs=config.epochs,
 
         # Mixed precision

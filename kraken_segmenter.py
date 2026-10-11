@@ -74,7 +74,8 @@ class KrakenLineSegmenter:
             self.pageseg = pageseg
         except ImportError as e:
             raise ImportError(
-                "Kraken is not installed. Install it with: pip install kraken\n"
+                "Kraken is not installed. Install it in a fresh environment together with the rest:\n"
+                "  pip install -r requirements.txt -r requirements-kraken.txt  (see README)\n"
                 f"Original error: {e}"
             )
 

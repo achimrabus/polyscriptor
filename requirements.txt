@@ -5,21 +5,20 @@
 # and would require a C compiler + cmake for source compilation.
 # Use `python --version` to verify before creating the virtual environment.
 #
-# CPU-only install:
-#   Linux/Mac:  pip install -r requirements.txt
-#   Windows:    pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
-#               (avoids a DLL load error with the default PyPI torch wheel on CPU-only Windows)
+# Use a fresh virtual environment and install in ONE pip call:
 #
-# GPU install (CUDA 12.1):
-#   pip install -r requirements-gpu.txt --extra-index-url https://download.pytorch.org/whl/cu121
-#   pip install -r requirements.txt
-#   (requirements-gpu.txt installs the CUDA torch + nvidia-ml-py first;
-#    pip will then skip torch here because >=2.5.1 is already satisfied)
+# CPU-only (Linux/Mac):
+#   pip install -r requirements.txt -r requirements-kraken.txt
+# CPU-only (Windows; avoids a DLL load error with the default PyPI torch wheel):
+#   pip install -r requirements.txt -r requirements-kraken.txt --extra-index-url https://download.pytorch.org/whl/cpu
+# GPU (CUDA 12.8):
+#   pip install -r requirements-gpu.txt -r requirements.txt -r requirements-kraken.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cu128
 #
-# Optional: Kraken segmentation (neural blla + classical)
-#   pip install -r requirements-kraken.txt
-#   NOTE: kraken requires numpy~=2.0 and scikit-learn~=1.5, which conflict with the pins
-#   in this file. Install it in a second step AFTER this file, or use a separate venv.
+# requirements-kraken.txt is optional (Kraken segmentation; without it, HPP is used)
+# but recommended. Never install it later into an existing environment - see the
+# note in requirements-kraken.txt.
+
 torch>=2.5.1
 torchvision>=0.20.1
 transformers>=5.0.0
@@ -39,11 +38,11 @@ anthropic>=0.20.0
 google-generativeai>=0.8.0  # NOTE: deprecated by Google; still works; future migration to google-genai
 
 # Data processing
-numpy==1.26.4
+numpy>=1.26.4  # lower bound only: Kraken needs numpy 2
 pandas==2.2.3
 pillow==11.1.0
-opencv-python==4.11.0.86
-scikit-learn==1.6.1
+opencv-python-headless==4.11.0.86  # headless: full build bundles Qt plugins that clash with PyQt6
+scikit-learn>=1.6.1  # lower bound only: Kraken pins its own minor version
 pyarrow==19.0.0
 
 # Training utilities

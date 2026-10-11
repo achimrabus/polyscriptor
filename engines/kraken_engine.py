@@ -92,7 +92,7 @@ class KrakenEngine(HTREngine):
 
     def get_unavailable_reason(self) -> str:
         if not KRAKEN_AVAILABLE:
-            return "Kraken not installed. Install with: pip install kraken"
+            return "Kraken not installed. Install it in a fresh environment together with the rest: pip install -r requirements.txt -r requirements-kraken.txt (see README)"
         return ""
 
     def get_config_widget(self) -> QWidget:

@@ -418,6 +418,7 @@ class PyLaiaTrainer:
         self.model.train()
         total_loss = 0
         num_batches = 0
+        skipped_batches = 0
 
         pbar = tqdm(self.train_loader, desc="Training")
         for batch_idx, (images, targets, input_lengths, target_lengths, _, _) in enumerate(pbar):
@@ -435,18 +436,42 @@ class PyLaiaTrainer:
             
             # CTC loss
             loss = self.criterion(log_probs, targets, actual_input_lengths, target_lengths)
-            
+
+            # A single bad batch can end a run that is otherwise going well. CTC returns
+            # a non-finite loss when a target is longer than the input it has to be
+            # aligned to, and one backward pass from it turns every weight into NaN at
+            # once - after which nothing recovers and the remaining epochs only wait for
+            # early stopping. A long multi-dataset run died exactly this way at epoch 62,
+            # still improving, and burned its last fifteen epochs producing nothing.
+            # Clipping does not help: the norm of a NaN gradient is NaN, and scaling by
+            # it spreads the damage rather than bounding it. Skipping costs one update.
+            if not torch.isfinite(loss):
+                self.optimizer.zero_grad(set_to_none=True)
+                skipped_batches += 1
+                continue
+
             # Backward pass
             self.optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
+            if not torch.isfinite(grad_norm):
+                self.optimizer.zero_grad(set_to_none=True)
+                skipped_batches += 1
+                continue
             self.optimizer.step()
-            
+
             total_loss += loss.item()
             num_batches += 1
             
             pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-        
+
+        if skipped_batches:
+            logger.warning(f"Skipped {skipped_batches} batches (non-finite "
+                           f"loss or gradient)")
+        self.skipped_batches = getattr(self, 'skipped_batches', 0) + skipped_batches
+        if not num_batches:
+            raise RuntimeError("Every batch of this epoch was non-finite - the run "
+                               "cannot recover, check the data or the learning rate")
         return total_loss / num_batches
     
     def validate(self):
@@ -538,6 +563,21 @@ class PyLaiaTrainer:
             
             # Train
             train_loss = self.train_epoch()
+
+            # Second net, in case something non-finite reached the weights anyway. A run
+            # whose weights have gone bad reports 100% val CER for every remaining epoch;
+            # restoring the last healthy state and halving the learning rate turns that
+            # into a setback of one epoch instead of the end of the run.
+            healthy = all(torch.isfinite(p).all() for p in self.model.parameters())
+            if not healthy and getattr(self, '_last_healthy', None) is not None:
+                logger.warning("Weights are no longer finite - restoring the last "
+                               "healthy state and halving the learning rate")
+                self.model.load_state_dict(self._last_healthy)
+                for g in self.optimizer.param_groups:
+                    g['lr'] = g['lr'] / 2
+            elif healthy:
+                self._last_healthy = {k: v.detach().cpu().clone()
+                                      for k, v in self.model.state_dict().items()}
 
             # Calculate training CER (on subset, without augmentation)
             train_cer = self.calculate_train_cer()

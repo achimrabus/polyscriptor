@@ -82,7 +82,7 @@ except ImportError:
 # Engine-specific recommendations (shared server - conservative defaults)
 ENGINE_CONFIG = {
     'CRNN-CTC (PyLaia-inspired)': {
-        'min_device': 'cuda',
+        'min_device': 'cpu',  # runs on CPU too (~20 s/page incl. Kraken segmentation)
         'default_batch_size': 32,  # Conservative for shared server
         'batch_size_range': (8, 64),
         'speed_estimate': 30,  # images per minute
@@ -250,6 +250,9 @@ Shared Server Notice:
     # Engine-specific (optional)
     parser.add_argument('--num-beams', type=int, default=1,
                        help='Beam search width (TrOCR, Churro, default: 1)')
+    parser.add_argument('--no-repeat-ngram-size', type=int, default=0,
+                       help='TrOCR: forbid repeated token n-grams of this size (default: 0 = off; '
+                            'checkpoints often store 3, which costs accuracy on manuscripts)')
     parser.add_argument('--temperature', type=float, default=1.0,
                        help='Sampling temperature (Qwen3, default: 1.0)')
     parser.add_argument('--prompt', type=str,
@@ -332,7 +335,7 @@ Shared Server Notice:
             parser.error("OpenWebUI requires --model-id (e.g., 'gpt-4-vision-preview' or model from server)")
 
     if args.segmentation_method in ('kraken', 'kraken-blla') and not KRAKEN_AVAILABLE:
-        parser.error("Kraken not installed. Install with: pip install kraken")
+        parser.error("Kraken not installed. Install it in a fresh environment together with the rest: pip install -r requirements.txt -r requirements-kraken.txt (see README)")
 
     # Parse output formats (handle both comma-separated and multiple --output-format flags)
     if args.output_format is None:
@@ -744,6 +747,7 @@ class BatchHTRProcessor:
         # TrOCR always ran its hard-coded default of 4.
         config['num_beams'] = self.args.num_beams
         config['beam_search'] = self.args.num_beams
+        config['no_repeat_ngram_size'] = self.args.no_repeat_ngram_size
 
         if self.args.temperature != 1.0:
             config['temperature'] = self.args.temperature

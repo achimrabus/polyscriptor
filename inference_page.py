@@ -670,7 +670,8 @@ class TrOCRInference:
         print("Model loaded successfully!")
 
     def transcribe_line(self, line_image: Image.Image, num_beams: int = 4,
-                       max_length: int = 128, return_confidence: bool = False):
+                       max_length: int = 128, return_confidence: bool = False,
+                       no_repeat_ngram_size: int = 0):
         """
         Transcribe a single line image.
 
@@ -679,6 +680,13 @@ class TrOCRInference:
             num_beams: Number of beams for beam search (higher = better quality, slower)
             max_length: Maximum sequence length
             return_confidence: If True, return (text, confidence) tuple
+            no_repeat_ngram_size: 0 = allow repeated token n-grams. Checkpoints from
+                optimized_training.py store no_repeat_ngram_size=3 in their
+                generation_config, which generate() would otherwise inherit; it forbids
+                legitimate repetitions in a line (syllables, words). Measured 2026-10-06
+                with beam 4, 3 -> 0: Church Slavonic 5.37 -> 3.19% CER (3,000 val lines),
+                Ukrainian 13.78 -> 11.77% (970 held-out lines), Glagolitic 6.55 -> 6.01%
+                (1,551 val lines).
 
         Returns:
             If return_confidence=False: Transcribed text string
@@ -711,6 +719,7 @@ class TrOCRInference:
                     num_beams=num_beams,
                     max_length=max_length,
                     early_stopping=True,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
                     output_scores=True,
                     return_dict_in_generate=True
                 )
@@ -761,7 +770,8 @@ class TrOCRInference:
                     pixel_values,
                     num_beams=num_beams,
                     max_length=max_length,
-                    early_stopping=True
+                    early_stopping=True,
+                    no_repeat_ngram_size=no_repeat_ngram_size
                 )
                 avg_confidence = None
                 char_confidences = None
