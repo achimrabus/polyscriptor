@@ -737,7 +737,7 @@ class PartyEngine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """Party engine capabilities."""
         return {
-            "polyscriptor.cli.batch": True,   # Party excels at batch processing
+            "batch": True,   # Party excels at batch processing
             "confidence_scores": True,  # Party provides confidence scores
             "beam_search": False,       # Internal to Party
             "language_model": True,     # Party uses language models

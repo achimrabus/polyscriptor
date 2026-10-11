@@ -480,7 +480,7 @@ class KrakenEngine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """Kraken capabilities."""
         return {
-            "polyscriptor.cli.batch": False,  # Could be implemented
+            "batch": False,  # Could be implemented
             "confidence_scores": True,  # Kraken provides per-character confidence
             "beam_search": False,  # Internal to Kraken
             "language_model": False,  # Not explicitly exposed

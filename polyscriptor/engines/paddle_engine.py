@@ -60,7 +60,10 @@ except ImportError:
     QWidget = object
 
 # Default venv path
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from polyscriptor.engines._venv_worker import (
+    default_project_root, find_venv_python, venv_has_package, run_worker, WorkerError,
+)
+_PROJECT_ROOT = default_project_root()
 _DEFAULT_VENV = _PROJECT_ROOT / "venv_paddle"
 
 _DEFAULT_LANG = "en"
@@ -69,30 +72,10 @@ _DEFAULT_LANG = "en"
 _WORKER_SCRIPT = Path(__file__).resolve().parent / "paddle_worker.py"
 
 
-def _find_venv_python(venv_path: Path) -> Optional[Path]:
-    """Return the Python interpreter inside a venv, or None if not found."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [venv_path / "Scripts" / "python.exe"]
-    else:
-        candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
+_find_venv_python = find_venv_python
 
 
-def _venv_has_paddleocr(venv_path: Path) -> bool:
-    """Check that paddleocr is installed in the venv via filesystem (no subprocess, no import)."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [(venv_path / "Lib" / "site-packages" / "paddleocr",)]
-    else:
-        candidates = list((venv_path / "lib").glob("python*/site-packages/paddleocr"))
-    for sp_dir in candidates:
-        if sp_dir.is_dir():
-            return True
-    return False
+_venv_has_probe = lambda p: venv_has_package(p, 'paddleocr')
 
 
 class PaddleOCREngine(HTREngine):
@@ -136,7 +119,7 @@ class PaddleOCREngine(HTREngine):
     def is_available(self) -> bool:
         if _find_venv_python(self._venv_path) is None:
             return False
-        return _venv_has_paddleocr(self._venv_path)
+        return _venv_has_probe(self._venv_path)
 
     def get_unavailable_reason(self) -> str:
         if _find_venv_python(self._venv_path) is None:
@@ -148,7 +131,7 @@ class PaddleOCREngine(HTREngine):
                 "  pip install paddlepaddle paddleocr      # CPU\n"
                 "  pip install paddlepaddle-gpu paddleocr  # GPU\n"
             )
-        if not _venv_has_paddleocr(self._venv_path):
+        if not _venv_has_probe(self._venv_path):
             return (
                 f"paddleocr not installed in {self._venv_path}\n\n"
                 "Install with:\n"
@@ -369,34 +352,13 @@ class PaddleOCREngine(HTREngine):
                 "det_db_thresh": config.get("det_db_thresh", 0.30),
             })
 
-            result = subprocess.run(
-                [str(self._venv_python), str(_WORKER_SCRIPT), config_json, tmp_path],
-                capture_output=True, text=True, timeout=180,
-                start_new_session=True,  # isolate from terminal SIGINT → prevents core dump on Ctrl+C
-            )
-
-            if result.returncode != 0:
-                # Worker always writes a JSON error to stdout; parse that first for the best message.
-                try:
-                    output = json.loads(result.stdout)
-                    if "error" in output:
-                        err_msg = output["error"]
-                        tb = output.get("traceback", "")
-                        logger.error("[PaddleOCR] Worker error: %s", err_msg)
-                        if tb:
-                            logger.debug("[PaddleOCR] Traceback:\n%s", tb)
-                        return TranscriptionResult(text=f"[Error: {err_msg}]", confidence=0.0)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                stderr = result.stderr[-2000:] if result.stderr else "(no stderr)"
-                logger.error("[PaddleOCR] Worker exited %d: %s", result.returncode, stderr)
-                return TranscriptionResult(text="[PaddleOCR error — see log]", confidence=0.0)
-
-            output = json.loads(result.stdout)
-
-            if "error" in output:
-                logger.error("[PaddleOCR] Worker error: %s", output["error"])
-                return TranscriptionResult(text=f"[Error: {output['error']}]", confidence=0.0)
+            try:
+                output = run_worker(
+                    self._venv_python, _WORKER_SCRIPT, config_json, tmp_path,
+                    timeout=180, logger=logger, tag="PaddleOCR",
+                )
+            except WorkerError as e:
+                return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
 
             lines = output.get("lines", [])
             confidences = output.get("confidences", [])
@@ -415,7 +377,7 @@ class PaddleOCREngine(HTREngine):
             )
 
         except subprocess.TimeoutExpired:
-            logger.error("[PaddleOCR] Subprocess timed out after 120s")
+            logger.error("[PaddleOCR] Subprocess timed out after 180s")
             return TranscriptionResult(text="[PaddleOCR timed out]", confidence=0.0)
         except json.JSONDecodeError as e:
             logger.error("[PaddleOCR] Failed to parse worker output: %s", e)
@@ -432,7 +394,7 @@ class PaddleOCREngine(HTREngine):
 
     def get_capabilities(self) -> Dict[str, bool]:
         return {
-            "polyscriptor.cli.batch": False,
+            "batch": False,
             "confidence_scores": True,
             "beam_search": False,
             "language_model": False,

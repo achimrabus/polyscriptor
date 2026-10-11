@@ -597,7 +597,7 @@ class Qwen3Engine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """Qwen3 capabilities."""
         return {
-            "polyscriptor.cli.batch": True,
+            "batch": True,
             "confidence_scores": True,  # VLM can provide confidence
             "beam_search": False,  # Uses sampling/greedy decoding
             "language_model": True,  # VLM has built-in language understanding

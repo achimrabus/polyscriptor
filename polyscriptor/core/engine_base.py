@@ -240,7 +240,7 @@ class HTREngine(ABC):
             - preprocessing: Has built-in preprocessing
         """
         return {
-            "polyscriptor.cli.batch": self.supports_batch(),
+            "batch": self.supports_batch(),
             "confidence_scores": False,
             "beam_search": False,
             "language_model": False,
@@ -279,103 +279,32 @@ class HTREngineRegistry:
             if profile.discover_engines(self):
                 return
 
-        # Import and register TrOCR engine
-        try:
-            from polyscriptor.engines.trocr_engine import TrOCREngine
-            self.register(TrOCREngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load TrOCR engine: {e}")
+        # (module, class) pairs; order defines UI display order.
+        engine_specs = [
+            ("polyscriptor.engines.trocr_engine", "TrOCREngine"),
+            ("polyscriptor.engines.qwen3_engine", "Qwen3Engine"),
+            ("polyscriptor.engines.churro_engine", "ChurroEngine"),
+            ("polyscriptor.engines.pylaia_engine", "PyLaiaEngine"),
+            ("polyscriptor.engines.kraken_engine", "KrakenEngine"),
+            ("polyscriptor.engines.commercial_api_engine", "CommercialAPIEngine"),
+            ("polyscriptor.engines.party_engine", "PartyEngine"),
+            ("polyscriptor.engines.openwebui_engine", "OpenWebUIEngine"),
+            ("polyscriptor.engines.deepseek_ocr_engine", "DeepSeekOCREngine"),
+            ("polyscriptor.engines.lighton_ocr_engine", "LightOnOCREngine"),
+            ("polyscriptor.engines.lapa_ocr_engine", "LapaOCREngine"),
+            ("polyscriptor.engines.paddle_engine", "PaddleOCREngine"),
+            ("polyscriptor.engines.paddle_vl_engine", "PaddleOCRVLEngine"),
+            ("polyscriptor.engines.chandra_engine", "ChandraEngine"),
+        ]
 
-        # Import and register Qwen3 engine
-        try:
-            from polyscriptor.engines.qwen3_engine import Qwen3Engine
-            self.register(Qwen3Engine())
-        except ImportError as e:
-            print(f"Warning: Failed to load Qwen3 engine: {e}")
-
-        # Import and register Churro engine
-        try:
-            from polyscriptor.engines.churro_engine import ChurroEngine
-            self.register(ChurroEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load Churro engine: {e}")
-
-        # Import and register CRNN-CTC engine
-        try:
-            from polyscriptor.engines.pylaia_engine import PyLaiaEngine
-            self.register(PyLaiaEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load CRNN-CTC engine: {e}")
-
-        # Import and register Kraken engine
-        try:
-            from polyscriptor.engines.kraken_engine import KrakenEngine
-            self.register(KrakenEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load Kraken engine: {e}")
-
-        # Import and register Commercial API engine
-        try:
-            from polyscriptor.engines.commercial_api_engine import CommercialAPIEngine
-            self.register(CommercialAPIEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load Commercial API engine: {e}")
-
-        # Import and register Party engine
-        try:
-            from polyscriptor.engines.party_engine import PartyEngine
-            self.register(PartyEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load Party engine: {e}")
-
-        # Import and register OpenWebUI engine
-        try:
-            from polyscriptor.engines.openwebui_engine import OpenWebUIEngine
-            self.register(OpenWebUIEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load OpenWebUI engine: {e}")
-
-        # Import and register DeepSeek-OCR engine
-        try:
-            from polyscriptor.engines.deepseek_ocr_engine import DeepSeekOCREngine
-            self.register(DeepSeekOCREngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load DeepSeek-OCR engine: {e}")
-
-        # Import and register LightOnOCR engine
-        try:
-            from polyscriptor.engines.lighton_ocr_engine import LightOnOCREngine
-            self.register(LightOnOCREngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load LightOnOCR engine: {e}")
-
-        # Import and register LapaOCR engine
-        try:
-            from polyscriptor.engines.lapa_ocr_engine import LapaOCREngine
-            self.register(LapaOCREngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load LapaOCR engine: {e}")
-
-        # Import and register PaddleOCR engine
-        try:
-            from polyscriptor.engines.paddle_engine import PaddleOCREngine
-            self.register(PaddleOCREngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load PaddleOCR engine: {e}")
-
-        # Import and register PaddleOCR-VL engine
-        try:
-            from polyscriptor.engines.paddle_vl_engine import PaddleOCRVLEngine
-            self.register(PaddleOCRVLEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load PaddleOCR-VL engine: {e}")
-
-        # Import and register Chandra engine
-        try:
-            from polyscriptor.engines.chandra_engine import ChandraEngine
-            self.register(ChandraEngine())
-        except ImportError as e:
-            print(f"Warning: Failed to load Chandra engine: {e}")
+        for module_name, class_name in engine_specs:
+            try:
+                engine_class = importlib.import_module(module_name).__getattribute__(class_name)
+                self.register(engine_class())
+            except ImportError as e:
+                print(f"Warning: Failed to load {class_name}: {e}")
+            except Exception as e:  # engine raising at import time must not kill the registry
+                print(f"Warning: Failed to load {class_name}: {type(e).__name__}: {e}")
 
     def get_available_engines(self) -> List[HTREngine]:
         """Get list of engines with satisfied dependencies.

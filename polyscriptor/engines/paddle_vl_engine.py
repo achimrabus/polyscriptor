@@ -93,30 +93,10 @@ _DEFAULT_PIPELINE_VERSION = "v1.5"
 _WORKER_SCRIPT = Path(__file__).resolve().parent / "paddle_vl_worker.py"
 
 
-def _find_venv_python(venv_path: Path) -> Optional[Path]:
-    """Return the Python interpreter inside a venv, or None if not found."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [venv_path / "Scripts" / "python.exe"]
-    else:
-        candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
+_find_venv_python = find_venv_python
 
 
-def _venv_has_paddleocr(venv_path: Path) -> bool:
-    """Check that paddleocr is installed in the venv via filesystem (no subprocess, no import)."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [(venv_path / "Lib" / "site-packages" / "paddleocr",)]
-    else:
-        candidates = list((venv_path / "lib").glob("python*/site-packages/paddleocr"))
-    for sp_dir in candidates:
-        if sp_dir.is_dir():
-            return True
-    return False
+_venv_has_probe = lambda p: venv_has_package(p, 'paddleocr')
 
 
 class PaddleOCRVLEngine(HTREngine):
@@ -161,7 +141,7 @@ class PaddleOCRVLEngine(HTREngine):
     def is_available(self) -> bool:
         if _find_venv_python(self._venv_path) is None:
             return False
-        return _venv_has_paddleocr(self._venv_path)
+        return _venv_has_probe(self._venv_path)
 
     def get_unavailable_reason(self) -> str:
         if _find_venv_python(self._venv_path) is None:
@@ -174,7 +154,7 @@ class PaddleOCRVLEngine(HTREngine):
                 "-i https://www.paddlepaddle.org.cn/packages/stable/cu126/\n"
                 "  pip install -U 'paddleocr[doc-parser]>=3.4.0'\n"
             )
-        if not _venv_has_paddleocr(self._venv_path):
+        if not _venv_has_probe(self._venv_path):
             return (
                 f"paddleocr not installed in {self._venv_path}\n\n"
                 "Install with:\n"
@@ -466,7 +446,7 @@ class PaddleOCRVLEngine(HTREngine):
 
     def get_capabilities(self) -> Dict[str, bool]:
         return {
-            "polyscriptor.cli.batch": False,
+            "batch": False,
             "confidence_scores": False,
             "beam_search": False,
             "language_model": True,

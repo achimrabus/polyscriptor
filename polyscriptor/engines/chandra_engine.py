@@ -60,7 +60,10 @@ except ImportError:
 
 _DEFAULT_MODEL_ID = "datalab-to/chandra-ocr-2"
 _DEFAULT_MAX_NEW_TOKENS = 4096
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from polyscriptor.engines._venv_worker import (
+    default_project_root, find_venv_python, venv_has_package, run_worker, WorkerError,
+)
+_PROJECT_ROOT = default_project_root()
 
 # Path to the worker script (same engines/ directory)
 _WORKER_SCRIPT = Path(__file__).resolve().parent / "chandra_worker.py"
@@ -73,30 +76,10 @@ def _default_venv() -> Path:
     return _PROJECT_ROOT / "venv_chandra"
 
 
-def _find_venv_python(venv_path: Path) -> Optional[Path]:
-    """Return the Python interpreter inside a venv, or None if not found."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [venv_path / "Scripts" / "python.exe"]
-    else:
-        candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
+_find_venv_python = find_venv_python
 
 
-def _venv_has_chandra(venv_path: Path) -> bool:
-    """Check that chandra-ocr is installed in the venv (filesystem check, no import)."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [venv_path / "Lib" / "site-packages" / "chandra"]
-    else:
-        candidates = list((venv_path / "lib").glob("python*/site-packages/chandra"))
-    for sp_dir in candidates:
-        if sp_dir.is_dir():
-            return True
-    return False
+_venv_has_probe = lambda p: venv_has_package(p, 'chandra')
 
 
 class ChandraEngine(HTREngine):
@@ -141,7 +124,7 @@ class ChandraEngine(HTREngine):
     def is_available(self) -> bool:
         if _find_venv_python(self._venv_path) is None:
             return False
-        return _venv_has_chandra(self._venv_path)
+        return _venv_has_probe(self._venv_path)
 
     def get_unavailable_reason(self) -> str:
         if _find_venv_python(self._venv_path) is None:
@@ -152,7 +135,7 @@ class ChandraEngine(HTREngine):
                 f"  source {self._venv_path}/bin/activate\n"
                 "  pip install 'chandra-ocr[hf]'\n"
             )
-        if not _venv_has_chandra(self._venv_path):
+        if not _venv_has_probe(self._venv_path):
             return (
                 f"chandra-ocr not installed in {self._venv_path}\n\n"
                 "Install with:\n"
@@ -384,34 +367,13 @@ class ChandraEngine(HTREngine):
                 env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
                 env["CUDA_VISIBLE_DEVICES"] = str(int(config.get("gpu_index", 0)))
 
-            result = subprocess.run(
-                [str(self._venv_python), str(_WORKER_SCRIPT), config_json, tmp_path],
-                capture_output=True, text=True, timeout=900,
-                start_new_session=True,  # isolate from terminal SIGINT
-                env=env,
-            )
-
-            if result.returncode != 0:
-                try:
-                    output = json.loads(result.stdout)
-                    if "error" in output:
-                        err_msg = output["error"]
-                        tb = output.get("traceback", "")
-                        logger.error("[Chandra] Worker error: %s", err_msg)
-                        if tb:
-                            logger.debug("[Chandra] Traceback:\n%s", tb)
-                        return TranscriptionResult(text=f"[Error: {err_msg}]", confidence=0.0)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                stderr = result.stderr[-2000:] if result.stderr else "(no stderr)"
-                logger.error("[Chandra] Worker exited %d: %s", result.returncode, stderr)
-                return TranscriptionResult(text="[Chandra error — see log]", confidence=0.0)
-
-            output = json.loads(result.stdout)
-
-            if "error" in output:
-                logger.error("[Chandra] Worker error: %s", output["error"])
-                return TranscriptionResult(text=f"[Error: {output['error']}]", confidence=0.0)
+            try:
+                output = run_worker(
+                    self._venv_python, _WORKER_SCRIPT, config_json, tmp_path,
+                    timeout=900, logger=logger, tag="Chandra", env=env,
+                )
+            except WorkerError as e:
+                return TranscriptionResult(text=f"[Error: {e}]", confidence=0.0)
 
             text = output.get("text", "")
             lines = output.get("lines", [])
@@ -448,7 +410,7 @@ class ChandraEngine(HTREngine):
 
     def get_capabilities(self) -> Dict[str, bool]:
         return {
-            "polyscriptor.cli.batch": False,
+            "batch": False,
             "confidence_scores": False,
             "beam_search": False,
             "language_model": True,

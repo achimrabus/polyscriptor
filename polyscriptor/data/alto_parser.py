@@ -29,6 +29,10 @@ import csv
 import cv2  # type: ignore
 from multiprocessing import Pool, cpu_count
 
+from polyscriptor.core.imaging import (
+    crop_line, normalize_background_image, resize_with_aspect_ratio,
+)
+
 
 class AltoParser:
     """Parse ALTO XML files. Crops use polygon masks from Shape/Polygon (not bounding boxes)."""
@@ -108,51 +112,21 @@ class AltoParser:
         return text
 
     def normalize_background_image(self, image: Image.Image) -> Image.Image:
-        """Normalize background to light gray (similar to Efendiev dataset)."""
-        img_array = np.array(image)
-        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-        l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l_normalized = clahe.apply(l)
-        lab_normalized = cv2.merge([l_normalized, a, b])
-        rgb_normalized = cv2.cvtColor(lab_normalized, cv2.COLOR_LAB2RGB)
-        gray = cv2.cvtColor(rgb_normalized, cv2.COLOR_RGB2GRAY)
-        normalized_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-        return Image.fromarray(normalized_rgb)
+        """Normalize background to light gray — see core.imaging."""
+        return normalize_background_image(image)
 
     def resize_with_aspect_ratio(self, image: Image.Image) -> Image.Image:
-        """Resize to target height preserving aspect ratio."""
-        width, height = image.size
-        aspect_ratio = width / height
-        new_height = self.target_height
-        new_width = int(new_height * aspect_ratio)
-        return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        """Resize to target height preserving aspect ratio — see core.imaging."""
+        return resize_with_aspect_ratio(image, self.target_height)
 
     def crop_polygon(self, image: Image.Image, coords: List[Tuple[int, int]]) -> Image.Image:
-        """Crop image to polygon shape with masking (always uses polygon mask for ALTO)."""
-        x1, y1, x2, y2 = self.get_bounding_box(coords)
-        padding = 5
-        x1_pad = max(0, x1 - padding)
-        y1_pad = max(0, y1 - padding)
-        x2_pad = min(image.width, x2 + padding)
-        y2_pad = min(image.height, y2 + padding)
-
-        cropped = image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
-
-        if self.normalize_background:
-            cropped = self.normalize_background_image(cropped)
-
-        # ALTO: always apply polygon mask (crops from polygons, not bboxes)
-        mask = Image.new('L', (x2_pad - x1_pad, y2_pad - y1_pad), 0)
-        draw = ImageDraw.Draw(mask)
-        adjusted_coords = [(x - x1_pad, y - y1_pad) for x, y in coords]
-        draw.polygon(adjusted_coords, fill=255)
-        result = Image.new('RGB', cropped.size, (255, 255, 255))
-        result.paste(cropped, mask=mask)
-
-        if self.preserve_aspect_ratio:
-            result = self.resize_with_aspect_ratio(result)
-        return result
+        """Crop one line image (ALTO always masks the polygon) — see core.imaging.crop_line."""
+        return crop_line(
+            image, coords,
+            normalize_background=self.normalize_background,
+            use_polygon_mask=True,
+            target_height=self.target_height if self.preserve_aspect_ratio else None,
+        )
 
     def extract_lines_from_page(self, xml_path: Path, image_path: Path) -> List[dict]:
         """Extract all text lines from an ALTO XML file."""

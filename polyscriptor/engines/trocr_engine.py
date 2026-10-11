@@ -426,7 +426,7 @@ class TrOCREngine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """TrOCR capabilities."""
         return {
-            "polyscriptor.cli.batch": False,  # Could be implemented in future
+            "batch": False,  # Could be implemented in future
             "confidence_scores": True,  # geometric mean of per-token probabilities (beam-safe)
             "beam_search": True,
             "language_model": False,  # Implicit in decoder, not explicit LM

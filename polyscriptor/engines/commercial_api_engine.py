@@ -756,7 +756,7 @@ class CommercialAPIEngine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """Commercial API capabilities."""
         return {
-            "polyscriptor.cli.batch": False,  # APIs typically process one at a time
+            "batch": False,  # APIs typically process one at a time
             "confidence_scores": False,  # Most don't provide confidence
             "beam_search": False,  # Internal to API
             "language_model": True,  # All are language models

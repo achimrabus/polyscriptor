@@ -440,7 +440,7 @@ class LapaOCREngine(HTREngine):
 
     def get_capabilities(self) -> Dict[str, bool]:
         return {
-            "polyscriptor.cli.batch": False,
+            "batch": False,
             "confidence_scores": False,
             "beam_search": False,
             "language_model": True,

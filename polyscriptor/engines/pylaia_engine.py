@@ -425,7 +425,7 @@ class PyLaiaEngine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """PyLaia capabilities."""
         return {
-            "polyscriptor.cli.batch": False,  # Could be implemented
+            "batch": False,  # Could be implemented
             "confidence_scores": True,  # CTC provides confidence
             "beam_search": False,  # CTC uses greedy/beam decoding
             "language_model": PYLAIA_LM_AVAILABLE,  # Optional KenLM

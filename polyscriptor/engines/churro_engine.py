@@ -577,7 +577,7 @@ class ChurroEngine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """Churro capabilities."""
         return {
-            "polyscriptor.cli.batch": True,
+            "batch": True,
             "confidence_scores": False,  # Not implemented yet
             "beam_search": False,  # Uses greedy decoding
             "language_model": True,  # VLM has built-in language understanding

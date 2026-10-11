@@ -50,7 +50,10 @@ except ImportError:
     QWidget = object
 
 # Default venv path (sibling of the project root, same convention as venv_paddle)
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from polyscriptor.engines._venv_worker import (
+    default_project_root, find_venv_python, venv_has_package, run_worker, WorkerError,
+)
+_PROJECT_ROOT = default_project_root()
 _DEFAULT_VENV = _PROJECT_ROOT / "venv_deepseek"
 
 # Worker script lives in the same engines/ directory as this file
@@ -61,30 +64,10 @@ _WORKER_SCRIPT = Path(__file__).resolve().parent / "deepseek_worker.py"
 # Venv helpers (filesystem-only, no subprocess, no imports)
 # ---------------------------------------------------------------------------
 
-def _find_venv_python(venv_path: Path) -> Optional[Path]:
-    """Return the Python interpreter inside a venv, or None if not found."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [venv_path / "Scripts" / "python.exe"]
-    else:
-        candidates = [venv_path / "bin" / "python", venv_path / "bin" / "python3"]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
+_find_venv_python = find_venv_python
 
 
-def _venv_has_transformers(venv_path: Path) -> bool:
-    """Check that transformers is installed in the venv (filesystem, no subprocess)."""
-    import sys as _sys
-    if _sys.platform == "win32":
-        candidates = [(venv_path / "Lib" / "site-packages" / "transformers",)]
-    else:
-        candidates = list((venv_path / "lib").glob("python*/site-packages/transformers"))
-    for sp_dir in candidates:
-        if sp_dir.is_dir():
-            return True
-    return False
+_venv_has_probe = lambda p: venv_has_package(p, 'transformers')
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +121,7 @@ class DeepSeekOCREngine(HTREngine):
     def is_available(self) -> bool:
         if _find_venv_python(self._venv_path) is None:
             return False
-        return _venv_has_transformers(self._venv_path)
+        return _venv_has_probe(self._venv_path)
 
     def get_unavailable_reason(self) -> str:
         if _find_venv_python(self._venv_path) is None:
@@ -152,7 +135,7 @@ class DeepSeekOCREngine(HTREngine):
                 "  # Optional: pip install flash-attn --no-build-isolation\n"
                 "  deactivate"
             )
-        if not _venv_has_transformers(self._venv_path):
+        if not _venv_has_probe(self._venv_path):
             return (
                 f"transformers not installed in {self._venv_path}\n\n"
                 "Install with:\n"
@@ -556,7 +539,7 @@ class DeepSeekOCREngine(HTREngine):
 
     def get_capabilities(self) -> Dict[str, bool]:
         return {
-            "polyscriptor.cli.batch": False,
+            "batch": False,
             "confidence_scores": False,
             "beam_search": False,
             "language_model": True,

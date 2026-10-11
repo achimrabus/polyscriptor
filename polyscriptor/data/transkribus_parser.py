@@ -27,6 +27,10 @@ import csv
 import cv2  # type: ignore
 from multiprocessing import Pool, cpu_count
 
+from polyscriptor.core.imaging import (
+    crop_line, normalize_background_image, resize_with_aspect_ratio,
+)
+
 
 class TranskribusParser:
     """Parse PAGE XML files from Transkribus exports."""
@@ -77,127 +81,21 @@ class TranskribusParser:
         return min(xs), min(ys), max(xs), max(ys)
 
     def normalize_background_image(self, image: Image.Image) -> Image.Image:
-        """
-        Normalize background to light gray (similar to Efendiev dataset).
-
-        This addresses aged paper, color variation, and lighting inconsistencies
-        by normalizing the background to a uniform light tone while preserving
-        text contrast.
-
-        Args:
-            image: PIL Image with potentially aged/colored background
-
-        Returns:
-            PIL Image with normalized background
-        """
-        # Convert PIL to OpenCV format
-        img_array = np.array(image)
-
-        # Convert to LAB color space for better lighting normalization
-        lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-        l, a, b = cv2.split(lab)
-
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) to L channel
-        # This normalizes lighting variations across the image
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l_normalized = clahe.apply(l)
-
-        # Merge back and convert to RGB
-        lab_normalized = cv2.merge([l_normalized, a, b])
-        rgb_normalized = cv2.cvtColor(lab_normalized, cv2.COLOR_LAB2RGB)
-
-        # Convert to grayscale to remove color variations (aged paper tones)
-        gray = cv2.cvtColor(rgb_normalized, cv2.COLOR_RGB2GRAY)
-
-        # Convert back to RGB with uniform background
-        # This creates a light gray background similar to Efendiev dataset
-        normalized_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-
-        return Image.fromarray(normalized_rgb)
+        """Normalize background to light gray — see core.imaging."""
+        return normalize_background_image(image)
 
     def resize_with_aspect_ratio(self, image: Image.Image) -> Image.Image:
-        """
-        Resize image to target height while preserving aspect ratio, then pad to square.
-
-        This addresses the critical issue where TrOCR's ViTImageProcessor brutally resizes
-        images to 384x384, causing 10.6x width downsampling for Ukrainian lines (4077x357).
-
-        Following best practices from TROCR_CER_REDUCTION_STEPS.md:
-        "Height target 96-128 px for line HTR with ViT; keep aspect => pad to square at
-        the very end for the encoder (e.g., 384×384) rather than brutal resize."
-
-        Process:
-        1. Resize to target height (default 128px) keeping aspect ratio
-        2. Pad width with white background to make square (if needed)
-
-        Example: 4077×357 → 128px height → 1467×128 → pad to square
-        Characters go from ~80px to ~28px width instead of ~7px (4x improvement)
-
-        Args:
-            image: PIL Image (cropped line)
-
-        Returns:
-            PIL Image resized with preserved aspect ratio
-        """
-        width, height = image.size
-
-        # Calculate new width to maintain aspect ratio
-        aspect_ratio = width / height
-        new_height = self.target_height
-        new_width = int(new_height * aspect_ratio)
-
-        # Resize maintaining aspect ratio
-        resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-        # For very wide images, we may need to limit the width
-        # TrOCR's ViT will eventually resize to 384x384, but we want to preserve
-        # as much resolution as possible in the saved images
-        # Training script will handle final padding/resizing
-
-        return resized
+        """Resize to target height preserving aspect ratio — see core.imaging."""
+        return resize_with_aspect_ratio(image, self.target_height)
 
     def crop_polygon(self, image: Image.Image, coords: List[Tuple[int, int]]) -> Image.Image:
-        """Crop image to polygon shape with masking."""
-        # Get bounding box
-        x1, y1, x2, y2 = self.get_bounding_box(coords)
-
-        # Add padding
-        padding = 5
-        x1_pad = max(0, x1 - padding)
-        y1_pad = max(0, y1 - padding)
-        x2_pad = min(image.width, x2 + padding)
-        y2_pad = min(image.height, y2 + padding)
-
-        # Crop to bounding box first
-        cropped = image.crop((x1_pad, y1_pad, x2_pad, y2_pad))
-
-        # Apply background normalization if enabled (before polygon masking)
-        if self.normalize_background:
-            cropped = self.normalize_background_image(cropped)
-
-        if not self.use_polygon_mask:
-            # Apply aspect ratio preservation if enabled (after cropping, before returning)
-            if self.preserve_aspect_ratio:
-                cropped = self.resize_with_aspect_ratio(cropped)
-            return cropped
-        
-        # Create mask for polygon
-        mask = Image.new('L', (x2_pad - x1_pad, y2_pad - y1_pad), 0)
-        draw = ImageDraw.Draw(mask)
-        
-        # Adjust coordinates relative to cropped image
-        adjusted_coords = [(x - x1_pad, y - y1_pad) for x, y in coords]
-        draw.polygon(adjusted_coords, fill=255)
-        
-        # Apply mask (sets outside polygon to white)
-        result = Image.new('RGB', cropped.size, (255, 255, 255))
-        result.paste(cropped, mask=mask)
-
-        # Apply aspect ratio preservation if enabled (after all processing)
-        if self.preserve_aspect_ratio:
-            result = self.resize_with_aspect_ratio(result)
-
-        return result
+        """Crop one line image — see core.imaging.crop_line."""
+        return crop_line(
+            image, coords,
+            normalize_background=self.normalize_background,
+            use_polygon_mask=self.use_polygon_mask,
+            target_height=self.target_height if self.preserve_aspect_ratio else None,
+        )
 
     def extract_lines_from_page(self, xml_path: Path, image_path: Path) -> List[dict]:
         """Extract all text lines from a PAGE XML file."""

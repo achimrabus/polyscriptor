@@ -490,7 +490,7 @@ class OpenWebUIEngine(HTREngine):
     def get_capabilities(self) -> Dict[str, bool]:
         """OpenWebUI capabilities."""
         return {
-            "polyscriptor.cli.batch": False,
+            "batch": False,
             "confidence_scores": False,
             "beam_search": False,
             "language_model": True,
