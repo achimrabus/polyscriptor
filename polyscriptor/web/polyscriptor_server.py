@@ -1444,8 +1444,14 @@ async def activity_status():
     ]
     return {"active": active, "queued_jobs": sum(1 for j in jobs.values() if j.status == "queued")}
 
+FRONTEND_BUILD = Path(__file__).resolve().parents[2] / "frontend" / "build"
+
+
 @app.get("/")
 async def index():
+    """Serve the SvelteKit SPA when built, otherwise the legacy UI."""
+    if FRONTEND_BUILD.is_dir():
+        return FileResponse(str(FRONTEND_BUILD / "index.html"))
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
@@ -3217,3 +3223,18 @@ async def gpu_status():
 def _sse(event: str, data: dict) -> str:
     """Format a Server-Sent Event."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# ---------------------------------------------------------------------------
+# SvelteKit SPA fallback (frontend/build served in SPA mode)
+# Registered last so all /api and static routes keep precedence.
+# ---------------------------------------------------------------------------
+if FRONTEND_BUILD.is_dir():
+    app.mount("/_app", StaticFiles(directory=str(FRONTEND_BUILD / "_app")), name="spa_app")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        candidate = (FRONTEND_BUILD / full_path).resolve()
+        if full_path and candidate.is_file() and candidate.is_relative_to(FRONTEND_BUILD):
+            return FileResponse(str(candidate))
+        return FileResponse(str(FRONTEND_BUILD / "index.html"))

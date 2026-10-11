@@ -1,0 +1,46 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+	--font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+	--font-slavonic: 'Monomakh Unicode', 'Old Standard TT', serif;
+}
+
+@font-face {
+	font-family: 'Monomakh Unicode';
+	src: url('/fonts/MonomakhUnicode-Regular.woff2') format('woff2');
+	font-display: swap;
+}
+
+html {
+	@apply text-zinc-900 dark:text-zinc-100 bg-zinc-50 dark:bg-zinc-950;
+}
+
+@layer components {
+	.btn {
+		@apply inline-flex items-center gap-1.5 rounded-md border border-zinc-300 bg-white
+			px-3 py-1.5 text-sm font-medium shadow-sm transition
+			hover:bg-zinc-50 active:bg-zinc-100
+			dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800
+			disabled:cursor-not-allowed disabled:opacity-50;
+	}
+	.btn-primary {
+		@apply border-transparent bg-sky-600 text-white hover:bg-sky-500 active:bg-sky-700
+		dark:bg-sky-600 dark:hover:bg-sky-500;
+	}
+	.input {
+		@apply w-full rounded-md border border-zinc-300 bg-white px-2.5 py-1.5 text-sm
+			shadow-sm focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500
+			dark:border-zinc-700 dark:bg-zinc-900;
+	}
+	.panel {
+		@apply rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900;
+	}
+	.panel-title {
+		@apply border-b border-zinc-200 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400;
+	}
+	.field-label {
+		@apply mb-1 block text-xs font-medium text-zinc-600 dark:text-zinc-400;
+	}
+}
