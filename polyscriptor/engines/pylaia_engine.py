@@ -62,6 +62,7 @@ class PyLaiaEngine(HTREngine):
         try:
             model_path = config.get("model_path", "")
             if not model_path or model_path == "No preset models found":
+                print("Error loading PyLaia model: no model_path in config")
                 return False
 
             # If it's a preset name, resolve to actual path and syms

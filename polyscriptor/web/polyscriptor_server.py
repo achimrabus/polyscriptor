@@ -1776,7 +1776,9 @@ async def load_engine(request: Request, req: EngineLoadRequest):
     elapsed = time.time() - start
 
     if not success:
-        raise HTTPException(500, "Failed to load model")
+        log.warning(f"load_model returned False for '{req.engine_name}' "
+                    f"(config: {sorted(config)}) — see engine output above for the reason")
+        raise HTTPException(500, f"Failed to load '{req.engine_name}' model — see the server console for the error")
 
     slot = EngineSlot(
         engine=engine,

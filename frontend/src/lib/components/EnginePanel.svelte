@@ -57,6 +57,13 @@
 			for (const f of schema) {
 				if (f.default !== undefined) config[f.key] = f.default;
 				if (f.type === 'checkbox' && config[f.key] === undefined) config[f.key] = false;
+				// Seed selects with what they visually display: without this the
+				// form shows the first option but never sends it, and the engine
+				// gets an empty model_path and fails to load.
+				if (f.type === 'select' && f.options?.length && config[f.key] === undefined) {
+					const real = f.options.find((o) => o.value !== '__custom__');
+					config[f.key] = real?.value ?? f.options[0].value;
+				}
 			}
 		} catch (e) {
 			schema = [];
