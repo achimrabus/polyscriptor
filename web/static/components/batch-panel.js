@@ -96,6 +96,18 @@ export function initBatchPanel() {
         }
     });
 
+    // A queued image transcribed by hand (Transcribe button, not Process All): keep the
+    // result in its queue item, so it survives navigating to another image.
+    on('sse-complete', data => {
+        if (batch.running || data.engine === '(batch)') return;
+        const item = batch.items[batch.currentIndex];
+        if (!item || item.imageId !== state.imageId) return;
+        _keepCurrentResult(item);
+        item.time_s = data.total_time_s;
+        item.token_usage = data.token_usage || null;
+        renderQueue();
+    });
+
     $('btn-process-batch').addEventListener('click', processBatch);
     $('btn-clear-batch').addEventListener('click', clearBatch);
     $('btn-export-batch-txt').addEventListener('click', exportAllTxt);
@@ -168,28 +180,60 @@ async function uploadXmlFiles(xmlFiles) {
 // ── Queue management ─────────────────────────────────────────────────────────
 
 function handleMultipleFiles(files) {
-    // If a single image is already loaded (not yet in batch), add it first
+    // If a single image is already loaded (not yet in batch), add it first. An image that
+    // was already transcribed goes in as 'done' with its lines, so Process All skips it and
+    // clicking it brings the transcription back.
     if (batch.items.length === 0 && state.imageId) {
-        batch.items.push({
+        const item = {
             file: null,
             imageId: state.imageId,
             status: 'pending',
-            lines: state.lines.length ? state.lines : [],
+            lines: [],
             filename: (state.imageInfo && state.imageInfo.filename) || 'current image',
             preUploaded: true,
-        });
+        };
+        _keepCurrentResult(item);
+        batch.items.push(item);
+        batch.currentIndex = 0;
     }
     // Add new files (skip duplicates by name)
     const existing = new Set(batch.items.map(i => i.filename));
     const added = files.filter(f => !existing.has(f.name));
+    // A dropped image is meant to be looked at: show the first new one once uploaded
+    const showIndex = added.length ? batch.items.length : -1;
     added.forEach(f => {
         batch.items.push({ file: f, imageId: null, status: 'pending', lines: [], filename: f.name });
     });
-    if (batch.items.length > 0) { renderQueue(); previewFirstBatchItem(); }
+    if (added.length < files.length) {
+        toast(`${files.length - added.length} file(s) already in the queue, skipped`, 'info');
+    }
+    if (added.length && batch.items.length > added.length) {
+        toast(`Added to batch queue (${batch.items.length} images)`, 'info');
+    }
+    if (batch.items.length > 0) { renderQueue(); previewFirstBatchItem(showIndex); }
+}
+
+// Copy the transcription currently on screen into a queue item (lines, boxes, regions).
+function _keepCurrentResult(item) {
+    if (!state.lines.length) return;
+    item.lines   = state.lines.map(l => ({ ...l }));
+    item.bboxes  = state.lines.map(l => l.bbox).filter(Boolean);
+    item.regions = (state.regions || []).slice();
+    item.status  = 'done';
+}
+
+// Show queue item i in the viewer (it must be uploaded already).
+function _showItem(i) {
+    const item = batch.items[i];
+    batch.currentIndex = i;
+    emit('batch-item-start', { imageId: item.imageId, filename: item.filename });
+    updateNavButtons();
 }
 
 // Auto-preview all batch items (upload if needed), expanding PDFs into pages immediately
-async function previewFirstBatchItem() {
+// showIndex: queue position to show once it is uploaded (-1: only the first item, and only
+// when the viewer is empty)
+async function previewFirstBatchItem(showIndex = -1) {
     if (batch.running) return;
 
     let i = 0;
@@ -199,6 +243,7 @@ async function previewFirstBatchItem() {
         const item = batch.items[i];
 
         if (item.preUploaded && item.imageId) {
+            if (i === showIndex) _showItem(i);  // e.g. first page of a dropped PDF
             i++;
             continue;
         }
@@ -225,11 +270,7 @@ async function previewFirstBatchItem() {
                 item.preUploaded = true;
                 renderQueue();
 
-                if (i === 0 && !state.imageId) {
-                    batch.currentIndex = 0;
-                    emit('batch-item-start', { imageId: item.imageId, filename: item.filename });
-                    updateNavButtons();
-                }
+                if ((i === 0 && !state.imageId) || i === showIndex) _showItem(i);
                 i++;
             } catch (err) {
                 console.error('Error pre-uploading batch item:', err);
@@ -634,13 +675,15 @@ function loadBatchItem(index) {
     const bboxes  = item.bboxes  || [];
     const regions = item.regions || [];
     emit('sse-segmentation', { num_lines: item.lines.length, bboxes, regions, source: 'batch-restore' });
-    // Re-populate state.lines so exports and confidence filter work
-    state.lines = item.lines.map((l, i) => ({ ...l, index: i }));
-    // Re-emit each line to rebuild the transcription panel
+    // Re-emit each line to rebuild the transcription panel; its sse-progress handler pushes
+    // every line onto state.lines, so start from empty (setting state.lines here as well
+    // doubled every line, and with it every export of a restored item)
+    const restored = item.lines.map((l, i) => ({ ...l, index: i }));
+    state.lines = [];
     $('transcription-lines').innerHTML = '';
     $('conf-filter-row').classList.add('hidden');
-    state.lines.forEach(l => emit('sse-progress', {
-        current: l.index + 1, total: state.lines.length, line: l
+    restored.forEach(l => emit('sse-progress', {
+        current: l.index + 1, total: restored.length, line: l
     }));
     emit('sse-complete', { lines: state.lines, total_time_s: item.time_s || 0, engine: '(batch)', token_usage: item.token_usage || null });
 }
