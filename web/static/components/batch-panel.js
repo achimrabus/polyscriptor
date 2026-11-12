@@ -418,32 +418,32 @@ function updateOverallProgress(current = null, total = null) {
     }
 }
 
+// Items Previous/Next can step to: every uploaded image of the queue, transcribed or not
+// (a pending one opens for transcription, as a click on it does). While Process All runs,
+// only finished items, so stepping does not interfere with the running item.
+function _navIndices() {
+    return batch.items
+        .map((item, i) => (item.status === 'done' ||
+                           (!batch.running && item.preUploaded && item.imageId)) ? i : -1)
+        .filter(i => i >= 0);
+}
+
 function updateNavButtons() {
-    const done = batch.items.filter(i => i.status === 'done');
-    const hasBatch = done.length > 0;
+    const indices = _navIndices();
     const idx = batch.currentIndex;
-    // Allow navigation to done items even while batch is running
-    const prevDone = hasBatch && batch.items.slice(0, idx).some(i => i.status === 'done');
-    const nextDone = hasBatch && batch.items.slice(idx + 1).some(i => i.status === 'done');
-    $('btn-nav-prev').disabled = !prevDone;
-    $('btn-nav-next').disabled = !nextDone;
-    const label = $('batch-nav-label');
-    if (hasBatch && idx >= 0) {
-        const pos = done.indexOf(batch.items[idx]) + 1;
-        label.textContent = `${pos}/${done.length}`;
-    } else {
-        label.textContent = '';
-    }
+    $('btn-nav-prev').disabled = !indices.some(i => i < idx);
+    $('btn-nav-next').disabled = !indices.some(i => i > idx);
+    const pos = indices.indexOf(idx);
+    $('batch-nav-label').textContent = indices.length > 1 && pos >= 0 ? `${pos + 1}/${indices.length}` : '';
 }
 
 function navigate(delta) {
-    const indices = batch.items
-        .map((item, i) => item.status === 'done' ? i : -1)
-        .filter(i => i >= 0);
-    if (indices.length < 2) return;
-    const cur = indices.indexOf(batch.currentIndex);
-    const next = indices[cur + delta];
-    if (next != null) loadBatchItem(next);
+    const indices = _navIndices();
+    const idx = batch.currentIndex;
+    const next = delta < 0 ? indices.filter(i => i < idx).pop() : indices.find(i => i > idx);
+    if (next == null) return;
+    if (batch.items[next].status === 'done') loadBatchItem(next);
+    else _showItem(next);
 }
 
 // ── Processing ───────────────────────────────────────────────────────────────

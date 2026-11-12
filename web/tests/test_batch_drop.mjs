@@ -82,6 +82,17 @@ $('batch-item-0').click(); await flush();
 check(state.imageId === 'id-A.jpg' && state.lines.map(l => l.text).join() === 'a1,a2',
       `clicking A restores its lines (${state.lines.map(l => l.text).join()})`);
 
+// Previous/Next step through every uploaded image, also one not yet transcribed (C)
+const label = () => $('batch-nav-label').textContent;
+check(label() === '1/3' && $('btn-nav-prev').disabled && !$('btn-nav-next').disabled,
+      `on A: label 1/3, only Next active ("${label()}")`);
+$('btn-nav-next').click(); $('btn-nav-next').click(); await flush();
+check(state.imageId === 'id-C.jpg' && state.lines.length === 0 && label() === '3/3',
+      `Next twice reaches untranscribed C (imageId ${state.imageId}, "${label()}")`);
+$('btn-nav-prev').click(); await flush();
+check(state.imageId === 'id-B.jpg' && state.lines.map(l => l.text).join() === 'b1',
+      `Previous goes back to B with its lines (${state.lines.map(l => l.text).join()})`);
+
 console.log(fehler ? `${fehler} FAILED` : 'all passed');
 fs.rmSync(tmp, { recursive: true, force: true });
 process.exit(fehler ? 1 : 0);
