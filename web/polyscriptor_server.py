@@ -348,9 +348,8 @@ async def session_middleware(request: Request, call_next):
     request.state.session = session
 
     # Don't update last_active for polling-only routes
-    if request.url.path in _SESSION_PASSTHROUGH_PATHS:
-        session.last_active  # read only — no write
-    else:
+    polling = request.url.path in _SESSION_PASSTHROUGH_PATHS
+    if not polling:
         session.last_active = time.time()
 
     response = await call_next(request)
@@ -358,7 +357,17 @@ async def session_middleware(request: Request, call_next):
     if api_user is not None and request.url.path.startswith("/api/"):
         api_key_registry.log_usage(api_user, request.method, request.url.path, response.status_code)
 
-    if created or session_id != session.session_id:
+    # Page and static files: the browser keeps them but revalidates on every page load
+    # (ETag -> 304 when unchanged), so a JS update is seen on the next reload.
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+
+    # Re-send the cookie on every real request: its Max-Age then runs from the last
+    # activity, matching the server-side expiry. Set only on creation, the browser dropped
+    # it two hours after the first visit even during continuous work. Polling routes do
+    # not renew it, so an idle tab still expires.
+    if created or session_id != session.session_id or not polling:
         response.set_cookie(
             key=_SESSION_COOKIE,
             value=session.session_id,
