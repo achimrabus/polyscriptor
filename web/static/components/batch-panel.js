@@ -462,7 +462,7 @@ async function processBatch() {
     const segMethod   = $('seg-method').value;
     const segDevice   = $('seg-device').value;
     const maxColumns  = parseInt($('seg-max-columns')?.value || '6', 10);
-    const splitWidth  = parseFloat($('seg-split-width')?.value || '40') / 100;
+    const splitWidth  = parseFloat($('seg-split-width')?.value || '20') / 100;
     const textDirection = $('seg-text-direction')?.value || 'horizontal-lr';
     const usePageXml  = $('batch-use-pagexml').checked;
     const resume      = $('batch-resume').checked;
@@ -592,7 +592,7 @@ function _collectLiveOverrides() {
     return overrides;
 }
 
-function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFraction = 0.4, usePageXml = true, signal = null, textDirection = 'horizontal-lr') {
+function transcribeSSE(imageId, segMethod, segDevice, maxColumns, splitWidthFraction = 0.2, usePageXml = true, signal = null, textDirection = 'horizontal-lr') {
     return new Promise((resolve, reject) => {
         const lines = [];
         let startTime = null;

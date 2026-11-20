@@ -377,6 +377,27 @@ class HTREngineRegistry:
         except ImportError as e:
             print(f"Warning: Failed to load Chandra engine: {e}")
 
+        # Import and register GLM-OCR engine
+        try:
+            from engines.glm_ocr_engine import GlmOCREngine
+            self.register(GlmOCREngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load GLM-OCR engine: {e}")
+
+        # Import and register dots.mocr engine
+        try:
+            from engines.dots_ocr_engine import DotsOCREngine
+            self.register(DotsOCREngine())
+        except ImportError as e:
+            print(f"Warning: Failed to load dots.mocr engine: {e}")
+
+        # Import and register Kraken 7 (PP-OCRv6) engine (venv_kraken7 worker)
+        try:
+            from engines.kraken7_engine import Kraken7Engine
+            self.register(Kraken7Engine())
+        except ImportError as e:
+            print(f"Warning: Failed to load Kraken 7 engine: {e}")
+
     def get_available_engines(self) -> List[HTREngine]:
         """Get list of engines with satisfied dependencies.
 

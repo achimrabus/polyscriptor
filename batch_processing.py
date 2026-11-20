@@ -79,11 +79,11 @@ except ImportError:
     KRAKEN_AVAILABLE = False
 
 
-# Engine-specific recommendations (shared server - conservative defaults)
+# Engine-specific recommendations (conservative defaults)
 ENGINE_CONFIG = {
     'CRNN-CTC (PyLaia-inspired)': {
         'min_device': 'cpu',  # runs on CPU too (~20 s/page incl. Kraken segmentation)
-        'default_batch_size': 32,  # Conservative for shared server
+        'default_batch_size': 32,  # conservative default
         'batch_size_range': (8, 64),
         'speed_estimate': 30,  # images per minute
         'warning': None
@@ -184,10 +184,6 @@ Examples:
   # Dry run (preview without processing)
   %(prog)s --input-folder pages/ --engine crnn-ctc \\
            --model-path models/best.pt --dry-run
-
-Shared Server Notice:
-  This script runs on a shared server. Please be mindful of resource usage.
-  Use conservative batch sizes and avoid running multiple instances simultaneously.
         """
     )
 
@@ -573,8 +569,8 @@ def determine_batch_size(args, engine_name: str, device: str, logger) -> int:
         logger.info(f"Auto batch size (CPU): {batch_size}")
         return batch_size
 
-    # GPU: use default (already conservative for shared server)
-    logger.info(f"Auto batch size: {default_batch} (shared server optimized)")
+    # GPU: use the conservative per-engine default
+    logger.info(f"Auto batch size: {default_batch}")
     return default_batch
 
 
@@ -841,7 +837,6 @@ class BatchHTRProcessor:
     def process_batch(self, image_xml_pairs: List[Tuple[Path, Optional[Path]]]):
         """Process batch of images with optional PAGE XML."""
         self.logger.info(f"\nProcessing {len(image_xml_pairs)} images...")
-        self.logger.info("⚠️  Shared server: Please monitor resource usage")
 
         # Track start time
         self.start_time = time.time()
@@ -1405,8 +1400,6 @@ def main():
     print(f"Output folder: {args.output_folder}")
     print(f"Segmentation: {args.segmentation_method}")
     print(f"Output formats: {', '.join(args.output_format)}")
-    print("="*60)
-    print("⚠️  Running on shared server - please be mindful of resources")
     print("="*60)
 
     # Discover images (with PAGE XML if enabled)

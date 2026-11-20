@@ -816,7 +816,7 @@ class TranscriptionGUI(QMainWindow):
         blla_split_layout.addWidget(QLabel("Split Width:"))
         self.blla_split_slider = QSlider(Qt.Orientation.Horizontal)
         self.blla_split_slider.setRange(10, 80)  # 10% to 80%
-        self.blla_split_slider.setValue(40)       # default 40%
+        self.blla_split_slider.setValue(20)       # default 20%
         self.blla_split_label = QLabel("40%")
         self.blla_split_slider.valueChanged.connect(
             lambda v: self.blla_split_label.setText(f"{v}%")
@@ -1468,7 +1468,7 @@ class TranscriptionGUI(QMainWindow):
                 device = self.blla_device_combo.currentData() if hasattr(self, 'blla_device_combo') else 'cpu'
                 segmenter = KrakenLineSegmenter(device=device)
                 max_cols = self.blla_max_columns_spin.value() if hasattr(self, 'blla_max_columns_spin') else 4
-                split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.40
+                split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.20
                 min_lines = self.blla_min_lines_spin.value() if hasattr(self, 'blla_min_lines_spin') else 10
                 custom_model = self.blla_model_edit.text().strip() if hasattr(self, 'blla_model_edit') else None
                 text_dir = self.blla_direction_combo.currentData() if hasattr(self, 'blla_direction_combo') else 'horizontal-lr'
@@ -1696,7 +1696,7 @@ class TranscriptionGUI(QMainWindow):
         # Get segmenter params (same guards as segment_lines)
         device = self.blla_device_combo.currentData() if hasattr(self, 'blla_device_combo') else 'cpu'
         max_cols = self.blla_max_columns_spin.value() if hasattr(self, 'blla_max_columns_spin') else 4
-        split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.40
+        split_frac = (self.blla_split_slider.value() / 100.0) if hasattr(self, 'blla_split_slider') else 0.20
         min_lines = self.blla_min_lines_spin.value() if hasattr(self, 'blla_min_lines_spin') else 10
         custom_model = self.blla_model_edit.text().strip() if hasattr(self, 'blla_model_edit') else None
         text_dir = self.blla_direction_combo.currentData() if hasattr(self, 'blla_direction_combo') else 'horizontal-lr'

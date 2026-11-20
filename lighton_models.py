@@ -29,7 +29,7 @@ LIGHTON_MODELS: Dict[str, Dict[str, Any]] = {
     },
     "German Shorthand": {
         "id": "wjbmattingly/LightOnOCR-2-1B-german-shorthand-line",
-        "description": "Fine-tuned for German Kurrent/Shorthand scripts.",
+        "description": "Fine-tuned for German shorthand (Kurzschrift) lines.",
         "language": "de",
         "vram": "~4GB",
         "type": "line",

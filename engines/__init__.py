@@ -17,4 +17,7 @@ __all__ = [
     "PaddleOCREngine",
     "PaddleOCRVLEngine",
     "ChandraEngine",
+    "GlmOCREngine",
+    "DotsOCREngine",
+    "Kraken7Engine",
 ]

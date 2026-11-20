@@ -709,7 +709,7 @@ async function onTranscribe() {
     const segMethod = $('seg-method').value;
     const segDevice = $('seg-device').value;
     const maxColumns = parseInt($('seg-max-columns')?.value || '6', 10);
-    const splitWidth = parseFloat($('seg-split-width')?.value || '40') / 100;
+    const splitWidth = parseFloat($('seg-split-width')?.value || '20') / 100;
     const textDirection = $('seg-text-direction')?.value || 'horizontal-lr';
 
     emit('transcription-start');
@@ -790,7 +790,7 @@ async function onSegment() {
     const segMethod   = $('seg-method').value;
     const segDevice   = $('seg-device').value;
     const maxColumns  = parseInt($('seg-max-columns')?.value || '6', 10);
-    const splitWidth  = parseFloat($('seg-split-width')?.value || '40') / 100;
+    const splitWidth  = parseFloat($('seg-split-width')?.value || '20') / 100;
     const textDirection = $('seg-text-direction')?.value || 'horizontal-lr';
 
     btn.classList.add('loading');

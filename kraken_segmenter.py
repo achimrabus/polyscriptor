@@ -187,7 +187,7 @@ class KrakenLineSegmenter:
         device: Optional[str] = None,
         min_line_height: int = 8,
         max_columns: int = 4,
-        split_width_fraction: float = 0.40,
+        split_width_fraction: float = 0.20,
         min_lines_to_split: int = 10,
         text_direction: str = 'horizontal-lr',
     ) -> Tuple[List[SegRegion], List[LineSegment]]:
@@ -258,7 +258,7 @@ class KrakenLineSegmenter:
         device: str,
         min_line_height: int,
         max_columns: int = 4,
-        split_width_fraction: float = 0.40,
+        split_width_fraction: float = 0.20,
         min_lines_to_split: int = 10,
         text_direction: str = 'horizontal-lr',
     ) -> Tuple[List[SegRegion], List[LineSegment]]:
@@ -517,6 +517,7 @@ class KrakenLineSegmenter:
         page_w: int,
         max_columns: int = 4,
         min_gap_fraction: float = 0.03,
+        max_crossing_share: float = 0.25,
     ) -> List[int]:
         """
         Gap-based column clustering.
@@ -534,6 +535,9 @@ class KrakenLineSegmenter:
             min_gap_fraction:  Minimum gap size as a fraction of *page_w* to be
                                considered a column boundary.  Default 0.03 (3%).
                                Increase if spurious splits occur within a column.
+            max_crossing_share: A gap is only accepted as a column boundary if
+                               at most this share of lines runs across it
+                               (default 0.25). Keeps single-column pages whole.
         """
         if not lines:
             return []
@@ -554,9 +558,9 @@ class KrakenLineSegmenter:
         min_gap_px = max(10, int(min_gap_fraction * page_w))
         sorted_cx = sorted(clustering_centers)
 
-        # Compute gaps between consecutive sorted x-centers
+        # Compute gaps between consecutive sorted x-centers: (size, lo, hi)
         gaps = [
-            (sorted_cx[i + 1] - sorted_cx[i], (sorted_cx[i] + sorted_cx[i + 1]) // 2)
+            (sorted_cx[i + 1] - sorted_cx[i], sorted_cx[i], sorted_cx[i + 1])
             for i in range(len(sorted_cx) - 1)
             if sorted_cx[i + 1] - sorted_cx[i] >= min_gap_px
         ]
@@ -564,10 +568,33 @@ class KrakenLineSegmenter:
         if not gaps:
             return [0] * len(lines)
 
-        # Take the largest max_columns-1 gaps as column boundaries
-        split_midpoints = sorted(
-            mid for _, mid in sorted(gaps, reverse=True)[: max_columns - 1]
-        )
+        # Take the largest gaps as column boundaries (at most max_columns-1),
+        # but only gaps that few lines run across. In real columns only headers
+        # and the odd stray line cross the boundary; in single-column handwriting
+        # (indented / short lines produce gaps in the x-centers) most lines do.
+        # A line counts as crossing if it reaches min_gap_px past the boundary
+        # on both sides. The boundary is placed where the fewest lines cross
+        # within the gap (not at its midpoint: with closely set columns a stray
+        # short line between them moves the midpoint into a column).
+        def _crossings(sp):
+            return sum(1 for l in lines
+                       if l.bbox[0] < sp - min_gap_px and l.bbox[2] > sp + min_gap_px)
+
+        split_midpoints = []
+        for _, lo, hi in sorted(gaps, reverse=True):
+            if len(split_midpoints) >= max_columns - 1:
+                break
+            steps = 24
+            cands = [lo + (hi - lo) * k // steps for k in range(1, steps)]
+            best = min(cands, key=lambda sp: (_crossings(sp), abs(sp - (lo + hi) // 2)))
+            if _crossings(best) > max_crossing_share * len(lines):
+                continue
+            if any(abs(best - sp) < min_gap_px for sp in split_midpoints):
+                continue
+            split_midpoints.append(best)
+        split_midpoints.sort()
+        if not split_midpoints:
+            return [0] * len(lines)
 
         # Assign each line (using original center) to a column
         assignments = []
@@ -582,7 +609,7 @@ class KrakenLineSegmenter:
         regions_dict: Dict[str, dict],
         page_w: int,
         min_lines_to_split: int = 10,
-        split_width_fraction: float = 0.40,
+        split_width_fraction: float = 0.20,
         max_columns: int = 4,
     ) -> Dict[str, dict]:
         """
@@ -688,6 +715,43 @@ class KrakenLineSegmenter:
             upper.append(p)
         return lower[:-1] + upper[:-1]
 
+    @staticmethod
+    def _row_order(items: list, rtl: bool = False, min_overlap: float = 0.3) -> list:
+        """Order (idx, LineSegment) items by rows, then horizontally within a row.
+
+        Two pieces belong to the same row if they do not overlap horizontally and
+        their vertical extents overlap by at least *min_overlap* of the smaller
+        height. Lines stacked above each other (horizontal overlap) never share a
+        row, so ordinary consecutive lines keep their top-to-bottom order.
+        """
+        items = sorted(items, key=lambda it: (it[1].bbox[1] + it[1].bbox[3]) / 2)
+        rows: List[list] = []
+        for it in items:
+            x1, y1, x2, y2 = it[1].bbox
+            placed = False
+            for row in rows[-2:]:  # only recent rows can be the same row
+                fits = True
+                for _, other in row:
+                    ox1, oy1, ox2, oy2 = other.bbox
+                    if min(x2, ox2) > max(x1, ox1):   # horizontal overlap -> stacked
+                        fits = False
+                        break
+                    v = min(y2, oy2) - max(y1, oy1)
+                    if v < min_overlap * min(y2 - y1, oy2 - oy1):
+                        fits = False
+                        break
+                if fits:
+                    row.append(it)
+                    placed = True
+                    break
+            if not placed:
+                rows.append([it])
+        out = []
+        for row in rows:
+            row.sort(key=lambda it: it[1].bbox[0], reverse=rtl)
+            out.extend(row)
+        return out
+
     def _build_regions(
         self,
         regions_dict: Dict[str, dict],
@@ -720,8 +784,10 @@ class KrakenLineSegmenter:
             region_lines = rdata['lines']
             blla_region = rdata['blla_region']
 
-            # Sort lines top-to-bottom within region
-            region_lines.sort(key=lambda item: item[1].bbox[1])
+            # Reading order within the region: top-to-bottom by row, and pieces
+            # of the same row (blla often splits a handwritten line in two)
+            # left-to-right (right-to-left for RTL).
+            region_lines[:] = self._row_order(region_lines, rtl)
 
             region_id = f"r_{ri}"
             line_ids = [f"l_{i + 1}" for i, _ in region_lines]

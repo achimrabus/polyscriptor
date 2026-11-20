@@ -122,8 +122,12 @@ _ENGINE_VRAM_GB = {
     "LapaOCR": 18,
     "PaddleOCR-VL": 9,
     "Chandra": 13,
+    "GLM-OCR": 4,
+    "dots.mocr": 9,
+    "Kraken 7 (PP-OCR)": 2,  # persistent worker process, ~1 GB with medium
 }
-_NO_GPU_ENGINES = {"Commercial APIs", "OpenWebUI", "LightOnOCR", "DeepSeek-OCR"}
+_NO_GPU_ENGINES = {"Commercial APIs", "OpenWebUI", "LightOnOCR", "DeepSeek-OCR",
+                   "GLM-OCR", "dots.mocr"}
 _TOTAL_VRAM_GB = 92  # 2x L40S @ 46GB each
 
 
@@ -143,6 +147,9 @@ _ENGINE_FACTORY = {
     "PaddleOCR":                    ("engines.paddle_engine",       "PaddleOCREngine"),
     "PaddleOCR-VL":                 ("engines.paddle_vl_engine",    "PaddleOCRVLEngine"),
     "Chandra":                      ("engines.chandra_engine",      "ChandraEngine"),
+    "GLM-OCR":                      ("engines.glm_ocr_engine",      "GlmOCREngine"),
+    "dots.mocr":                    ("engines.dots_ocr_engine",     "DotsOCREngine"),
+    "Kraken 7 (PP-OCR)":            ("engines.kraken7_engine",      "Kraken7Engine"),
 }
 
 
@@ -179,7 +186,7 @@ def _make_pool_key(engine_name: str, config: dict) -> str:
     if engine_name == "TrOCR":
         return f"{engine_name}::{config.get('model_path', 'default')}"
 
-    if engine_name in ("CRNN-CTC (PyLaia-inspired)", "Kraken"):
+    if engine_name in ("CRNN-CTC (PyLaia-inspired)", "Kraken", "Kraken 7 (PP-OCR)"):
         return f"{engine_name}::{config.get('model_path', 'default')}"
 
     if engine_name == "Qwen3-VL":
@@ -881,6 +888,23 @@ ENGINE_SCHEMAS = {
              "min": 512, "max": 4096, "default": 2048},
         ]
     },
+    "Kraken 7 (PP-OCR)": lambda: {
+        "fields": [
+            {"key": "model_path", "type": "select", "label": "Model",
+             "default": "ppocr_medium",
+             "options": (lambda: __import__("engines.kraken7_engine", fromlist=["x"]).available_presets()
+                         + [{"label": "Custom model file…", "value": "__custom__"}])(),
+             "custom_key": "custom_model_path",
+             "custom_placeholder": "Absolute path on server to a kraken 7 .safetensors model",
+             "hint": "kraken 7.1 PP-OCRv6 multilingual base models (Apache-2.0). Fast line "
+                     "recognition; our CRNN/TrOCR presets are better on the material they were "
+                     "trained for. Needs a line segmentation (e.g. Kraken blla)."},
+            {"key": "device", "type": "select", "label": "Device", "default": "cuda:0",
+             "options": [{"label": "GPU 0", "value": "cuda:0"},
+                         {"label": "GPU 1", "value": "cuda:1"},
+                         {"label": "CPU", "value": "cpu"}]},
+        ]
+    },
     "Kraken": lambda: {
         "fields": [
             {"key": "model_path", "type": "select", "label": "Model",
@@ -1011,7 +1035,8 @@ ENGINE_SCHEMAS = {
             {"key": "use_angle_cls", "type": "checkbox",
              "label": "Text-angle classifier (correct 180° rotation)", "default": True},
             {"key": "use_gpu", "type": "checkbox",
-             "label": "Use GPU (requires paddlepaddle-gpu)", "default": False},
+             "label": "Use GPU (requires paddlepaddle-gpu)", "default": True,
+             "hint": "venv_paddle has paddlepaddle-gpu: a full page takes ~10 s on GPU vs ~135 s on CPU."},
         ]
     },
     "PaddleOCR-VL": lambda: {
@@ -1078,7 +1103,7 @@ class TranscribeRequest(BaseModel):
     seg_method: Optional[str] = None
     seg_device: str = "cpu"
     max_columns: int = 6          # blla: max sub-columns per region (iterative splitting)
-    split_width_fraction: float = 0.40  # blla: min region width (fraction of page) to trigger sub-split
+    split_width_fraction: float = 0.20  # blla: min region width (fraction of page) to trigger sub-split
     use_pagexml: bool = True      # use attached PAGE XML for segmentation when available
     text_direction: str = "horizontal-lr"  # reading order for Kraken: horizontal-lr, horizontal-rl, vertical-lr, vertical-rl
     engine_config_overrides: Dict[str, Any] = {}  # live form values merged into stored config at transcription time
@@ -1643,6 +1668,14 @@ async def load_engine(request: Request, req: EngineLoadRequest):
                 raise HTTPException(400, "Please enter an absolute path to a best_model.pt file")
             config["model_path"] = custom_val
         # else: named preset from PYLAIA_MODELS — engine resolves it
+
+    elif req.engine_name == "Kraken 7 (PP-OCR)" and "model_path" in config:
+        custom_val = config.pop("custom_model_path", "").strip()
+        if config["model_path"] == "__custom__":
+            if not custom_val:
+                raise HTTPException(400, "Please enter an absolute path to a kraken 7 model file")
+            config["model_path"] = custom_val
+        # else: preset name from KRAKEN7_MODELS, the engine resolves it
 
     elif req.engine_name == "Kraken" and "model_path" in config:
         custom_val = config.pop("custom_model_path", "").strip()
@@ -2285,7 +2318,7 @@ def _desired_seg_source(img_data: dict, seg_method: Optional[str],
 
 async def _run_segmentation(img_data: dict, method: str, device: str = "cpu",
                             max_columns: int = 6,
-                            split_width_fraction: float = 0.40,
+                            split_width_fraction: float = 0.20,
                             text_direction: str = "horizontal-lr") -> dict:
     """
     Shared segmentation helper.  Runs the appropriate segmenter, stores
@@ -2431,7 +2464,7 @@ async def segment_image(
     method: str = "kraken",
     device: str = "cpu",
     max_columns: int = 6,
-    split_width_fraction: float = 0.40,
+    split_width_fraction: float = 0.20,
     text_direction: str = "horizontal-lr",
 ):
     """
@@ -2558,17 +2591,16 @@ async def transcribe(request: Request, req: TranscribeRequest):
                 line_img = line.image if line.image is not None else pil_image.crop(line.bbox)
                 img_array = np.array(line_img.convert("RGB"))
 
-                # Use slot lock to serialize access to this engine instance
-                if slot:
-                    async with slot.lock:
-                        slot.last_used = time.time()
-                        result = await asyncio.to_thread(
-                            eff_engine.transcribe_line, img_array, eff_config
-                        )
-                else:
-                    result = await asyncio.to_thread(
-                        eff_engine.transcribe_line, img_array, eff_config
-                    )
+                # Slot lock serializes access to this engine instance; keepalives
+                # stop mobile clients from dropping the stream on long pages.
+                result = None
+                async for item in _transcribe_line_with_heartbeat(
+                    eff_engine, img_array, eff_config, slot
+                ):
+                    if isinstance(item, tuple):
+                        result = item[1]
+                    else:
+                        yield item
 
                 text = str(result.text) if hasattr(result, "text") else str(result)
                 confidence = None
@@ -2715,20 +2747,16 @@ async def compare_run(request: Request, req: CompareRunRequest):
                 line_img = line.image if line.image is not None else pil_image.crop(line.bbox)
                 img_array = np.array(line_img.convert("RGB"))
 
-                if slot:
-                    async with slot.lock:
-                        slot.last_used = time.time()
-                        result = await asyncio.to_thread(
-                            eff_engine.transcribe_line,
-                            img_array,
-                            eff_config,
-                        )
-                else:
-                    result = await asyncio.to_thread(
-                        eff_engine.transcribe_line,
-                        img_array,
-                        eff_config,
-                    )
+                # Slot lock serializes access to this engine instance; keepalives
+                # stop mobile clients from dropping the stream on long pages.
+                result = None
+                async for item in _transcribe_line_with_heartbeat(
+                    eff_engine, img_array, eff_config, slot
+                ):
+                    if isinstance(item, tuple):
+                        result = item[1]
+                    else:
+                        yield item
 
                 text = str(result.text) if hasattr(result, "text") else str(result)
                 confidence = None
@@ -3163,3 +3191,33 @@ async def gpu_status():
 def _sse(event: str, data: dict) -> str:
     """Format a Server-Sent Event."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# Seconds between SSE keepalive comments while an engine call is running.
+# Page-level engines (PaddleOCR, VLM workers) can take minutes for one page
+# without emitting anything; mobile browsers and Wi-Fi gateways drop such
+# silent streams. A comment line is ignored by every SSE parser.
+_SSE_HEARTBEAT_S = 10
+_SSE_KEEPALIVE = ": keepalive\n\n"
+
+
+async def _transcribe_line_with_heartbeat(engine, img_array, config, slot):
+    """Run engine.transcribe_line in a thread; yield keepalives while it runs.
+
+    Async generator: yields _SSE_KEEPALIVE strings, and finally a single
+    ("result", result) tuple. Holds slot.lock (if any) for the whole call.
+    """
+    async def _call():
+        if slot:
+            async with slot.lock:
+                slot.last_used = time.time()
+                return await asyncio.to_thread(engine.transcribe_line, img_array, config)
+        return await asyncio.to_thread(engine.transcribe_line, img_array, config)
+
+    task = asyncio.ensure_future(_call())
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=_SSE_HEARTBEAT_S)
+        if done:
+            break
+        yield _SSE_KEEPALIVE
+    yield ("result", task.result())

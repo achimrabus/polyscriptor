@@ -21,6 +21,7 @@ const state = {
   isSegmenting:   false,
   isTranscribing: false,
   sseAbort:       null,   // AbortController for active SSE
+  hasGpuField:    false,  // engine schema offers use_gpu → demo forces it on
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────────
@@ -202,6 +203,7 @@ async function onEngineChange() {
   el.btnLoadModel.hidden = false;
   el.btnLoadModel.disabled = true;
   state.modelFieldKey = null;
+  state.hasGpuField = false;
 
   try {
     // Use config-schema (same as main app) — it has the full model option list
@@ -211,6 +213,10 @@ async function onEngineChange() {
     if (requestSeq !== state.engineChangeSeq || el.engineSelect.value !== name) {
       return;
     }
+
+    // The demo has no settings panel: if the engine offers a GPU switch,
+    // always turn it on (CPU defaults made PaddleOCR ~14x slower on phones).
+    state.hasGpuField = (schema.fields || []).some(f => f.key === 'use_gpu');
 
     // Find first non-dynamic select field → that's the model selector
     const selectField = (schema.fields || []).find(
@@ -271,6 +277,7 @@ async function loadModel() {
     // Use the field key from the config schema (e.g. 'model_path' for CRNN-CTC/TrOCR/Kraken)
     const fieldKey = state.modelFieldKey || 'model_path';
     const config = modelVal ? { [fieldKey]: modelVal } : {};
+    if (state.hasGpuField) config.use_gpu = true;
     await api('/api/engine/load', {
       method: 'POST',
       body: JSON.stringify({ engine_name: engineName, config }),
